@@ -3,28 +3,41 @@ import express, { type Request, Response, NextFunction } from "express";
 import session from "express-session";
 import cors from "cors";
 import path from "path";
+import createMemoryStore from "memorystore";
 import { registerRoutes } from "./routes";
+import { SESSION_COOKIE_NAME } from "./routes/middleware";
 import { setupVite, serveStatic, log } from "./vite";
 import { bot } from "./bot/index";
 import { ContentScheduler } from "./bot/scheduler";
 
 // Sin SESSION_SECRET las sesiones del panel serían inseguras: mejor no arrancar
-if (!process.env.SESSION_SECRET) {
+const sessionSecret = process.env.SESSION_SECRET;
+if (!sessionSecret) {
   console.error('❌ Falta SESSION_SECRET en el archivo .env (usa una clave aleatoria larga).');
   process.exit(1);
 }
+if (sessionSecret.length < 32) {
+  console.warn('⚠️ SESSION_SECRET es muy corta; usa al menos 32 caracteres aleatorios.');
+}
+
+const isProduction = process.env.NODE_ENV === 'production';
 
 const app = express();
 
-// Trust proxy para Replit (paso 2 de ChatGPT)
+// Detrás de un proxy HTTPS (Replit, Railway, etc.): necesario para cookies "secure"
 app.set('trust proxy', 1);
 
 app.use(express.json());
 app.use(express.urlencoded({ extended: false }));
 
-// CORS con credenciales (paso 3 de ChatGPT)
-const appUrl = process.env.APP_URL || `http://localhost:${process.env.PORT || '5000'}`;
-const frontendUrl = process.env.FRONTEND_URL || appUrl;
+// CORS con credenciales: SIEMPRE un origen concreto, nunca "*"
+const appUrl = (process.env.APP_URL || `http://localhost:${process.env.PORT || '5000'}`).replace(/\/+$/, '');
+const frontendUrl = (process.env.FRONTEND_URL || appUrl).replace(/\/+$/, '');
+
+if (frontendUrl.includes('*')) {
+  console.error('❌ FRONTEND_URL no puede ser "*" (las cookies de sesión van con credenciales). Usa la URL exacta del panel.');
+  process.exit(1);
+}
 
 app.use(cors({
   origin: frontendUrl,
@@ -33,37 +46,31 @@ app.use(cors({
   allowedHeaders: ['Content-Type','Authorization']
 }));
 
-// Configure session middleware (paso 2 de ChatGPT - cookies/sesión)
-app.use(session({
-  secret: process.env.SESSION_SECRET,
+// Sesiones del panel. El mismo middleware se usa para autenticar el WebSocket.
+const MemoryStore = createMemoryStore(session);
+const SESSION_MAX_AGE_MS = 1000 * 60 * 60 * 24; // 24 h sin actividad (rolling)
+
+const sessionParser = session({
+  name: SESSION_COOKIE_NAME,
+  secret: sessionSecret,
+  store: new MemoryStore({ checkPeriod: 1000 * 60 * 60 }), // limpia sesiones caducadas cada hora
   resave: false,
   saveUninitialized: false,
   rolling: true, // Reset expiry on each request
   cookie: {
     httpOnly: true,
-    sameSite: 'lax',  // dev HTTP (usar 'none' para prod HTTPS)
-    secure: process.env.NODE_ENV === 'production', // true en HTTPS
-    maxAge: 1000 * 60 * 60 * 24 * 7 // 7 días
+    sameSite: 'lax',      // la cookie no viaja en peticiones POST/PUT/DELETE desde otros sitios
+    secure: isProduction, // en producción solo por HTTPS (requiere trust proxy si hay proxy delante)
+    maxAge: SESSION_MAX_AGE_MS
   }
-}));
+});
+app.use(sessionParser);
 
 console.log('✅ Session middleware configured');
 console.log('🌐 Frontend URL:', frontendUrl);
 console.log('🔧 DISCORD_CLIENT_ID:', process.env.DISCORD_CLIENT_ID ? 'Set' : 'Missing');
 console.log('🔧 DISCORD_CLIENT_SECRET:', process.env.DISCORD_CLIENT_SECRET ? 'Set' : 'Missing');
-console.log('🔧 SESSION_SECRET:', process.env.SESSION_SECRET ? 'Set' : 'Missing');
-
-// Logs que ayudan mucho (paso 8 de ChatGPT)
-app.use((req, _res, next) => {
-  if (req.path.startsWith('/auth') || req.path.startsWith('/api')) {
-    console.log('SESSION ID:', (req as any).sessionID, 'User:', (req as any).user?.id || 'none');
-    console.log('Headers:', {
-      'x-forwarded-proto': req.headers['x-forwarded-proto'],
-      'host': req.headers['host']
-    });
-  }
-  next();
-});
+console.log('🔧 SESSION_SECRET:', sessionSecret ? 'Set' : 'Missing');
 
 app.use((req, res, next) => {
   const start = Date.now();
@@ -96,7 +103,7 @@ app.use((req, res, next) => {
 });
 
 (async () => {
-  const server = await registerRoutes(app);
+  const server = await registerRoutes(app, { sessionParser });
 
   app.use((err: any, _req: Request, res: Response, _next: NextFunction) => {
     const status = err.status || err.statusCode || 500;
