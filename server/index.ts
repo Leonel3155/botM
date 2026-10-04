@@ -105,14 +105,29 @@ app.use((req, res, next) => {
 (async () => {
   const server = await registerRoutes(app, { sessionParser });
 
-  app.use((err: any, _req: Request, res: Response, _next: NextFunction) => {
-    const status = err.status || err.statusCode || 500;
-    const message = err.message || "Internal Server Error";
+  // Último recurso para errores no atrapados. Nunca enviamos err.message en un 5xx (puede
+  // traer detalles internos: SQL, rutas, tokens...); el detalle completo queda en el log del servidor.
+  app.use((err: any, req: Request, res: Response, next: NextFunction) => {
+    const rawStatus = Number(err?.status ?? err?.statusCode);
+    const status = Number.isInteger(rawStatus) && rawStatus >= 400 && rawStatus < 600 ? rawStatus : 500;
 
-    console.error(err);
-    if (!res.headersSent) {
-      res.status(status).json({ message });
+    let error: string;
+    if (status >= 500) {
+      console.error(`[ERROR] ${req.method} ${req.originalUrl}:`, err);
+      error = 'Ocurrió un error inesperado en el servidor. Intenta de nuevo en un momento.';
+    } else if (err?.type === 'entity.parse.failed') {
+      error = 'Los datos enviados no son un JSON válido.';
+    } else if (err?.type === 'entity.too.large') {
+      error = 'Los datos enviados son demasiado grandes.';
+    } else {
+      console.warn(`[ERROR] ${req.method} ${req.originalUrl} → ${status}:`, err?.message ?? err);
+      error = 'La solicitud no es válida.';
     }
+
+    if (res.headersSent) {
+      return next(err);
+    }
+    res.status(status).json({ error });
   });
 
   // importantly only setup vite in development and after

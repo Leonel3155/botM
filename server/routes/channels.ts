@@ -1,7 +1,14 @@
 import type { Express, Request, Response } from "express";
-import { ChannelType } from "discord.js";
+import { ChannelType, type GuildBasedChannel } from "discord.js";
 import { z } from "zod";
+import type {
+  ChannelConfigResponse,
+  DiscordChannelKind,
+  DiscordChannelsResponse,
+  SuccessResponse,
+} from "@shared/api";
 import { storage } from "../storage";
+import { checkSendableChannel } from "../bot/services/channels";
 import {
   requireAuth,
   requireGuildAdmin,
@@ -24,9 +31,17 @@ const channelConfigSchema = z.object({
   welcomeChannelId: optionalChannelId,
   redditEnabled: z.boolean(),
   twitterEnabled: z.boolean(),
-  // La música se eliminó; el panel antiguo aún manda este campo. Se acepta y se ignora.
+  // La música se eliminó, pero la página de canales actual aún manda este campo: se acepta y se ignora.
+  // Quitarlo cuando la página nueva deje de enviarlo.
   musicChannelId: z.union([z.string(), z.null()])
 }).partial().strict();
+
+// Canales que se muestran en el panel
+const CHANNEL_KINDS: Partial<Record<ChannelType, DiscordChannelKind>> = {
+  [ChannelType.GuildText]: 'text',
+  [ChannelType.GuildAnnouncement]: 'announcement',
+  [ChannelType.GuildVoice]: 'voice'
+};
 
 export function setupChannelRoutes(app: Express) {
   // Get guild channel configuration
@@ -38,7 +53,7 @@ export function setupChannelRoutes(app: Express) {
       // Solo lectura: si el servidor aún no está en la BD devolvemos los valores por defecto
       const guild = await storage.getGuild(guildId);
 
-      const channelConfig = {
+      const channelConfig: ChannelConfigResponse = {
         contentChannelId: guild?.contentChannelId || null,
         moderationChannelId: guild?.moderationChannelId || null,
         welcomeChannelId: guild?.welcomeChannelId || null,
@@ -101,7 +116,8 @@ export function setupChannelRoutes(app: Express) {
       await storage.updateGuild(guildId, updates);
 
       console.log(`[CHANNELS-UPDATE-003] Successfully updated channel configuration`);
-      res.json({ success: true });
+      const result: SuccessResponse = { success: true };
+      res.json(result);
 
     } catch (error) {
       console.error('[CHANNELS-UPDATE-ERROR]', error);
@@ -118,15 +134,28 @@ export function setupChannelRoutes(app: Express) {
 
       // Canales de la caché del bot (llegan por el gateway): sin llamar a la API REST
       // de Discord en cada visita, así no gastamos el rate limit del token del bot.
-      const formattedChannels = getBotGuild(res).channels.cache
-        .filter((channel) => channel.type === ChannelType.GuildText || channel.type === ChannelType.GuildVoice)
-        .map((channel) => ({
-          id: channel.id,
-          name: channel.name,
-          type: channel.type === ChannelType.GuildText ? 'text' : 'voice',
-          category: channel.parent?.name || 'Sin categoría'
-        }))
-        .sort((a, b) => a.name.localeCompare(b.name));
+      // Orden como en Discord: por categoría y luego por posición dentro de ella.
+      const sortKey = (channel: GuildBasedChannel) => [
+        channel.parent?.rawPosition ?? -1,
+        'rawPosition' in channel ? channel.rawPosition : 0
+      ];
+      const formattedChannels: DiscordChannelsResponse = getBotGuild(res).channels.cache
+        .filter((channel) => CHANNEL_KINDS[channel.type] !== undefined)
+        .sort((a, b) => {
+          const [parentA, positionA] = sortKey(a);
+          const [parentB, positionB] = sortKey(b);
+          return parentA - parentB || positionA - positionB || a.name.localeCompare(b.name);
+        })
+        .map((channel) => {
+          const type = CHANNEL_KINDS[channel.type] as DiscordChannelKind;
+          return {
+            id: channel.id,
+            name: channel.name,
+            type,
+            category: channel.parent?.name || 'Sin categoría',
+            botCanPost: type !== 'voice' && checkSendableChannel(channel).ok
+          };
+        });
 
       console.log(`[DISCORD-CHANNELS-003] Found ${formattedChannels.length} channels`);
       res.json(formattedChannels);

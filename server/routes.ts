@@ -2,13 +2,30 @@ import type { Express, Request, Response, NextFunction, RequestHandler } from "e
 import type { Store } from "express-session";
 import { createServer, type IncomingMessage, type Server } from "http";
 import type { Duplex } from "stream";
-import type { Guild as DiscordGuild } from "discord.js";
 import { WebSocketServer, WebSocket } from "ws";
-import { storage } from "./storage";
+import { storage, ContentFeedLimitError, type ContentFeedUpdate } from "./storage";
 import { z } from "zod";
+import type {
+  ContentFeedResponse,
+  ContentFeedsResponse,
+  GuildConfigResponse,
+  GuildRowResponse,
+  SuccessResponse,
+  UserEconomyResponse,
+  UserGuildsResponse,
+  UserLevelResponse,
+} from "@shared/api";
 import { bot } from "./bot/index";
+import { invalidateAntiRaidConfig, liftLockdown } from "./bot/middleware/antiRaid";
+import { invalidateCustomCommandsCache } from "./bot/customCommands";
 import { setupAuthRoutes } from "./routes/auth";
 import { setupChannelRoutes } from "./routes/channels";
+import { setupDashboardRoutes } from "./routes/dashboard";
+import { setupEngagementRoutes } from "./routes/engagement";
+import { setupSecurityRoutes } from "./routes/security";
+import { setupModerationRoutes } from "./routes/moderation";
+import { setupCustomCommandRoutes } from "./routes/customCommands";
+import { asJson, isRowId } from "./routes/helpers";
 import {
   type AppSession,
   requireAuth,
@@ -29,7 +46,6 @@ import {
   isSnowflake,
   onSessionEnded,
   parseBody,
-  parseLimit,
   snowflakeSchema
 } from "./routes/middleware";
 
@@ -56,57 +72,6 @@ type SessionIncomingMessage = IncomingMessage & {
 const WS_HEARTBEAT_MS = 30_000;
 // Protocolo con el que se conecta el cliente de HMR de Vite (solo en desarrollo)
 const VITE_HMR_PROTOCOL = 'vite-hmr';
-
-// Miembros y conectados de cada servidor: caché corta para no pedírselos a Discord en cada visita
-const GUILD_COUNTS_TTL_MS = 60_000;
-
-interface GuildCounts {
-  fetchedAt: number;
-  memberCount: number;
-  presenceCount: number;
-}
-
-const guildCountsCache = new Map<string, GuildCounts>();
-const pendingGuildCounts = new Map<string, Promise<GuildCounts>>();
-
-/**
- * Pide los contadores aproximados del servidor con el cliente REST de discord.js
- * (respeta los rate limits y los Retry-After de Discord), como mucho una vez por
- * minuto y por servidor, y con las peticiones simultáneas agrupadas.
- */
-async function getGuildCounts(guild: DiscordGuild): Promise<GuildCounts> {
-  const cached = guildCountsCache.get(guild.id);
-  if (cached && Date.now() - cached.fetchedAt < GUILD_COUNTS_TTL_MS) {
-    return cached;
-  }
-
-  const pending = pendingGuildCounts.get(guild.id);
-  if (pending) return pending;
-
-  const request = (async () => {
-    try {
-      const fresh = await guild.fetch();
-      const counts: GuildCounts = {
-        fetchedAt: Date.now(),
-        memberCount: fresh.approximateMemberCount ?? fresh.memberCount ?? 0,
-        presenceCount: fresh.approximatePresenceCount ?? 0
-      };
-      guildCountsCache.set(guild.id, counts);
-      return counts;
-    } catch (error) {
-      if (cached) {
-        console.warn('[DASH] Discord no respondió; usando los contadores en caché:', (error as Error).message);
-        return cached;
-      }
-      throw error;
-    } finally {
-      pendingGuildCounts.delete(guild.id);
-    }
-  })();
-
-  pendingGuildCounts.set(guild.id, request);
-  return request;
-}
 
 interface RegisterRoutesOptions {
   /** El mismo middleware de express-session que usa la app (para leer la sesión en el WebSocket) */
@@ -150,54 +115,28 @@ const guildSettingsSchema = z.object({
   }).strict().optional()
 }).strict();
 
-const postIntervalSchema = z.number().int().min(1).max(1440);
+const postIntervalSchema = z.number()
+  .int('El intervalo debe ser un número entero de minutos.')
+  .min(1, 'El intervalo va de 1 a 1440 minutos.')
+  .max(1440, 'El intervalo va de 1 a 1440 minutos.');
 
-const contentFeedSchema = z.discriminatedUnion('source', [
-  z.object({
-    source: z.literal('reddit'),
-    channelId: snowflakeSchema,
-    sourceConfig: z.object({
-      subreddit: z.string().regex(/^[A-Za-z0-9_]{2,21}$/, 'El nombre del subreddit no es válido.'),
-      filterNSFW: z.boolean().optional()
-    }).strict(),
-    postInterval: postIntervalSchema
+// Solo Reddit: Twitter/X no tiene acceso real a su API (publicaría contenido de relleno)
+const contentFeedSchema = z.object({
+  source: z.literal('reddit'),
+  channelId: snowflakeSchema,
+  sourceConfig: z.object({
+    subreddit: z.string().regex(/^[A-Za-z0-9_]{2,21}$/, 'El nombre del subreddit no es válido.'),
+    filterNSFW: z.boolean().optional()
   }).strict(),
-  z.object({
-    source: z.literal('twitter'),
-    channelId: snowflakeSchema,
-    sourceConfig: z.object({
-      username: z.string().regex(/^[A-Za-z0-9_]{1,15}$/, 'El usuario de Twitter no es válido.').optional()
-    }).strict(),
-    postInterval: postIntervalSchema
-  }).strict()
-]);
+  postInterval: postIntervalSchema
+}).strict();
 
-const lockdownSchema = z.object({
+const contentFeedUpdateSchema = z.object({
+  channelId: snowflakeSchema,
   enabled: z.boolean(),
-  reason: z.string().trim().max(512, 'El motivo puede tener como máximo 512 caracteres.').optional()
-}).strict();
-
-const customCommandNameSchema = z.string()
-  .min(1, 'El nombre del comando es obligatorio.')
-  .max(32, 'El nombre del comando puede tener como máximo 32 caracteres.')
-  .regex(/^[a-z0-9_-]+$/, 'El nombre solo puede tener minúsculas, números, guiones y guiones bajos.');
-
-const customCommandSchema = z.object({
-  name: customCommandNameSchema,
-  description: z.string().max(100, 'La descripción puede tener como máximo 100 caracteres.').optional(),
-  response: z.string()
-    .min(1, 'La respuesta es obligatoria.')
-    .max(2000, 'La respuesta puede tener como máximo 2000 caracteres.')
-}).strict();
-
-const customCommandUpdateSchema = customCommandSchema.partial().strict()
+  postInterval: postIntervalSchema
+}).partial().strict()
   .refine((data) => Object.keys(data).length > 0, 'No se envió ningún cambio.');
-
-const customCommandToggleSchema = z.object({
-  enabled: z.boolean()
-}).strict();
-
-const COMMAND_ID_REGEX = /^[A-Za-z0-9_-]{1,64}$/;
 
 export async function registerRoutes(app: Express, { sessionParser }: RegisterRoutesOptions): Promise<Server> {
   const httpServer = createServer(app);
@@ -432,7 +371,7 @@ export async function registerRoutes(app: Express, { sessionParser }: RegisterRo
   app.get('/api/user/guilds', requireAuth, async (req: Request, res: Response) => {
     // Modo desarrollo: no hay token de Discord, mostramos los servidores del bot
     if (isDevSession(req.session)) {
-      const guilds = bot.client.isReady()
+      const guilds: UserGuildsResponse = bot.client.isReady()
         ? bot.client.guilds.cache.map((guild) => ({
             id: guild.id,
             name: guild.name,
@@ -449,7 +388,7 @@ export async function registerRoutes(app: Express, { sessionParser }: RegisterRo
       const guilds = await getUserGuilds(req.session);
 
       // Solo servidores donde es dueño o tiene Administrador / Gestionar servidor
-      const adminGuilds = guilds
+      const adminGuilds: UserGuildsResponse = guilds
         .filter(canManageGuild)
         .map((guild) => ({
           id: guild.id,
@@ -477,12 +416,13 @@ export async function registerRoutes(app: Express, { sessionParser }: RegisterRo
       // Solo lectura: si el servidor aún no está en la BD devolvemos los valores por defecto
       const guild = await storage.getGuild(guildId);
 
-      res.json({
+      const config: GuildConfigResponse = {
         prefix: guild?.prefix || '&',
         levelUpMessages: guild?.levelUpMessages ?? true,
         economyEnabled: guild?.economyEnabled ?? true,
         antiRaidEnabled: guild?.antiRaidEnabled ?? false
-      });
+      };
+      res.json(config);
 
     } catch (error) {
       console.error('[GUILD-CONFIG-ERROR]', error);
@@ -514,34 +454,22 @@ export async function registerRoutes(app: Express, { sessionParser }: RegisterRo
       await ensureGuildRow(getBotGuild(res));
       await storage.updateGuild(guildId, updates);
 
+      // El bot guarda en memoria el prefijo (comandos personalizados) y la config anti-raid: que apliquen ya
+      if (updates.prefix !== undefined) invalidateCustomCommandsCache(guildId);
+      if (updates.antiRaidEnabled !== undefined) {
+        invalidateAntiRaidConfig(guildId);
+        // Igual que /antiraid desactivar: apagar la protección también termina el modo raid activo
+        if (!updates.antiRaidEnabled) await liftLockdown(guildId, req.session.user?.id ?? 'manual');
+      }
+
       console.log(`[GUILD-CONFIG-UPDATE] Updated guild config for ${guildId}:`, updates);
-      res.json({ success: true });
+      broadcast(guildId, { type: 'settingsUpdated' });
+      const result: SuccessResponse = { success: true };
+      res.json(result);
 
     } catch (error) {
       console.error('[GUILD-CONFIG-UPDATE-ERROR]', error);
       res.status(500).json({ error: 'No se pudo guardar la configuración del servidor.' });
-    }
-  });
-
-  // Dashboard stats
-  app.get('/api/dashboard/:guildId/stats', ...guildAdminWithBot, async (_req: Request, res: Response) => {
-    try {
-      // Datos reales del servidor (con caché y respetando los rate limits de Discord)
-      const counts = await getGuildCounts(getBotGuild(res));
-
-      const stats = {
-        totalMembers: counts.memberCount,
-        activeUsers: Math.floor(counts.presenceCount * 0.7),
-        commandsUsed: 15200,
-        moderationActions: 47
-      };
-
-      return res.json(stats);
-    } catch (discordError) {
-      console.error('[DASH-ERROR] Failed to fetch Discord data:', discordError);
-      return res.status(503).json({
-        error: 'No se pudieron obtener los datos del servidor desde Discord.'
-      });
     }
   });
 
@@ -550,10 +478,12 @@ export async function registerRoutes(app: Express, { sessionParser }: RegisterRo
     try {
       const guild = await storage.getGuild(req.params.guildId);
       if (!guild) {
-        return res.status(404).json({ error: 'Servidor no encontrado.' });
+        return res.status(404).json({ error: 'Este servidor aún no tiene configuración guardada.' });
       }
-      res.json(guild);
+      const body: GuildRowResponse = asJson(guild);
+      res.json(body);
     } catch (error) {
+      console.error('[GUILD-ERROR]', error);
       res.status(500).json({ error: 'No se pudo obtener el servidor.' });
     }
   });
@@ -568,7 +498,8 @@ export async function registerRoutes(app: Express, { sessionParser }: RegisterRo
       await storage.updateGuildSettings(guildId, settings);
 
       broadcast(guildId, { type: 'settingsUpdated' });
-      res.json({ success: true });
+      const result: SuccessResponse = { success: true };
+      res.json(result);
     } catch (error) {
       console.error('[GUILD-SETTINGS-ERROR]', error);
       res.status(500).json({ error: 'No se pudieron guardar los ajustes.' });
@@ -576,18 +507,6 @@ export async function registerRoutes(app: Express, { sessionParser }: RegisterRo
   });
 
   // Level system
-  app.get('/api/levels/:guildId/top', ...guildAdmin, async (req: Request, res: Response) => {
-    try {
-      const { guildId } = req.params;
-      const limit = parseLimit(req.query.limit, 10, 100);
-
-      const topUsers = await storage.getTopUsersByLevel(guildId, limit);
-      res.json(topUsers);
-    } catch (error) {
-      res.status(500).json({ error: 'No se pudo obtener el ranking de niveles.' });
-    }
-  });
-
   app.get('/api/levels/:guildId/user/:userId', ...guildAdmin, async (req: Request, res: Response) => {
     try {
       const { guildId, userId } = req.params;
@@ -600,8 +519,10 @@ export async function registerRoutes(app: Express, { sessionParser }: RegisterRo
         return res.status(404).json({ error: 'Ese usuario aún no tiene nivel en este servidor.' });
       }
 
-      res.json(userLevel);
+      const body: UserLevelResponse = asJson(userLevel);
+      res.json(body);
     } catch (error) {
+      console.error('[LEVEL-USER-ERROR]', error);
       res.status(500).json({ error: 'No se pudo obtener el nivel del usuario.' });
     }
   });
@@ -619,22 +540,11 @@ export async function registerRoutes(app: Express, { sessionParser }: RegisterRo
         return res.status(404).json({ error: 'Ese usuario aún no tiene economía en este servidor.' });
       }
 
-      res.json(userEconomy);
+      const body: UserEconomyResponse = asJson(userEconomy);
+      res.json(body);
     } catch (error) {
+      console.error('[ECONOMY-USER-ERROR]', error);
       res.status(500).json({ error: 'No se pudo obtener la economía del usuario.' });
-    }
-  });
-
-  // Moderation
-  app.get('/api/moderation/:guildId/actions', ...guildAdmin, async (req: Request, res: Response) => {
-    try {
-      const { guildId } = req.params;
-      const limit = parseLimit(req.query.limit, 50, 200);
-
-      const actions = await storage.getModerationActions(guildId, limit);
-      res.json(actions);
-    } catch (error) {
-      res.status(500).json({ error: 'No se pudieron obtener las acciones de moderación.' });
     }
   });
 
@@ -643,8 +553,10 @@ export async function registerRoutes(app: Express, { sessionParser }: RegisterRo
     try {
       const { guildId } = req.params;
       const feeds = await storage.getContentFeeds(guildId);
-      res.json(feeds);
+      const body: ContentFeedsResponse = asJson(feeds);
+      res.json(body);
     } catch (error) {
+      console.error('[SOCIAL-FEEDS-ERROR]', error);
       res.status(500).json({ error: 'No se pudieron obtener los feeds de contenido.' });
     }
   });
@@ -652,6 +564,9 @@ export async function registerRoutes(app: Express, { sessionParser }: RegisterRo
   app.post('/api/social/:guildId/feeds', ...guildAdminWithBot, async (req: Request, res: Response) => {
     try {
       const { guildId } = req.params;
+      if (req.body?.source === 'twitter') {
+        return res.status(400).json({ error: 'Twitter/X todavía no está disponible: por ahora solo se puede usar Reddit.' });
+      }
       const feedData = parseBody(contentFeedSchema, req, res);
       if (!feedData) return;
 
@@ -668,157 +583,80 @@ export async function registerRoutes(app: Express, { sessionParser }: RegisterRo
       });
 
       broadcast(guildId, { type: 'feedCreated' });
-      res.json(feed);
+      const body: ContentFeedResponse = asJson(feed);
+      res.status(201).json(body);
     } catch (error) {
+      if (error instanceof ContentFeedLimitError) {
+        return res.status(409).json({ error: error.message });
+      }
       console.error('[SOCIAL-FEED-ERROR]', error);
       res.status(500).json({ error: 'No se pudo crear el feed de contenido.' });
     }
   });
 
-  // Protection routes
-  app.get('/api/protection/:guildId/settings', ...guildAdmin, async (req: Request, res: Response) => {
+  app.patch('/api/social/:guildId/feeds/:feedId', ...guildAdminWithBot, async (req: Request, res: Response) => {
     try {
-      const settings = {
-        lockdownEnabled: false,
-        lockdownReason: '',
-        autoRoles: [
-          { id: '1', name: 'Member', roleId: '987654321', enabled: true },
-          { id: '2', name: 'Verified', roleId: '876543210', enabled: false }
-        ],
-        reactionRoles: [
-          {
-            id: '1',
-            messageId: '123456789',
-            channelId: '456789123',
-            title: 'Choose your roles!',
-            description: 'React to get roles',
-            reactions: [
-              { emoji: '🎮', roleId: '111111111', roleName: 'Gamer' },
-              { emoji: '🎵', roleId: '222222222', roleName: 'Music Lover' }
-            ]
-          }
-        ],
-        nsfwChannels: ['654321987'],
-        massRoleHistory: []
-      };
-
-      res.json(settings);
-    } catch (error) {
-      res.status(500).json({ error: 'No se pudieron obtener los ajustes de protección.' });
-    }
-  });
-
-  app.post('/api/protection/:guildId/lockdown', ...guildAdminWithBot, async (req: Request, res: Response) => {
-    try {
-      const { guildId } = req.params;
-      const body = parseBody(lockdownSchema, req, res);
+      const { guildId, feedId } = req.params;
+      if (!isRowId(feedId)) {
+        return res.status(400).json({ error: 'El ID del feed no es válido.' });
+      }
+      const body = parseBody(contentFeedUpdateSchema, req, res);
       if (!body) return;
 
-      broadcast(guildId, {
-        type: 'lockdown_update',
-        enabled: body.enabled,
-        reason: body.reason ?? '',
-        timestamp: new Date().toISOString()
-      });
+      if (body.channelId && !findGuildTextChannel(getBotGuild(res), body.channelId)) {
+        return res.status(400).json({ error: 'Ese canal no existe en este servidor o no es un canal de texto.' });
+      }
 
-      res.json({ success: true, enabled: body.enabled, reason: body.reason ?? '' });
+      const updates: ContentFeedUpdate = {};
+      if (body.channelId !== undefined) updates.channelId = body.channelId;
+      if (body.enabled !== undefined) updates.enabled = body.enabled;
+      if (body.postInterval !== undefined) updates.postInterval = body.postInterval;
+
+      const feed = await storage.updateContentFeed(feedId, guildId, updates);
+      if (!feed) {
+        return res.status(404).json({ error: 'Ese feed no existe en este servidor.' });
+      }
+
+      broadcast(guildId, { type: 'feedsUpdated' });
+      const result: ContentFeedResponse = asJson(feed);
+      res.json(result);
     } catch (error) {
-      res.status(500).json({ error: 'No se pudo actualizar el bloqueo.' });
+      console.error('[SOCIAL-FEED-UPDATE-ERROR]', error);
+      res.status(500).json({ error: 'No se pudo actualizar el feed de contenido.' });
     }
   });
 
-  // Custom Commands API
-  const requireValidCommandId = (req: Request, res: Response, next: NextFunction) => {
-    if (!COMMAND_ID_REGEX.test(req.params.commandId || '')) {
-      return res.status(400).json({ error: 'El ID del comando no es válido.' });
-    }
-    next();
-  };
-
-  app.get('/api/custom-commands/:guildId', ...guildAdmin, async (req: Request, res: Response) => {
+  app.delete('/api/social/:guildId/feeds/:feedId', ...guildAdmin, async (req: Request, res: Response) => {
     try {
-      // Mock data for now - replace with actual database query
-      const commands = [
-        {
-          id: "cmd1",
-          name: "hello",
-          description: "Say hello to users",
-          response: "Hello {user}! Welcome to our server!",
-          enabled: true,
-          uses: 42,
-          createdAt: new Date().toISOString()
-        },
-        {
-          id: "cmd2",
-          name: "rules",
-          description: "Display server rules",
-          response: "Please read our rules in #rules-channel",
-          enabled: true,
-          uses: 18,
-          createdAt: new Date().toISOString()
-        }
-      ];
+      const { guildId, feedId } = req.params;
+      if (!isRowId(feedId)) {
+        return res.status(400).json({ error: 'El ID del feed no es válido.' });
+      }
 
-      res.json(commands);
+      const deleted = await storage.deleteContentFeed(feedId, guildId);
+      if (!deleted) {
+        return res.status(404).json({ error: 'Ese feed no existe en este servidor.' });
+      }
+
+      broadcast(guildId, { type: 'feedsUpdated' });
+      const result: SuccessResponse = { success: true };
+      res.json(result);
     } catch (error) {
-      res.status(500).json({ error: 'No se pudieron obtener los comandos personalizados.' });
+      console.error('[SOCIAL-FEED-DELETE-ERROR]', error);
+      res.status(500).json({ error: 'No se pudo eliminar el feed de contenido.' });
     }
   });
 
-  app.post('/api/custom-commands/:guildId', ...guildAdmin, async (req: Request, res: Response) => {
-    try {
-      const body = parseBody(customCommandSchema, req, res);
-      if (!body) return;
-
-      // Mock creating command - replace with actual database insert
-      const newCommand = {
-        id: `cmd_${Date.now()}`,
-        name: body.name,
-        description: body.description || null,
-        response: body.response,
-        enabled: true,
-        uses: 0,
-        createdAt: new Date().toISOString()
-      };
-
-      res.json(newCommand);
-    } catch (error) {
-      res.status(500).json({ error: 'No se pudo crear el comando personalizado.' });
-    }
-  });
-
-  app.patch('/api/custom-commands/:guildId/:commandId', ...guildAdmin, requireValidCommandId, async (req: Request, res: Response) => {
-    try {
-      const body = parseBody(customCommandUpdateSchema, req, res);
-      if (!body) return;
-
-      // Mock updating command - replace with actual database update
-      res.json({ success: true });
-    } catch (error) {
-      res.status(500).json({ error: 'No se pudo actualizar el comando personalizado.' });
-    }
-  });
-
-  app.patch('/api/custom-commands/:guildId/:commandId/toggle', ...guildAdmin, requireValidCommandId, async (req: Request, res: Response) => {
-    try {
-      const body = parseBody(customCommandToggleSchema, req, res);
-      if (!body) return;
-
-      // Mock toggling command status - replace with actual database update
-      res.json({ success: true, enabled: body.enabled });
-    } catch (error) {
-      res.status(500).json({ error: 'No se pudo cambiar el estado del comando.' });
-    }
-  });
-
-  app.delete('/api/custom-commands/:guildId/:commandId', ...guildAdmin, requireValidCommandId, async (req: Request, res: Response) => {
-    try {
-      // Mock deleting command - replace with actual database deletion
-      res.json({ success: true });
-    } catch (error) {
-      res.status(500).json({ error: 'No se pudo eliminar el comando personalizado.' });
-    }
-  });
+  // Resumen, rankings y analíticas
+  setupDashboardRoutes(app);
+  // Bienvenida, pregunta del día y roles de Discord
+  setupEngagementRoutes(app, { broadcast });
+  // Anti-raid e historial de raids
+  setupSecurityRoutes(app, { broadcast });
+  // Historial de moderación
+  setupModerationRoutes(app);
+  // Comandos personalizados
+  setupCustomCommandRoutes(app, { broadcast });
 
   // Cualquier otra ruta /api: 404 en JSON (en vez de caer en el index.html del panel)
   app.use('/api', (_req: Request, res: Response) => {

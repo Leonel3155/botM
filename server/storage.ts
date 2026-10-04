@@ -1,15 +1,18 @@
 import type { GuildEngagementSettings } from '@shared/schema';
+import { CUSTOM_COMMAND_LIMITS } from '@shared/api';
 import { db } from './db';
-import { 
+import {
   users, guilds, userLevels, userEconomy, economyTransactions,
-  moderationActions, raidEvents, contentFeeds, postedContent,
+  moderationActions, raidEvents, contentFeeds, postedContent, customCommands,
   antiRaidConfigSchema, defaultAntiRaidConfig,
   type User, type Guild, type UserLevel, type UserEconomy,
   type InsertUser, type InsertGuild, type InsertUserLevel, type InsertUserEconomy,
   type ModerationAction, type InsertModerationAction, type RaidEvent, type InsertRaidEvent,
-  type ContentFeed, type InsertContentFeed, type AntiRaidConfig, type AntiRaidSettings
+  type ContentFeed, type InsertContentFeed, type AntiRaidConfig, type AntiRaidSettings,
+  type CustomCommand, type InsertCustomCommand
 } from '@shared/schema';
-import { eq, and, desc, sql, gte } from 'drizzle-orm';
+import { eq, and, desc, sql, gte, ne, type SQL } from 'drizzle-orm';
+import { alias, type PgColumn } from 'drizzle-orm/pg-core';
 
 // Datos mínimos para registrar una acción de moderación (encaja con User/Guild de discord.js)
 export interface ModerationLogEntry {
@@ -31,6 +34,91 @@ export class ContentFeedLimitError extends Error {
     super(`Este servidor ya tiene el máximo de ${limit} feeds de contenido. Borra alguno antes de crear otro.`);
     this.name = 'ContentFeedLimitError';
   }
+}
+
+export const MAX_CUSTOM_COMMANDS_PER_GUILD = CUSTOM_COMMAND_LIMITS.maxPerGuild;
+
+export class CustomCommandLimitError extends Error {
+  constructor(public readonly limit: number) {
+    super(`Este servidor ya tiene el máximo de ${limit} comandos personalizados. Borra alguno antes de crear otro.`);
+    this.name = 'CustomCommandLimitError';
+  }
+}
+
+export class CustomCommandNameTakenError extends Error {
+  constructor(public readonly commandName: string) {
+    super(`Ya existe un comando llamado "${commandName}" en este servidor.`);
+    this.name = 'CustomCommandNameTakenError';
+  }
+}
+
+export type CustomCommandUpdate = Partial<Pick<CustomCommand, 'name' | 'description' | 'response' | 'enabled'>>;
+
+/** Lo mínimo que necesita el bot para responder un comando personalizado. */
+export interface EnabledCustomCommand {
+  id: string;
+  name: string;
+  response: string;
+}
+
+/**
+ * Posición para paginar listas ordenadas por fecha (de la más nueva a la más vieja).
+ * `createdAt` va truncada a milisegundos (lo que guarda un Date de JS) y `id` desempata.
+ */
+export interface PageCursor {
+  createdAt: Date;
+  id: string;
+}
+
+export interface ModerationActionFilters {
+  type?: string;
+  userId?: string;
+  before?: PageCursor;
+  limit?: number;
+}
+
+/** Acción de moderación con los nombres de la persona sancionada y de quien sancionó. */
+export interface ModerationActionWithUsers {
+  action: ModerationAction;
+  user: { id: string; username: string | null; avatar: string | null };
+  moderator: { id: string; username: string | null; avatar: string | null };
+}
+
+export interface RaidEventFilters {
+  status?: 'all' | 'open' | 'resolved';
+  before?: PageCursor;
+  limit?: number;
+}
+
+export interface LevelLeaderboardRow {
+  userId: string;
+  username: string | null;
+  avatar: string | null;
+  level: number;
+  xp: number;
+  totalXp: number;
+}
+
+export interface WealthLeaderboardRow {
+  userId: string;
+  username: string | null;
+  avatar: string | null;
+  wallet: number;
+  bank: number;
+  total: number;
+}
+
+/** Contadores del resumen del panel (todo de la base de datos). */
+export interface GuildDashboardCounts {
+  usersWithLevels: number;
+  usersWithEconomy: number;
+  coinsInCirculation: number;
+  moderationActions7d: number;
+  moderationActions30d: number;
+  warnings30d: number;
+  warningsTotal: number;
+  raidEvents30d: number;
+  customCommands: number;
 }
 
 export interface IStorage {
@@ -88,6 +176,27 @@ export interface IStorage {
   updateRaidEventDetails(id: string, extraDetails: Record<string, unknown>): Promise<RaidEvent | undefined>;
   getAntiRaidConfig(guildId: string): Promise<AntiRaidSettings>;
   setAntiRaidConfig(guildId: string, updates: Partial<AntiRaidSettings>): Promise<AntiRaidSettings>;
+
+  getRaidEvent(guildId: string, id: string): Promise<RaidEvent | undefined>;
+  queryRaidEvents(guildId: string, filters?: RaidEventFilters): Promise<RaidEvent[]>;
+
+  // Panel: listas con nombres de usuario, contadores y analíticas
+  queryModerationActions(guildId: string, filters?: ModerationActionFilters): Promise<ModerationActionWithUsers[]>;
+  getLevelLeaderboard(guildId: string, limit?: number): Promise<LevelLeaderboardRow[]>;
+  getWealthLeaderboard(guildId: string, limit?: number): Promise<WealthLeaderboardRow[]>;
+  getGuildDashboardCounts(guildId: string): Promise<GuildDashboardCounts>;
+  getLevelCounts(guildId: string): Promise<{ level: number; users: number }[]>;
+  getModerationActivitySince(guildId: string, since: Date): Promise<{ type: string; createdAt: Date | null }[]>;
+
+  // Custom commands
+  getCustomCommands(guildId: string): Promise<CustomCommand[]>;
+  getCustomCommand(guildId: string, id: string): Promise<CustomCommand | undefined>;
+  getEnabledCustomCommands(guildId: string): Promise<EnabledCustomCommand[]>;
+  createCustomCommand(data: InsertCustomCommand): Promise<CustomCommand>;
+  updateCustomCommand(guildId: string, id: string, updates: CustomCommandUpdate): Promise<CustomCommand | undefined>;
+  setCustomCommandEnabled(guildId: string, id: string, enabled: boolean): Promise<CustomCommand | undefined>;
+  deleteCustomCommand(guildId: string, id: string): Promise<boolean>;
+  incrementCustomCommandUses(id: string): Promise<void>;
 
   // Content feed methods
   updateContentFeed(id: string, guildId: string, updates: ContentFeedUpdate): Promise<ContentFeed | undefined>;
@@ -583,6 +692,286 @@ export class DatabaseStorage implements IStorage {
     return { ...merged, enabled: enabled ?? current.enabled };
   }
 
+  // Un evento de ESE servidor (nunca de otro, aunque se conozca su ID)
+  async getRaidEvent(guildId: string, id: string): Promise<RaidEvent | undefined> {
+    const [event] = await db
+      .select()
+      .from(raidEvents)
+      .where(and(eq(raidEvents.guildId, guildId), eq(raidEvents.id, id)));
+    return event || undefined;
+  }
+
+  // Eventos del más nuevo al más viejo, por páginas (before = el último de la página anterior)
+  async queryRaidEvents(guildId: string, filters: RaidEventFilters = {}): Promise<RaidEvent[]> {
+    const conditions: SQL[] = [eq(raidEvents.guildId, guildId)];
+    if (filters.status === 'open') conditions.push(eq(raidEvents.resolved, false));
+    if (filters.status === 'resolved') conditions.push(eq(raidEvents.resolved, true));
+    if (filters.before) conditions.push(beforeCursor(raidEvents.createdAt, raidEvents.id, filters.before));
+
+    return await db
+      .select()
+      .from(raidEvents)
+      .where(and(...conditions))
+      .orderBy(...newestFirst(raidEvents.createdAt, raidEvents.id))
+      .limit(clampLimit(filters.limit ?? 50, 50));
+  }
+
+  // ===== PANEL: LISTAS, CONTADORES Y ANALÍTICAS =====
+  async queryModerationActions(guildId: string, filters: ModerationActionFilters = {}): Promise<ModerationActionWithUsers[]> {
+    const target = alias(users, 'target_user');
+    const moderator = alias(users, 'moderator_user');
+
+    const conditions: SQL[] = [eq(moderationActions.guildId, guildId)];
+    if (filters.type) conditions.push(eq(moderationActions.type, filters.type));
+    if (filters.userId) conditions.push(eq(moderationActions.userId, filters.userId));
+    if (filters.before) conditions.push(beforeCursor(moderationActions.createdAt, moderationActions.id, filters.before));
+
+    const rows = await db
+      .select({
+        action: moderationActions,
+        targetUsername: target.username,
+        targetAvatar: target.avatar,
+        moderatorUsername: moderator.username,
+        moderatorAvatar: moderator.avatar,
+      })
+      .from(moderationActions)
+      .leftJoin(target, eq(target.id, moderationActions.userId))
+      .leftJoin(moderator, eq(moderator.id, moderationActions.moderatorId))
+      .where(and(...conditions))
+      .orderBy(...newestFirst(moderationActions.createdAt, moderationActions.id))
+      .limit(clampLimit(filters.limit ?? 50, 50));
+
+    return rows.map((row) => ({
+      action: row.action,
+      user: { id: row.action.userId, username: row.targetUsername ?? null, avatar: row.targetAvatar ?? null },
+      moderator: { id: row.action.moderatorId, username: row.moderatorUsername ?? null, avatar: row.moderatorAvatar ?? null },
+    }));
+  }
+
+  async getLevelLeaderboard(guildId: string, limit: number = 10): Promise<LevelLeaderboardRow[]> {
+    const rows = await db
+      .select({
+        userId: userLevels.userId,
+        username: users.username,
+        avatar: users.avatar,
+        level: userLevels.level,
+        xp: userLevels.xp,
+        totalXp: userLevels.totalXp,
+      })
+      .from(userLevels)
+      .leftJoin(users, eq(users.id, userLevels.userId))
+      .where(eq(userLevels.guildId, guildId))
+      .orderBy(desc(userLevels.level), desc(userLevels.xp), userLevels.userId)
+      .limit(clampLimit(limit, 10));
+
+    return rows.map((row) => ({
+      userId: row.userId,
+      username: row.username ?? null,
+      avatar: row.avatar ?? null,
+      level: row.level ?? 1,
+      xp: row.xp ?? 0,
+      totalXp: row.totalXp ?? 0,
+    }));
+  }
+
+  // Cartera + banco (lo que de verdad tiene cada quien ahora mismo)
+  async getWealthLeaderboard(guildId: string, limit: number = 10): Promise<WealthLeaderboardRow[]> {
+    const total = sql<string>`(coalesce(${userEconomy.balance}, 0) + coalesce(${userEconomy.bank}, 0))`;
+    const rows = await db
+      .select({
+        userId: userEconomy.userId,
+        username: users.username,
+        avatar: users.avatar,
+        wallet: userEconomy.balance,
+        bank: userEconomy.bank,
+        total,
+      })
+      .from(userEconomy)
+      .leftJoin(users, eq(users.id, userEconomy.userId))
+      .where(eq(userEconomy.guildId, guildId))
+      .orderBy(desc(total), userEconomy.userId)
+      .limit(clampLimit(limit, 10));
+
+    return rows.map((row) => ({
+      userId: row.userId,
+      username: row.username ?? null,
+      avatar: row.avatar ?? null,
+      wallet: toNumber(row.wallet),
+      bank: toNumber(row.bank),
+      total: toNumber(row.total),
+    }));
+  }
+
+  async getGuildDashboardCounts(guildId: string): Promise<GuildDashboardCounts> {
+    const now = Date.now();
+    const since7d = new Date(now - 7 * DAY_MS).toISOString();
+    const since30d = new Date(now - 30 * DAY_MS);
+    const since30dIso = since30d.toISOString();
+    const count = sql<number>`count(*)::int`;
+
+    const [levelRows, economyRows, moderationRows, raidRows, commandRows] = await Promise.all([
+      db.select({ total: count }).from(userLevels).where(eq(userLevels.guildId, guildId)),
+      db
+        .select({
+          users: count,
+          coins: sql<string>`coalesce(sum(coalesce(${userEconomy.balance}, 0) + coalesce(${userEconomy.bank}, 0)), 0)`,
+        })
+        .from(userEconomy)
+        .where(eq(userEconomy.guildId, guildId)),
+      db
+        .select({
+          last7d: sql<number>`(count(*) filter (where ${moderationActions.createdAt} >= ${since7d}::timestamp))::int`,
+          last30d: sql<number>`(count(*) filter (where ${moderationActions.createdAt} >= ${since30dIso}::timestamp))::int`,
+          warnings30d: sql<number>`(count(*) filter (where ${moderationActions.type} = 'warn' and ${moderationActions.createdAt} >= ${since30dIso}::timestamp))::int`,
+          warningsTotal: sql<number>`(count(*) filter (where ${moderationActions.type} = 'warn'))::int`,
+        })
+        .from(moderationActions)
+        .where(eq(moderationActions.guildId, guildId)),
+      db
+        .select({ total: count })
+        .from(raidEvents)
+        .where(and(eq(raidEvents.guildId, guildId), gte(raidEvents.createdAt, since30d))),
+      db.select({ total: count }).from(customCommands).where(eq(customCommands.guildId, guildId)),
+    ]);
+
+    return {
+      usersWithLevels: levelRows[0]?.total ?? 0,
+      usersWithEconomy: economyRows[0]?.users ?? 0,
+      coinsInCirculation: toNumber(economyRows[0]?.coins),
+      moderationActions7d: moderationRows[0]?.last7d ?? 0,
+      moderationActions30d: moderationRows[0]?.last30d ?? 0,
+      warnings30d: moderationRows[0]?.warnings30d ?? 0,
+      warningsTotal: moderationRows[0]?.warningsTotal ?? 0,
+      raidEvents30d: raidRows[0]?.total ?? 0,
+      customCommands: commandRows[0]?.total ?? 0,
+    };
+  }
+
+  // Cuántas personas hay en cada nivel (para la distribución de niveles)
+  async getLevelCounts(guildId: string): Promise<{ level: number; users: number }[]> {
+    const level = sql<number>`coalesce(${userLevels.level}, 1)`;
+    return await db
+      .select({ level, users: sql<number>`count(*)::int` })
+      .from(userLevels)
+      .where(eq(userLevels.guildId, guildId))
+      .groupBy(level)
+      .orderBy(level);
+  }
+
+  // Tipo y fecha de las acciones desde `since` (para agruparlas por día en la zona del servidor)
+  async getModerationActivitySince(guildId: string, since: Date): Promise<{ type: string; createdAt: Date | null }[]> {
+    return await db
+      .select({ type: moderationActions.type, createdAt: moderationActions.createdAt })
+      .from(moderationActions)
+      .where(and(eq(moderationActions.guildId, guildId), gte(moderationActions.createdAt, since)))
+      .orderBy(desc(moderationActions.createdAt))
+      .limit(MAX_ANALYTICS_ROWS);
+  }
+
+  // ===== CUSTOM COMMANDS =====
+  async getCustomCommands(guildId: string): Promise<CustomCommand[]> {
+    return await db
+      .select()
+      .from(customCommands)
+      .where(eq(customCommands.guildId, guildId))
+      .orderBy(customCommands.name);
+  }
+
+  async getCustomCommand(guildId: string, id: string): Promise<CustomCommand | undefined> {
+    const [command] = await db
+      .select()
+      .from(customCommands)
+      .where(and(eq(customCommands.guildId, guildId), eq(customCommands.id, id)));
+    return command || undefined;
+  }
+
+  async getEnabledCustomCommands(guildId: string): Promise<EnabledCustomCommand[]> {
+    return await db
+      .select({ id: customCommands.id, name: customCommands.name, response: customCommands.response })
+      .from(customCommands)
+      .where(and(eq(customCommands.guildId, guildId), eq(customCommands.enabled, true)))
+      .limit(MAX_CUSTOM_COMMANDS_PER_GUILD * 2);
+  }
+
+  // Máximo 50 por servidor y un nombre por servidor (comprobado aquí y con la restricción única de la tabla)
+  async createCustomCommand(data: InsertCustomCommand): Promise<CustomCommand> {
+    try {
+      return await db.transaction(async (tx) => {
+        // Serializa los cambios del mismo servidor para que varias peticiones a la vez no se salten las reglas
+        await tx.execute(sql`select pg_advisory_xact_lock(hashtext(${`custom_commands:${data.guildId}`}))`);
+
+        const [{ total }] = await tx
+          .select({ total: sql<number>`count(*)::int` })
+          .from(customCommands)
+          .where(eq(customCommands.guildId, data.guildId));
+        if (total >= MAX_CUSTOM_COMMANDS_PER_GUILD) throw new CustomCommandLimitError(MAX_CUSTOM_COMMANDS_PER_GUILD);
+
+        const [existing] = await tx
+          .select({ id: customCommands.id })
+          .from(customCommands)
+          .where(and(eq(customCommands.guildId, data.guildId), eq(customCommands.name, data.name)));
+        if (existing) throw new CustomCommandNameTakenError(data.name);
+
+        const [command] = await tx.insert(customCommands).values(data).returning();
+        return command;
+      });
+    } catch (error) {
+      throw mapUniqueViolation(error, data.name);
+    }
+  }
+
+  async updateCustomCommand(guildId: string, id: string, updates: CustomCommandUpdate): Promise<CustomCommand | undefined> {
+    if (Object.keys(updates).length === 0) {
+      return this.getCustomCommand(guildId, id);
+    }
+
+    try {
+      return await db.transaction(async (tx) => {
+        if (updates.name !== undefined) {
+          await tx.execute(sql`select pg_advisory_xact_lock(hashtext(${`custom_commands:${guildId}`}))`);
+          const [clash] = await tx
+            .select({ id: customCommands.id })
+            .from(customCommands)
+            .where(and(eq(customCommands.guildId, guildId), eq(customCommands.name, updates.name), ne(customCommands.id, id)));
+          if (clash) throw new CustomCommandNameTakenError(updates.name);
+        }
+
+        const [command] = await tx
+          .update(customCommands)
+          .set(updates)
+          .where(and(eq(customCommands.guildId, guildId), eq(customCommands.id, id)))
+          .returning();
+        return command || undefined;
+      });
+    } catch (error) {
+      throw mapUniqueViolation(error, updates.name ?? '');
+    }
+  }
+
+  async setCustomCommandEnabled(guildId: string, id: string, enabled: boolean): Promise<CustomCommand | undefined> {
+    const [command] = await db
+      .update(customCommands)
+      .set({ enabled })
+      .where(and(eq(customCommands.guildId, guildId), eq(customCommands.id, id)))
+      .returning();
+    return command || undefined;
+  }
+
+  async deleteCustomCommand(guildId: string, id: string): Promise<boolean> {
+    const deleted = await db
+      .delete(customCommands)
+      .where(and(eq(customCommands.guildId, guildId), eq(customCommands.id, id)))
+      .returning({ id: customCommands.id });
+    return deleted.length > 0;
+  }
+
+  async incrementCustomCommandUses(id: string): Promise<void> {
+    await db
+      .update(customCommands)
+      .set({ uses: sql`coalesce(${customCommands.uses}, 0) + 1` })
+      .where(eq(customCommands.id, id));
+  }
+
   // ===== CONTENT FEED METHODS =====
   async getContentFeeds(guildId: string): Promise<ContentFeed[]> {
     return await db
@@ -646,6 +1035,41 @@ export class DatabaseStorage implements IStorage {
   }
 }
 
+
+const DAY_MS = 24 * 60 * 60 * 1000;
+// Tope de filas para las analíticas (de sobra para 30 días de moderación de un servidor)
+const MAX_ANALYTICS_ROWS = 20_000;
+
+// numeric de Postgres llega como texto: lo pasamos a número (0 si no es válido)
+function toNumber(value: string | number | null | undefined): number {
+  const parsed = typeof value === 'number' ? value : Number.parseFloat(value ?? '0');
+  return Number.isFinite(parsed) ? parsed : 0;
+}
+
+// Fecha de creación truncada a milisegundos (Postgres guarda microsegundos; un Date de JS solo milisegundos)
+function createdAtKey(createdAt: PgColumn) {
+  return sql`date_trunc('milliseconds', ${createdAt})`;
+}
+
+// Orden estable de lo más nuevo a lo más viejo (el id desempata)
+function newestFirst(createdAt: PgColumn, id: PgColumn): SQL[] {
+  return [desc(createdAtKey(createdAt)), desc(id)];
+}
+
+// Filas que van después del cursor en ese orden. La fecha va como texto ISO (UTC), igual que la guarda drizzle.
+function beforeCursor(createdAt: PgColumn, id: PgColumn, cursor: PageCursor): SQL {
+  const key = createdAtKey(createdAt);
+  const at = cursor.createdAt.toISOString();
+  return sql`(${key} < ${at}::timestamp or (${key} = ${at}::timestamp and ${id} < ${cursor.id}))`;
+}
+
+// La restricción única de custom_commands (dos altas a la vez con el mismo nombre) como error claro
+function mapUniqueViolation(error: unknown, commandName: string): unknown {
+  if (error && typeof error === 'object' && (error as { code?: unknown }).code === '23505') {
+    return new CustomCommandNameTakenError(commandName);
+  }
+  return error;
+}
 
 // Limita el tamaño de las consultas (evita ?limit=999999 o valores negativos)
 function clampLimit(limit: number, fallback: number): number {

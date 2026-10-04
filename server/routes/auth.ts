@@ -1,5 +1,6 @@
 import type { Express, Request, Response } from "express";
 import { createHmac, randomBytes, timingSafeEqual } from "crypto";
+import type { AuthStatusResponse, SuccessResponse } from "@shared/api";
 import {
   SESSION_COOKIE_NAME,
   clearSessionAuth,
@@ -256,23 +257,25 @@ export function setupAuthRoutes(app: Express) {
       if (session?.authenticated) {
         clearSessionAuth(session);
       }
-      return res.json({
+      const body: AuthStatusResponse = {
         authenticated: false,
         user: null,
         sessionExtended: false,
         expiresIn: 0
-      });
+      };
+      return res.json(body);
     }
 
     // rolling: true renueva la cookie en cada respuesta
     const maxAgeMs = session.cookie.originalMaxAge ?? 0;
-    res.json({
+    const body: AuthStatusResponse = {
       authenticated: true,
-      user: session.user,
+      user: session.user ?? null,
       sessionExtended: true,
       expiresIn: Math.floor(maxAgeMs / 1000),
       ...(session.devBypass ? { devMode: true } : {})
-    });
+    };
+    res.json(body);
   };
 
   app.get('/api/auth/status', authStatus);
@@ -292,7 +295,8 @@ export function setupAuthRoutes(app: Express) {
         sameSite: 'lax',
         secure: isProduction
       });
-      res.json({ success: true });
+      const body: SuccessResponse = { success: true };
+      res.json(body);
     });
   });
 }

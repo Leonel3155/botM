@@ -1,5 +1,5 @@
 import { sql, relations } from "drizzle-orm";
-import { pgTable, text, varchar, integer, timestamp, boolean, jsonb, decimal } from "drizzle-orm/pg-core";
+import { pgTable, text, varchar, integer, timestamp, boolean, jsonb, decimal, unique } from "drizzle-orm/pg-core";
 import { createInsertSchema } from "drizzle-zod";
 import { z } from "zod";
 
@@ -23,6 +23,8 @@ export const guilds = pgTable("guilds", {
   economyEnabled: boolean("economy_enabled").default(true),
   antiRaidEnabled: boolean("anti_raid_enabled").default(false),
   // Channel configurations
+  // Sin uso: la música se quitó. La columna se deja para que `npm run db:push` no pida confirmar
+  // un borrado de datos; se puede eliminar más adelante.
   musicChannelId: varchar("music_channel_id"),
   contentChannelId: varchar("content_channel_id"), 
   moderationChannelId: varchar("moderation_channel_id"),
@@ -248,17 +250,21 @@ export const postedContent = pgTable("posted_content", {
   postedAt: timestamp("posted_at").default(sql`now()`),
 });
 
-// Custom commands
+// Comandos personalizados: el bot responde a "<prefijo><name>" con `response` (máx. 50 por servidor)
 export const customCommands = pgTable("custom_commands", {
   id: varchar("id").primaryKey().default(sql`gen_random_uuid()`),
   guildId: varchar("guild_id").notNull().references(() => guilds.id),
-  name: text("name").notNull(),
-  response: text("response").notNull(),
+  name: text("name").notNull(), // minúsculas, números, "-" y "_" (1-32)
+  description: text("description"), // nota para el panel (opcional)
+  response: text("response").notNull(), // máx. 2000 caracteres, con {usuario} {servidor} {canal}...
   enabled: boolean("enabled").default(true),
   uses: integer("uses").default(0),
   createdBy: varchar("created_by").notNull().references(() => users.id),
   createdAt: timestamp("created_at").default(sql`now()`),
-});
+}, (table) => [
+  // Un nombre por servidor
+  unique("custom_commands_guild_name_unique").on(table.guildId, table.name),
+]);
 
 // Relations
 export const usersRelations = relations(users, ({ many }) => ({
