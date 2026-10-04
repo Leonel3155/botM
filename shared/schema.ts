@@ -30,9 +30,38 @@ export const guilds = pgTable("guilds", {
   // Social media settings
   redditEnabled: boolean("reddit_enabled").default(false),
   twitterEnabled: boolean("twitter_enabled").default(false),
+  // Bienvenida (el canal es welcomeChannelId, arriba). welcomeMessage null = mensaje predeterminado
+  welcomeEnabled: boolean("welcome_enabled").default(false),
+  welcomeMessage: text("welcome_message"),
+  welcomeRoleId: varchar("welcome_role_id"),
+  // Pregunta del día
+  dailyQuestionEnabled: boolean("daily_question_enabled").default(false),
+  dailyQuestionChannelId: varchar("daily_question_channel_id"),
+  dailyQuestionHour: integer("daily_question_hour").default(18), // 0-23, hora local del servidor
+  dailyQuestionThread: boolean("daily_question_thread").default(true), // abrir un hilo para las respuestas
+  dailyQuestionIndex: integer("daily_question_index").default(0), // preguntas publicadas hasta ahora
+  dailyQuestionLastPosted: varchar("daily_question_last_posted", { length: 10 }), // YYYY-MM-DD en la zona del servidor
+  // Zona horaria IANA del servidor (pregunta del día y eventos)
+  timezone: text("timezone").default("America/Mexico_City"),
   settings: jsonb("settings").default({}),
   createdAt: timestamp("created_at").default(sql`now()`),
 });
+
+// Ajustes de bienvenida, pregunta del día y zona horaria que se pueden cambiar desde el bot
+export type GuildEngagementSettings = Pick<
+  typeof guilds.$inferSelect,
+  | "welcomeEnabled"
+  | "welcomeChannelId"
+  | "welcomeMessage"
+  | "welcomeRoleId"
+  | "dailyQuestionEnabled"
+  | "dailyQuestionChannelId"
+  | "dailyQuestionHour"
+  | "dailyQuestionThread"
+  | "dailyQuestionIndex"
+  | "dailyQuestionLastPosted"
+  | "timezone"
+>;
 
 // User levels per guild
 export const userLevels = pgTable("user_levels", {

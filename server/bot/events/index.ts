@@ -1,6 +1,7 @@
 import { DiscordBot } from '../index';
-import { Events, GuildMember, Message } from 'discord.js';
+import { Events, GuildMember, Message, PartialGuildMember } from 'discord.js';
 import { storage } from '../../storage';
+import { handleMemberPassedScreening, handleMemberWelcome } from '../services/welcome';
 
 // Tiempo mínimo entre mensajes que dan XP/monedas (evita farmear con spam)
 const XP_COOLDOWN_MS = 60_000;
@@ -79,7 +80,7 @@ export function setupEvents(bot: DiscordBot) {
     }
   });
 
-  // Nuevo miembro: registrarlo (upsert, así no falla si vuelve a entrar)
+  // Nuevo miembro: registrarlo (upsert, así no falla si vuelve a entrar) y darle la bienvenida
   bot.client.on(Events.GuildMemberAdd, async (member: GuildMember) => {
     try {
       await storage.ensureGuild(member.guild.id, member.guild.name, member.guild.ownerId);
@@ -90,6 +91,22 @@ export function setupEvents(bot: DiscordBot) {
       });
     } catch (error) {
       console.error('GuildMemberAdd error:', error);
+    }
+
+    try {
+      await handleMemberWelcome(member);
+    } catch (error) {
+      console.error('Welcome error:', error);
+    }
+  });
+
+  // Si el servidor pide aceptar las reglas, el rol automático se da al aceptarlas
+  bot.client.on(Events.GuildMemberUpdate, async (oldMember: GuildMember | PartialGuildMember, newMember: GuildMember) => {
+    if (!oldMember.pending || newMember.pending) return;
+    try {
+      await handleMemberPassedScreening(newMember);
+    } catch (error) {
+      console.error('Welcome role error:', error);
     }
   });
 }

@@ -1,3 +1,4 @@
+import type { GuildEngagementSettings } from '@shared/schema';
 import { db } from './db';
 import { 
   users, guilds, userLevels, userEconomy, economyTransactions, musicQueue,
@@ -18,6 +19,11 @@ export interface IStorage {
   getGuild(guildId: string): Promise<Guild | undefined>;
   createGuild(insertGuild: InsertGuild): Promise<Guild>;
   updateGuild(guildId: string, updates: Partial<Guild>): Promise<void>;
+  // Bienvenida, pregunta del día y zona horaria (columnas tipadas de guilds)
+  updateEngagementSettings(guildId: string, updates: Partial<GuildEngagementSettings>): Promise<Guild | undefined>;
+  getDailyQuestionGuilds(): Promise<Guild[]>;
+  claimDailyQuestion(guildId: string, localDate: string, force?: boolean): Promise<number | null>;
+  releaseDailyQuestion(guildId: string, localDate: string, previousDate: string | null): Promise<void>;
   
   // User level methods
   getUserLevel(userId: string, guildId: string): Promise<UserLevel | undefined>;
@@ -113,6 +119,59 @@ export class DatabaseStorage implements IStorage {
       .update(guilds)
       .set(updates)
       .where(eq(guilds.id, guildId));
+  }
+
+  // ===== ENGAGEMENT (bienvenida / pregunta del día) =====
+  async updateEngagementSettings(guildId: string, updates: Partial<GuildEngagementSettings>): Promise<Guild | undefined> {
+    const [guild] = await db
+      .update(guilds)
+      .set(updates)
+      .where(eq(guilds.id, guildId))
+      .returning();
+    return guild || undefined;
+  }
+
+  async getDailyQuestionGuilds(): Promise<Guild[]> {
+    return await db
+      .select()
+      .from(guilds)
+      .where(eq(guilds.dailyQuestionEnabled, true));
+  }
+
+  // Reserva la pregunta del día de forma atómica: marca la fecha local y avanza el contador.
+  // Devuelve el índice de la pregunta a publicar, o null si ya se publicó hoy (o está desactivada).
+  // Con force=true (comando "ahora") se publica aunque ya haya salido una hoy.
+  async claimDailyQuestion(guildId: string, localDate: string, force: boolean = false): Promise<number | null> {
+    const condition = force
+      ? eq(guilds.id, guildId)
+      : and(
+          eq(guilds.id, guildId),
+          eq(guilds.dailyQuestionEnabled, true),
+          sql`${guilds.dailyQuestionLastPosted} IS DISTINCT FROM ${localDate}`
+        );
+
+    const [row] = await db
+      .update(guilds)
+      .set({
+        dailyQuestionLastPosted: localDate,
+        dailyQuestionIndex: sql`COALESCE(${guilds.dailyQuestionIndex}, 0) + 1`,
+      })
+      .where(condition)
+      .returning({ index: guilds.dailyQuestionIndex });
+
+    if (!row) return null;
+    return Math.max((row.index ?? 1) - 1, 0);
+  }
+
+  // Deshace una reserva si no se pudo publicar, para reintentar más tarde
+  async releaseDailyQuestion(guildId: string, localDate: string, previousDate: string | null): Promise<void> {
+    await db
+      .update(guilds)
+      .set({
+        dailyQuestionLastPosted: previousDate,
+        dailyQuestionIndex: sql`GREATEST(COALESCE(${guilds.dailyQuestionIndex}, 0) - 1, 0)`,
+      })
+      .where(and(eq(guilds.id, guildId), eq(guilds.dailyQuestionLastPosted, localDate)));
   }
 
   // ===== USER LEVEL METHODS =====
@@ -356,7 +415,15 @@ export class DatabaseStorage implements IStorage {
   }
 
   async updateGuildSettings(guildId: string, settings: any): Promise<void> {
-    // TODO: Implement with real database when guild settings schema is ready
+    // Mezcla los ajustes nuevos con el JSON guardado (guilds.settings) y crea el servidor si aún no existe
+    const patch = settings && typeof settings === 'object' && !Array.isArray(settings) ? settings : {};
+    await db
+      .insert(guilds)
+      .values({ id: guildId, name: 'Unknown Guild', ownerId: 'unknown', settings: patch })
+      .onConflictDoUpdate({
+        target: guilds.id,
+        set: { settings: sql`COALESCE(${guilds.settings}, '{}'::jsonb) || excluded.settings` },
+      });
   }
 }
 

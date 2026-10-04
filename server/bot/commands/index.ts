@@ -7,6 +7,9 @@ import { antiraidCommands } from './antiraid';
 import { prestigeCommands } from './prestige';
 import { gamblingCommands } from './gambling';
 import { storeCommands } from './store';
+import { bienvenidaCommands } from './bienvenida';
+import { preguntaDelDiaCommands } from './preguntaDelDia';
+import { anuncioCommands } from './anuncios';
 import selftest from './selftest';
 import stress from './stress';
 import oauthTest from './oauth-test';
@@ -20,6 +23,9 @@ export async function setupCommands(bot: DiscordBot) {
     ...prestigeCommands,
     ...gamblingCommands,
     ...storeCommands,
+    ...bienvenidaCommands,
+    ...preguntaDelDiaCommands,
+    ...anuncioCommands,
     selftest,
     stress,
     oauthTest,
