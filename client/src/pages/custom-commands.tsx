@@ -1,7 +1,7 @@
 import { useState } from "react";
+import { useSelectedGuild } from "@/lib/guild";
 import { useQuery, useMutation } from "@tanstack/react-query";
 import Layout from "@/components/layout";
-import GuildSelector from "@/components/guild-selector";
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
@@ -40,7 +40,8 @@ const commandSchema = z.object({
 });
 
 export default function CustomCommands() {
-  const [selectedGuildId, setSelectedGuildId] = useState("123456789012345678");
+  // El servidor se elige en el menú lateral
+  const { guildId: selectedGuildId } = useSelectedGuild();
   const [isCreateOpen, setIsCreateOpen] = useState(false);
   const [editingCommand, setEditingCommand] = useState<CustomCommand | null>(null);
   const { toast } = useToast();
@@ -256,11 +257,6 @@ export default function CustomCommands() {
             </DialogContent>
           </Dialog>
         </div>
-
-        <GuildSelector 
-          currentGuildId={selectedGuildId}
-          onGuildChange={setSelectedGuildId}
-        />
 
         <Card className="discord-card">
           <CardHeader>

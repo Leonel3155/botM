@@ -1,4 +1,5 @@
 import { useQuery } from "@tanstack/react-query";
+import { useSelectedGuild } from "@/lib/guild";
 import Layout from "@/components/layout";
 import FeaturePanel from "@/components/feature-panel";
 import { Card } from "@/components/ui/card";
@@ -19,8 +20,9 @@ const DEFAULT_ECONOMY_SETTINGS = {
 };
 
 export default function Economy() {
+  const { guildId } = useSelectedGuild();
   const { data: guildSettings, isLoading } = useQuery<GuildResponse>({
-    queryKey: ['/api/guilds/123456789012345678'],
+    queryKey: [`/api/guilds/${guildId}`],
     staleTime: 300000,
   });
 
