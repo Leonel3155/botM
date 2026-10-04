@@ -16,6 +16,11 @@ if (!sessionSecret) {
   console.error('❌ Falta SESSION_SECRET en el archivo .env (usa una clave aleatoria larga).');
   process.exit(1);
 }
+// Un texto de ejemplo copiado tal cual es público (está en el repo): firmar con él no protege nada
+if (/^cambia_esto/i.test(sessionSecret)) {
+  console.error('❌ SESSION_SECRET todavía tiene el texto de ejemplo; genera una clave aleatoria tuya.');
+  process.exit(1);
+}
 if (sessionSecret.length < 32) {
   console.warn('⚠️ SESSION_SECRET es muy corta; usa al menos 32 caracteres aleatorios.');
 }

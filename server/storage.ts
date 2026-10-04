@@ -199,6 +199,7 @@ export interface IStorage {
   incrementCustomCommandUses(id: string): Promise<void>;
 
   // Content feed methods
+  getContentFeed(id: string, guildId: string): Promise<ContentFeed | undefined>;
   updateContentFeed(id: string, guildId: string, updates: ContentFeedUpdate): Promise<ContentFeed | undefined>;
   deleteContentFeed(id: string, guildId: string): Promise<boolean>;
   getContentFeeds(guildId: string): Promise<any[]>;
@@ -994,6 +995,14 @@ export class DatabaseStorage implements IStorage {
       const [feed] = await tx.insert(contentFeeds).values(feedData).returning();
       return feed;
     });
+  }
+
+  async getContentFeed(id: string, guildId: string): Promise<ContentFeed | undefined> {
+    const [feed] = await db
+      .select()
+      .from(contentFeeds)
+      .where(and(eq(contentFeeds.id, id), eq(contentFeeds.guildId, guildId)));
+    return feed || undefined;
   }
 
   async updateContentFeed(id: string, guildId: string, updates: ContentFeedUpdate): Promise<ContentFeed | undefined> {

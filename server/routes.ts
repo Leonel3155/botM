@@ -121,6 +121,8 @@ const postIntervalSchema = z.number()
   .max(1440, 'El intervalo va de 1 a 1440 minutos.');
 
 // Solo Reddit: Twitter/X no tiene acceso real a su API (publicaría contenido de relleno)
+const TWITTER_FEEDS_DISABLED_ERROR = 'Twitter/X todavía no está disponible: por ahora solo se puede usar Reddit.';
+
 const contentFeedSchema = z.object({
   source: z.literal('reddit'),
   channelId: snowflakeSchema,
@@ -565,7 +567,7 @@ export async function registerRoutes(app: Express, { sessionParser }: RegisterRo
     try {
       const { guildId } = req.params;
       if (req.body?.source === 'twitter') {
-        return res.status(400).json({ error: 'Twitter/X todavía no está disponible: por ahora solo se puede usar Reddit.' });
+        return res.status(400).json({ error: TWITTER_FEEDS_DISABLED_ERROR });
       }
       const feedData = parseBody(contentFeedSchema, req, res);
       if (!feedData) return;
@@ -602,6 +604,17 @@ export async function registerRoutes(app: Express, { sessionParser }: RegisterRo
       }
       const body = parseBody(contentFeedUpdateSchema, req, res);
       if (!body) return;
+
+      const existing = await storage.getContentFeed(feedId, guildId);
+      if (!existing) {
+        return res.status(404).json({ error: 'Ese feed no existe en este servidor.' });
+      }
+      // Feeds de Twitter viejos (de antes de bloquearlos): solo se pueden apagar o borrar,
+      // porque el bot no tiene contenido real de Twitter/X para publicar en ellos
+      const onlyDisables = Object.keys(body).length === 1 && body.enabled === false;
+      if (existing.source === 'twitter' && !onlyDisables) {
+        return res.status(400).json({ error: `${TWITTER_FEEDS_DISABLED_ERROR} Este feed solo se puede desactivar o borrar.` });
+      }
 
       if (body.channelId && !findGuildTextChannel(getBotGuild(res), body.channelId)) {
         return res.status(400).json({ error: 'Ese canal no existe en este servidor o no es un canal de texto.' });

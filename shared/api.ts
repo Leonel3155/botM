@@ -580,7 +580,11 @@ export interface ContentFeedCreateRequest {
   /** Minutos entre publicaciones (1-1440). */
   postInterval: number;
 }
-/** PATCH /api/social/:guildId/feeds/:feedId */
+/**
+ * PATCH /api/social/:guildId/feeds/:feedId
+ * Feeds viejos con source "twitter": solo aceptan { enabled: false } (400 con cualquier otro cambio);
+ * se pueden borrar con DELETE.
+ */
 export interface ContentFeedUpdateRequest {
   channelId?: string;
   enabled?: boolean;
