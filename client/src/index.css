@@ -1,0 +1,186 @@
+@import url('https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&display=swap');
+@tailwind base;
+@tailwind components;
+@tailwind utilities;
+
+:root {
+  --background: hsl(35, 9%, 90%);
+  --foreground: hsl(210, 25%, 7.8%);
+  --card: hsl(0, 0%, 100%);
+  --card-foreground: hsl(210, 25%, 7.8%);
+  --popover: hsl(0, 0%, 100%);
+  --popover-foreground: hsl(210, 25%, 7.8%);
+  --primary: hsl(227, 75%, 58%);
+  --primary-foreground: hsl(0, 0%, 100%);
+  --secondary: hsl(44, 21%, 22%);
+  --secondary-foreground: hsl(0, 0%, 100%);
+  --muted: hsl(210, 40%, 15%);
+  --muted-foreground: hsl(215, 20%, 65%);
+  --accent: hsl(214, 32%, 91%);
+  --accent-foreground: hsl(227, 75%, 58%);
+  --destructive: hsl(356, 90%, 54%);
+  --destructive-foreground: hsl(0, 0%, 100%);
+  --border: hsl(214, 32%, 91%);
+  --input: hsl(214, 32%, 91%);
+  --ring: hsl(227, 75%, 58%);
+  --chart-1: hsl(227, 75%, 58%);
+  --chart-2: hsl(173, 58%, 39%);
+  --chart-3: hsl(197, 37%, 24%);
+  --chart-4: hsl(43, 74%, 66%);
+  --chart-5: hsl(27, 87%, 67%);
+  
+  /* Discord-specific colors */
+  --discord-primary: hsl(235, 85%, 64%);
+  --discord-primary-dark: hsl(234, 74%, 57%);
+  --discord-dark: hsl(220, 13%, 18%);
+  --discord-darker: hsl(225, 13%, 15%);
+  --discord-grey: hsl(218, 13%, 22%);
+  --discord-light-grey: hsl(220, 13%, 73%);
+  --discord-muted: hsl(220, 8%, 46%);
+  --discord-success: hsl(139, 66%, 68%);
+  --discord-warning: hsl(38, 95%, 54%);
+  --discord-error: hsl(359, 82%, 59%);
+  
+  --font-sans: 'Inter', system-ui, sans-serif;
+  --font-serif: Georgia, serif;
+  --font-mono: 'JetBrains Mono', monospace;
+  --radius: 0.5rem;
+}
+
+.dark {
+  --background: hsl(225, 13%, 15%);
+  --foreground: hsl(220, 13%, 73%);
+  --card: hsl(220, 13%, 18%);
+  --card-foreground: hsl(220, 13%, 73%);
+  --popover: hsl(225, 13%, 15%);
+  --popover-foreground: hsl(220, 13%, 73%);
+  --primary: hsl(235, 85%, 64%);
+  --primary-foreground: hsl(0, 0%, 100%);
+  --secondary: hsl(217, 32%, 17%);
+  --secondary-foreground: hsl(220, 13%, 73%);
+  --muted: hsl(218, 13%, 22%);
+  --muted-foreground: hsl(220, 8%, 46%);
+  --accent: hsl(218, 13%, 22%);
+  --accent-foreground: hsl(235, 85%, 64%);
+  --destructive: hsl(359, 82%, 59%);
+  --destructive-foreground: hsl(0, 0%, 100%);
+  --border: hsl(218, 13%, 22%);
+  --input: hsl(218, 13%, 22%);
+  --ring: hsl(235, 85%, 64%);
+  --chart-1: hsl(235, 85%, 64%);
+  --chart-2: hsl(173, 58%, 39%);
+  --chart-3: hsl(197, 37%, 24%);
+  --chart-4: hsl(43, 74%, 66%);
+  --chart-5: hsl(27, 87%, 67%);
+}
+
+@layer base {
+  * {
+    @apply border-border;
+  }
+  
+  body {
+    @apply bg-discord-darker text-white font-sans antialiased;
+    font-family: var(--font-sans);
+  }
+  
+  html {
+    scroll-behavior: smooth;
+  }
+}
+
+@layer components {
+  .discord-card {
+    @apply bg-discord-dark border border-discord-grey rounded-xl;
+  }
+  
+  .discord-button {
+    @apply bg-discord-primary hover:bg-discord-primary-dark text-white font-medium px-4 py-2 rounded-lg transition-colors;
+  }
+  
+  .discord-input {
+    @apply bg-discord-grey border border-discord-grey rounded-md px-3 py-2 text-white placeholder-discord-muted focus:border-discord-primary focus:outline-none;
+  }
+  
+  .nav-item {
+    @apply flex items-center space-x-3 p-3 rounded-lg transition-colors cursor-pointer;
+  }
+  
+  .nav-item:hover {
+    @apply bg-discord-grey text-white;
+  }
+  
+  .nav-item.active {
+    @apply bg-discord-primary text-white;
+  }
+  
+  .stats-card {
+    @apply discord-card p-6;
+  }
+  
+  .feature-panel {
+    @apply discord-card;
+  }
+  
+  .feature-panel-header {
+    @apply p-6 border-b border-discord-grey;
+  }
+  
+  .feature-panel-content {
+    @apply p-6;
+  }
+}
+
+@layer utilities {
+  .text-discord-primary {
+    color: var(--discord-primary);
+  }
+  
+  .text-discord-muted {
+    color: var(--discord-muted);
+  }
+  
+  .text-discord-light-grey {
+    color: var(--discord-light-grey);
+  }
+  
+  .bg-discord-dark {
+    background-color: var(--discord-dark);
+  }
+  
+  .bg-discord-darker {
+    background-color: var(--discord-darker);
+  }
+  
+  .bg-discord-grey {
+    background-color: var(--discord-grey);
+  }
+  
+  .bg-discord-primary {
+    background-color: var(--discord-primary);
+  }
+  
+  .bg-discord-primary-dark {
+    background-color: var(--discord-primary-dark);
+  }
+  
+  .bg-discord-success {
+    background-color: var(--discord-success);
+  }
+  
+  .bg-discord-warning {
+    background-color: var(--discord-warning);
+  }
+  
+  .bg-discord-error {
+    background-color: var(--discord-error);
+  }
+  
+  .border-discord-grey {
+    border-color: var(--discord-grey);
+  }
+  
+  .border-discord-primary {
+    border-color: var(--discord-primary);
+  }
+}
