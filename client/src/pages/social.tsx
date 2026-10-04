@@ -1,4 +1,5 @@
 import { useQuery, useMutation, useQueryClient } from "@tanstack/react-query";
+import { useSelectedGuild } from "@/lib/guild";
 import Layout from "@/components/layout";
 import FeaturePanel from "@/components/feature-panel";
 import { Card } from "@/components/ui/card";
@@ -24,21 +25,22 @@ import {
 import type { ContentFeedResponse, NewContentFeed } from "@/lib/api-types";
 
 export default function Social() {
+  const { guildId } = useSelectedGuild();
   const queryClient = useQueryClient();
   const { toast } = useToast();
 
   const { data: contentFeeds, isLoading } = useQuery<ContentFeedResponse[]>({
-    queryKey: ['/api/social/123456789012345678/feeds'],
+    queryKey: [`/api/social/${guildId}/feeds`],
     staleTime: 60000,
   });
 
   const createFeedMutation = useMutation({
     mutationFn: async (feedData: NewContentFeed) => {
-      const response = await apiRequest('POST', '/api/social/123456789012345678/feeds', feedData);
+      const response = await apiRequest('POST', `/api/social/${guildId}/feeds`, feedData);
       return response.json();
     },
     onSuccess: () => {
-      queryClient.invalidateQueries({ queryKey: ['/api/social/123456789012345678/feeds'] });
+      queryClient.invalidateQueries({ queryKey: [`/api/social/${guildId}/feeds`] });
       toast({
         title: "Feed Created",
         description: "Content feed has been created successfully",
@@ -65,7 +67,8 @@ export default function Social() {
 
   const handleCreateFeed = () => {
     const feedData: NewContentFeed = {
-      channelId: "123456789012345678",
+      // TODO(páginas): elegir el canal en un formulario (antes iba un ID inventado)
+      channelId: "",
       source: "reddit",
       sourceConfig: {
         subreddit: "memes",

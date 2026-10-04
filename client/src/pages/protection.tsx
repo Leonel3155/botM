@@ -1,4 +1,5 @@
 import { useState } from 'react';
+import { useSelectedGuild } from "@/lib/guild";
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query';
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from '@/components/ui/card';
 import { Button } from '@/components/ui/button';
@@ -32,7 +33,7 @@ interface ProtectionSettings {
 export default function ProtectionPage() {
   const { toast } = useToast();
   const queryClient = useQueryClient();
-  const guildId = '123456789012345678';
+  const { guildId } = useSelectedGuild();
 
   // El queryFn por defecto une la queryKey: /api/protection/{guildId}/settings
   const { data: settings, isLoading } = useQuery<ProtectionSettings>({

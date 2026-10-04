@@ -1,186 +1,224 @@
-@import url('https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&display=swap');
 @tailwind base;
 @tailwind components;
 @tailwind utilities;
 
-:root {
-  --background: hsl(35, 9%, 90%);
-  --foreground: hsl(210, 25%, 7.8%);
-  --card: hsl(0, 0%, 100%);
-  --card-foreground: hsl(210, 25%, 7.8%);
-  --popover: hsl(0, 0%, 100%);
-  --popover-foreground: hsl(210, 25%, 7.8%);
-  --primary: hsl(227, 75%, 58%);
-  --primary-foreground: hsl(0, 0%, 100%);
-  --secondary: hsl(44, 21%, 22%);
-  --secondary-foreground: hsl(0, 0%, 100%);
-  --muted: hsl(210, 40%, 15%);
-  --muted-foreground: hsl(215, 20%, 65%);
-  --accent: hsl(214, 32%, 91%);
-  --accent-foreground: hsl(227, 75%, 58%);
-  --destructive: hsl(356, 90%, 54%);
-  --destructive-foreground: hsl(0, 0%, 100%);
-  --border: hsl(214, 32%, 91%);
-  --input: hsl(214, 32%, 91%);
-  --ring: hsl(227, 75%, 58%);
-  --chart-1: hsl(227, 75%, 58%);
-  --chart-2: hsl(173, 58%, 39%);
-  --chart-3: hsl(197, 37%, 24%);
-  --chart-4: hsl(43, 74%, 66%);
-  --chart-5: hsl(27, 87%, 67%);
-  
-  /* Discord-specific colors */
-  --discord-primary: hsl(235, 85%, 64%);
-  --discord-primary-dark: hsl(234, 74%, 57%);
-  --discord-dark: hsl(220, 13%, 18%);
-  --discord-darker: hsl(225, 13%, 15%);
-  --discord-grey: hsl(218, 13%, 22%);
-  --discord-light-grey: hsl(220, 13%, 73%);
-  --discord-muted: hsl(220, 8%, 46%);
-  --discord-success: hsl(139, 66%, 68%);
-  --discord-warning: hsl(38, 95%, 54%);
-  --discord-error: hsl(359, 82%, 59%);
-  
-  --font-sans: 'Inter', system-ui, sans-serif;
-  --font-serif: Georgia, serif;
-  --font-mono: 'JetBrains Mono', monospace;
-  --radius: 0.5rem;
-}
-
+/*
+ * Tema "Dark Knight": negro + amarillo. El panel solo tiene modo oscuro,
+ * así que :root y .dark comparten los mismos valores.
+ * Los colores van como componentes HSL ("H S% L%") para que Tailwind pueda
+ * aplicar opacidad (bg-primary/10, etc.).
+ */
+:root,
 .dark {
-  --background: hsl(225, 13%, 15%);
-  --foreground: hsl(220, 13%, 73%);
-  --card: hsl(220, 13%, 18%);
-  --card-foreground: hsl(220, 13%, 73%);
-  --popover: hsl(225, 13%, 15%);
-  --popover-foreground: hsl(220, 13%, 73%);
-  --primary: hsl(235, 85%, 64%);
-  --primary-foreground: hsl(0, 0%, 100%);
-  --secondary: hsl(217, 32%, 17%);
-  --secondary-foreground: hsl(220, 13%, 73%);
-  --muted: hsl(218, 13%, 22%);
-  --muted-foreground: hsl(220, 8%, 46%);
-  --accent: hsl(218, 13%, 22%);
-  --accent-foreground: hsl(235, 85%, 64%);
-  --destructive: hsl(359, 82%, 59%);
-  --destructive-foreground: hsl(0, 0%, 100%);
-  --border: hsl(218, 13%, 22%);
-  --input: hsl(218, 13%, 22%);
-  --ring: hsl(235, 85%, 64%);
-  --chart-1: hsl(235, 85%, 64%);
-  --chart-2: hsl(173, 58%, 39%);
-  --chart-3: hsl(197, 37%, 24%);
-  --chart-4: hsl(43, 74%, 66%);
-  --chart-5: hsl(27, 87%, 67%);
+  color-scheme: dark;
+
+  --button-outline: rgba(255, 255, 255, .10);
+  --badge-outline: rgba(255, 255, 255, .05);
+  --opaque-button-border-intensity: 9;
+  --elevate-1: rgba(255, 255, 255, .04);
+  --elevate-2: rgba(255, 255, 255, .09);
+
+  --background: 0 0% 0%;
+  --foreground: 0 0% 96%;
+  --text-secondary: 0 0% 78%;
+  --border: 0 0% 16%;
+  --card: 0 0% 7%;
+  --card-foreground: 0 0% 96%;
+  --card-border: 0 0% 13%;
+  --sidebar: 0 0% 4%;
+  --sidebar-foreground: 0 0% 96%;
+  --sidebar-border: 0 0% 13%;
+  --sidebar-primary: 45 95% 55%;
+  --sidebar-primary-foreground: 0 0% 0%;
+  --sidebar-accent: 0 0% 11%;
+  --sidebar-accent-foreground: 0 0% 96%;
+  --sidebar-ring: 45 95% 55%;
+  --popover: 0 0% 7%;
+  --popover-foreground: 0 0% 96%;
+  --popover-border: 0 0% 13%;
+  --primary: 45 95% 55%;
+  --primary-foreground: 0 0% 0%;
+  --secondary: 0 0% 13%;
+  --secondary-foreground: 0 0% 96%;
+  --muted: 0 0% 11%;
+  --muted-foreground: 0 0% 62%;
+  --accent: 45 20% 11%;
+  --accent-foreground: 0 0% 96%;
+  --destructive: 0 84% 55%;
+  --destructive-foreground: 0 0% 96%;
+  --input: 0 0% 20%;
+  --ring: 45 95% 55%;
+  --chart-1: 45 95% 55%;
+  --chart-2: 0 0% 70%;
+  --chart-3: 210 50% 60%;
+  --chart-4: 30 90% 60%;
+  --chart-5: 280 75% 65%;
+  --status-online: 45 95% 55%;
+  --status-success: 142 70% 45%;
+  --status-warning: 30 95% 60%;
+  --status-error: 0 84% 55%;
+  --status-offline: 0 0% 45%;
+
+  --font-sans: "Inter", -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif;
+  --font-serif: Georgia, serif;
+  --font-mono: "JetBrains Mono", "Fira Code", ui-monospace, monospace;
+  --radius: .375rem;
+
+  --shadow-2xs: 0px 2px 0px 0px hsl(0 0% 0% / 0.00);
+  --shadow-xs: 0px 2px 0px 0px hsl(0 0% 0% / 0.00);
+  --shadow-sm: 0px 2px 0px 0px hsl(0 0% 0% / 0.00), 0px 1px 2px -1px hsl(0 0% 0% / 0.00);
+  --shadow: 0px 2px 0px 0px hsl(0 0% 0% / 0.00), 0px 1px 2px -1px hsl(0 0% 0% / 0.00);
+  --shadow-md: 0px 2px 0px 0px hsl(0 0% 0% / 0.00), 0px 2px 4px -1px hsl(0 0% 0% / 0.00);
+  --shadow-lg: 0px 2px 0px 0px hsl(0 0% 0% / 0.00), 0px 4px 6px -1px hsl(0 0% 0% / 0.00);
+  --shadow-xl: 0px 2px 0px 0px hsl(0 0% 0% / 0.00), 0px 8px 10px -1px hsl(0 0% 0% / 0.00);
+  --shadow-2xl: 0px 2px 0px 0px hsl(0 0% 0% / 0.00);
+
+  /* Bordes "opacos" de los botones: un poco más claros que su fondo (con respaldo para navegadores viejos) */
+  --sidebar-primary-border: hsl(var(--sidebar-primary));
+  --sidebar-primary-border: hsl(from hsl(var(--sidebar-primary)) h s calc(l + var(--opaque-button-border-intensity)) / alpha);
+  --sidebar-accent-border: hsl(var(--sidebar-accent));
+  --sidebar-accent-border: hsl(from hsl(var(--sidebar-accent)) h s calc(l + var(--opaque-button-border-intensity)) / alpha);
+  --primary-border: hsl(var(--primary));
+  --primary-border: hsl(from hsl(var(--primary)) h s calc(l + var(--opaque-button-border-intensity)) / alpha);
+  --secondary-border: hsl(var(--secondary));
+  --secondary-border: hsl(from hsl(var(--secondary)) h s calc(l + var(--opaque-button-border-intensity)) / alpha);
+  --muted-border: hsl(var(--muted));
+  --muted-border: hsl(from hsl(var(--muted)) h s calc(l + var(--opaque-button-border-intensity)) / alpha);
+  --accent-border: hsl(var(--accent));
+  --accent-border: hsl(from hsl(var(--accent)) h s calc(l + var(--opaque-button-border-intensity)) / alpha);
+  --destructive-border: hsl(var(--destructive));
+  --destructive-border: hsl(from hsl(var(--destructive)) h s calc(l + var(--opaque-button-border-intensity)) / alpha);
 }
 
 @layer base {
   * {
     @apply border-border;
   }
-  
-  body {
-    @apply bg-discord-darker text-white font-sans antialiased;
-    font-family: var(--font-sans);
-  }
-  
+
   html {
-    scroll-behavior: smooth;
+    -webkit-tap-highlight-color: transparent;
+  }
+
+  body {
+    @apply font-sans antialiased bg-background text-foreground;
+  }
+
+  ::selection {
+    background-color: hsl(var(--primary) / 0.35);
   }
 }
 
+/*
+ * Clases heredadas del panel anterior (discord-card, discord-button, ...).
+ * Las usan las páginas que aún no se rehacen; aquí se ven con el estilo Dark Knight.
+ * Quitar cuando ninguna página las use.
+ */
 @layer components {
   .discord-card {
-    @apply bg-discord-dark border border-discord-grey rounded-xl;
+    @apply rounded-xl border border-card-border bg-card text-card-foreground;
   }
-  
+
   .discord-button {
-    @apply bg-discord-primary hover:bg-discord-primary-dark text-white font-medium px-4 py-2 rounded-lg transition-colors;
+    @apply inline-flex items-center justify-center rounded-md bg-primary px-4 py-2 font-medium text-primary-foreground transition-colors hover:bg-primary/90;
   }
-  
+
   .discord-input {
-    @apply bg-discord-grey border border-discord-grey rounded-md px-3 py-2 text-white placeholder-discord-muted focus:border-discord-primary focus:outline-none;
+    @apply rounded-md border border-input bg-background px-3 py-2 text-foreground placeholder:text-muted-foreground focus:border-primary focus:outline-none;
   }
-  
-  .nav-item {
-    @apply flex items-center space-x-3 p-3 rounded-lg transition-colors cursor-pointer;
-  }
-  
-  .nav-item:hover {
-    @apply bg-discord-grey text-white;
-  }
-  
-  .nav-item.active {
-    @apply bg-discord-primary text-white;
-  }
-  
+
   .stats-card {
     @apply discord-card p-6;
   }
-  
+
   .feature-panel {
     @apply discord-card;
   }
-  
+
   .feature-panel-header {
-    @apply p-6 border-b border-discord-grey;
+    @apply border-b border-border p-6;
   }
-  
+
   .feature-panel-content {
     @apply p-6;
   }
 }
 
+/**
+ * Sistema de "elevación" (del panel de referencia): aclara un poco el fondo al
+ * pasar el ratón o pulsar, sin importar el color base.
+ *
+ * <element className="hover-elevate" />
+ * <element className="active-elevate-2" />
+ * <element className="toggle-elevate data-[state=on]:toggle-elevated" />
+ */
 @layer utilities {
-  .text-discord-primary {
-    color: var(--discord-primary);
+  input[type="search"]::-webkit-search-cancel-button {
+    @apply hidden;
   }
-  
-  .text-discord-muted {
-    color: var(--discord-muted);
+
+  [contenteditable][data-placeholder]:empty::before {
+    content: attr(data-placeholder);
+    color: hsl(var(--muted-foreground));
+    pointer-events: none;
   }
-  
-  .text-discord-light-grey {
-    color: var(--discord-light-grey);
+
+  .no-default-hover-elevate {}
+
+  .no-default-active-elevate {}
+
+  .toggle-elevate::before,
+  .toggle-elevate-2::before {
+    content: "";
+    pointer-events: none;
+    position: absolute;
+    inset: 0px;
+    border-radius: inherit;
+    z-index: -1;
   }
-  
-  .bg-discord-dark {
-    background-color: var(--discord-dark);
+
+  .toggle-elevate.toggle-elevated::before {
+    background-color: var(--elevate-2);
   }
-  
-  .bg-discord-darker {
-    background-color: var(--discord-darker);
+
+  .border.toggle-elevate::before {
+    inset: -1px;
   }
-  
-  .bg-discord-grey {
-    background-color: var(--discord-grey);
+
+  /* No funciona en elementos con overflow:hidden */
+  .hover-elevate:not(.no-default-hover-elevate),
+  .active-elevate:not(.no-default-active-elevate),
+  .hover-elevate-2:not(.no-default-hover-elevate),
+  .active-elevate-2:not(.no-default-active-elevate) {
+    position: relative;
+    z-index: 0;
   }
-  
-  .bg-discord-primary {
-    background-color: var(--discord-primary);
+
+  .hover-elevate:not(.no-default-hover-elevate)::after,
+  .active-elevate:not(.no-default-active-elevate)::after,
+  .hover-elevate-2:not(.no-default-hover-elevate)::after,
+  .active-elevate-2:not(.no-default-active-elevate)::after {
+    content: "";
+    pointer-events: none;
+    position: absolute;
+    inset: 0px;
+    border-radius: inherit;
+    z-index: 999;
   }
-  
-  .bg-discord-primary-dark {
-    background-color: var(--discord-primary-dark);
+
+  .hover-elevate:hover:not(.no-default-hover-elevate)::after,
+  .active-elevate:active:not(.no-default-active-elevate)::after {
+    background-color: var(--elevate-1);
   }
-  
-  .bg-discord-success {
-    background-color: var(--discord-success);
+
+  .hover-elevate-2:hover:not(.no-default-hover-elevate)::after,
+  .active-elevate-2:active:not(.no-default-active-elevate)::after {
+    background-color: var(--elevate-2);
   }
-  
-  .bg-discord-warning {
-    background-color: var(--discord-warning);
-  }
-  
-  .bg-discord-error {
-    background-color: var(--discord-error);
-  }
-  
-  .border-discord-grey {
-    border-color: var(--discord-grey);
-  }
-  
-  .border-discord-primary {
-    border-color: var(--discord-primary);
+
+  .border.hover-elevate:not(.no-hover-interaction-elevate)::after,
+  .border.active-elevate:not(.no-active-interaction-elevate)::after,
+  .border.hover-elevate-2:not(.no-hover-interaction-elevate)::after,
+  .border.active-elevate-2:not(.no-active-interaction-elevate)::after {
+    inset: -1px;
   }
 }

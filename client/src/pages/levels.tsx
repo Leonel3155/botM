@@ -1,4 +1,5 @@
 import { useQuery } from "@tanstack/react-query";
+import { useSelectedGuild } from "@/lib/guild";
 import Layout from "@/components/layout";
 import FeaturePanel from "@/components/feature-panel";
 import { Card } from "@/components/ui/card";
@@ -17,13 +18,14 @@ const DEFAULT_LEVEL_SETTINGS = {
 };
 
 export default function Levels() {
+  const { guildId } = useSelectedGuild();
   const { data: topUsers, isLoading } = useQuery<UserLevelResponse[]>({
-    queryKey: ['/api/levels/123456789012345678/top'],
+    queryKey: [`/api/levels/${guildId}/top`],
     staleTime: 60000,
   });
 
   const { data: guildSettings } = useQuery<GuildResponse>({
-    queryKey: ['/api/guilds/123456789012345678'],
+    queryKey: [`/api/guilds/${guildId}`],
     staleTime: 300000,
   });
 

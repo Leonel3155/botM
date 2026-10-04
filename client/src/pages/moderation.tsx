@@ -1,4 +1,5 @@
 import { useQuery } from "@tanstack/react-query";
+import { useSelectedGuild } from "@/lib/guild";
 import Layout from "@/components/layout";
 import FeaturePanel from "@/components/feature-panel";
 import { Card } from "@/components/ui/card";
@@ -29,13 +30,14 @@ const DEFAULT_MODERATION_SETTINGS = {
 };
 
 export default function Moderation() {
+  const { guildId } = useSelectedGuild();
   const { data: moderationActions, isLoading } = useQuery<ModerationActionResponse[]>({
-    queryKey: ['/api/moderation/123456789012345678/actions'],
+    queryKey: [`/api/moderation/${guildId}/actions`],
     staleTime: 30000,
   });
 
   const { data: guildSettings } = useQuery<GuildResponse>({
-    queryKey: ['/api/guilds/123456789012345678'],
+    queryKey: [`/api/guilds/${guildId}`],
     staleTime: 300000,
   });
 
@@ -202,7 +204,7 @@ export default function Moderation() {
                 <div className="space-y-2">
                   <label className="text-white font-medium">User ID or Mention</label>
                   <Input 
-                    placeholder="@user or 123456789012345678" 
+                    placeholder="@user or user ID" 
                     className="discord-input"
                     data-testid="input-user-target"
                   />
