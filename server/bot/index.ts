@@ -2,6 +2,7 @@ import { Client, GatewayIntentBits, Collection, MessageFlags, Events } from 'dis
 import { setupCommands } from './commands';
 import { setupEvents } from './events';
 import { setupAntiRaid } from './middleware/antiRaid';
+import { setupCustomCommands } from './customCommands';
 
 export class DiscordBot {
   public client: Client;
@@ -26,6 +27,7 @@ export class DiscordBot {
     await setupCommands(this);
     setupEvents(this);
     setupAntiRaid(this);
+    setupCustomCommands(this);
 
     // Import and setup prefix command handler
     const { PrefixCommandHandler } = await import('./commands/prefix');

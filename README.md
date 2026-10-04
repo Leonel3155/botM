@@ -2,52 +2,109 @@
 
 Este paquete contiene el bot completo y su panel web. No incluye credenciales, datos de la base de datos ni `node_modules`.
 
-## Requisitos
+## Cómo ponerlo en marcha (Windows)
 
-- Node.js 20 o superior y npm.
-- Una aplicación/bot creado en [Discord Developer Portal](https://discord.com/developers/applications).
-- Una base de datos PostgreSQL accesible desde el nuevo servidor.
+Necesitas unos 20 minutos. Todo se hace desde el navegador y una ventana de **PowerShell** (búscala en el menú Inicio). No hace falta pagar nada.
 
-## Instalación
+### 1. Instala Node.js 20
 
-1. Extrae el ZIP y abre una terminal en la carpeta `discord-bot-migracion`.
-2. Instala dependencias:
+1. Entra a [nodejs.org](https://nodejs.org), descarga la versión **LTS** (20 o más nueva) para Windows e instálala con las opciones por defecto.
+2. Cierra y vuelve a abrir PowerShell y comprueba que quedó instalado:
 
-   ```sh
-   npm install
+   ```powershell
+   node -v
+   npm -v
    ```
 
-3. Copia `.env.example` a `.env` y completa los valores:
+   `node -v` debe mostrar `v20.x.x` o mayor.
 
-   - `DISCORD_TOKEN`: token del bot.
-   - `DISCORD_CLIENT_ID`: ID de aplicación de Discord.
-   - `DISCORD_CLIENT_SECRET`: secreto OAuth de Discord para el panel.
-   - `DATABASE_URL`: cadena de conexión PostgreSQL.
-   - `SESSION_SECRET`: una clave aleatoria larga, distinta de las credenciales de Discord.
-   - `APP_URL`: URL pública del servidor, sin `/` al final. En local usa `http://localhost:5000`.
-   - `FRONTEND_URL`: URL del panel. Si el panel y el servidor se alojan juntos, usa el mismo valor que `APP_URL`.
+### 2. Crea una base de datos PostgreSQL gratis en Neon
 
-4. En Discord Developer Portal, añade esta URL a **OAuth2 → Redirects**; debe coincidir exactamente con `APP_URL`:
+El bot usa el controlador de Neon (`@neondatabase/serverless`), así que **la opción recomendada (y la que funciona sin configurar nada más) es [Neon](https://neon.tech)**. Un PostgreSQL instalado en tu computadora no se conecta con este controlador.
+
+1. Crea una cuenta en [neon.tech](https://neon.tech) (puedes entrar con Google o GitHub) y crea un proyecto. Elige la región más cercana a donde vaya a correr el bot.
+2. En el panel del proyecto pulsa **Connect** y copia la **connection string**. Se ve así:
 
    ```text
-   https://tu-dominio/auth/discord/callback
+   postgresql://usuario:contrasena@ep-algo-123456.us-east-2.aws.neon.tech/neondb?sslmode=require
    ```
 
-   Para desarrollo local, usa `http://localhost:5000/auth/discord/callback`.
+   Guárdala: va en `DATABASE_URL`.
 
-5. Habilita **Server Members Intent** y **Message Content Intent** en la configuración del bot. Invítalo al servidor con los permisos y los scopes `bot` y `applications.commands`.
-6. Si es una base de datos nueva, crea las tablas:
+### 3. Crea la aplicación y el bot en Discord
 
-   ```sh
-   npm run db:push
+1. Entra a [Discord Developer Portal](https://discord.com/developers/applications) → **New Application**, ponle nombre y acepta.
+2. **General Information**: copia el **Application ID** → va en `DISCORD_CLIENT_ID`.
+3. **Bot**:
+   - Pulsa **Reset Token** y copia el token → va en `DISCORD_TOKEN`. Es secreto: si alguien lo ve, genera otro.
+   - En **Privileged Gateway Intents** activa **Server Members Intent** y **Message Content Intent** y pulsa **Save Changes**. Sin el primero el bot no se entera de quién entra (bienvenidas y anti-raid); sin el segundo no puede leer los comandos con prefijo (`&bal`, comandos personalizados...).
+4. **OAuth2**:
+   - En **Client Secret** pulsa **Reset Secret** y cópialo → va en `DISCORD_CLIENT_SECRET`.
+   - En **Redirects** pulsa **Add Redirect**, escribe exactamente esta URL y guarda:
+
+     ```text
+     http://localhost:5000/auth/discord/callback
+     ```
+
+     Cuando lo subas a un hosting agrega también `https://tu-dominio/auth/discord/callback` (tiene que coincidir con `APP_URL`).
+
+### 4. Invita el bot a tu servidor
+
+Usa este enlace cambiando `TU_CLIENT_ID` por tu Application ID (scopes `bot` y `applications.commands`, con los permisos que usa el bot):
+
+```text
+https://discord.com/oauth2/authorize?client_id=TU_CLIENT_ID&scope=bot%20applications.commands&permissions=19009793944694
+```
+
+Ese número incluye: Ver canales, Enviar mensajes, Enviar mensajes en hilos, Crear hilos públicos, Insertar enlaces, Adjuntar archivos, Leer el historial, Añadir reacciones, Mencionar @everyone, Gestionar mensajes, Gestionar canales, Gestionar roles, Gestionar servidor, Expulsar, Banear, Aislar temporalmente miembros, Gestionar eventos y Crear eventos. (También puedes armarlo tú en **OAuth2 → URL Generator**.)
+
+Después, en **Ajustes del servidor → Roles**, arrastra el rol del bot **por encima** de los roles que quieras que dé automáticamente (rol de bienvenida) o que deba poder moderar.
+
+### 5. Configura el `.env`
+
+1. Abre PowerShell en la carpeta del proyecto (en el Explorador de archivos: clic derecho dentro de la carpeta → **Abrir en Terminal**).
+2. Copia el archivo de ejemplo:
+
+   ```powershell
+   Copy-Item .env.example .env
+   notepad .env
    ```
 
-7. Ejecuta localmente con `npm run dev`, o compila y arranca con:
+3. Llena los valores con lo que copiaste: `DISCORD_TOKEN`, `DISCORD_CLIENT_ID`, `DISCORD_CLIENT_SECRET`, `DATABASE_URL` y una `SESSION_SECRET` larga y aleatoria. Para generarla:
 
-   ```sh
-   npm run build
-   npm start
+   ```powershell
+   node -e "console.log(require('crypto').randomBytes(48).toString('hex'))"
    ```
+
+   Deja `APP_URL` y `FRONTEND_URL` en `http://localhost:5000` mientras lo pruebes en tu computadora. Cada variable está explicada dentro de `.env.example`.
+
+### 6. Instala, crea las tablas y arranca
+
+```powershell
+npm install
+npm run db:push
+npm run dev
+```
+
+- `npm run db:push` crea (o actualiza) las tablas en Neon. Vuelve a ejecutarlo **cada vez que actualices el bot**, antes de arrancarlo. Si alguna vez te pregunta por borrar datos, lee con calma qué tabla o columna menciona antes de aceptar.
+- Con `npm run dev` abre [http://localhost:5000](http://localhost:5000), inicia sesión con Discord y elige tu servidor. En la consola debe aparecer `🤖 Discord bot ready as ...`.
+- Los comandos de barra (`/bienvenida`, `/pregunta-del-dia`...) pueden tardar unos minutos en aparecer en Discord la primera vez.
+
+Para dejarlo corriendo "en serio" (por ejemplo en un hosting), compila y arranca en modo producción:
+
+```powershell
+npm run build
+npm start
+```
+
+En producción usa HTTPS, pon tu dominio en `APP_URL` y `FRONTEND_URL`, y agrega el redirect de ese dominio en Discord (paso 3).
+
+**Si algo falla al arrancar:**
+
+- `Falta SESSION_SECRET` o `DATABASE_URL must be set`: el `.env` no está en la carpeta del proyecto o le falta ese valor.
+- `An invalid token was provided` / `TokenInvalid`: el `DISCORD_TOKEN` está mal copiado; genera otro en Bot → Reset Token.
+- `Used disallowed intents`: falta activar los dos intents del paso 3.
+- El login de Discord dice `Invalid OAuth2 redirect_uri`: la URL de Redirects no coincide exactamente con `APP_URL` + `/auth/discord/callback`.
 
 ## Datos y cambio de servidor
 
