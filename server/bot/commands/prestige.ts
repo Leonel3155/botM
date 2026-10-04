@@ -1,109 +1,186 @@
-import { SlashCommandBuilder, ChatInputCommandInteraction, EmbedBuilder } from 'discord.js';
-import { storage } from '../../storage';
+import {
+  SlashCommandBuilder,
+  ChatInputCommandInteraction,
+  EmbedBuilder,
+  ActionRowBuilder,
+  ButtonBuilder,
+  ButtonStyle,
+  ComponentType,
+  MessageFlags,
+} from 'discord.js';
 import { DiscordBot } from '../index';
+import { economyTask, ensureAccount, formatCoins, getPrestigeLevel } from '../services/economy';
+import {
+  MESSAGE_XP_MAX,
+  MESSAGE_XP_MIN,
+  PRESTIGE_MAX_BONUS_LEVELS,
+  PRESTIGE_MIN_LEVEL,
+  PRESTIGE_XP_BONUS,
+  applyPrestige,
+  formatMultiplier,
+  getLevelRow,
+  levelUpReward,
+  prestigeMultiplier,
+  rowTotalXp,
+  xpForLevelStep,
+  xpToReachLevel,
+} from '../services/levels';
+import { resolveGuild, respond } from '../utils/interactions';
+
+const CONFIRM_TIMEOUT_MS = 30_000;
 
 export const prestigeCommands = [
-  // Prestige command for 100+ levels
   {
     data: new SlashCommandBuilder()
       .setName('prestige')
-      .setDescription('Prestige your level (requires level 100+)')
-      .addBooleanOption(option =>
-        option.setName('confirm')
-          .setDescription('Confirm you want to prestige')
-          .setRequired(false)
-      ),
-    
+      .setDescription(`🌟 Reinicia tu nivel a cambio de más XP para siempre (desde el nivel ${PRESTIGE_MIN_LEVEL})`),
+
     async execute(interaction: ChatInputCommandInteraction, bot: DiscordBot) {
       const userId = interaction.user.id;
       const guildId = interaction.guildId!;
-      const confirm = interaction.options.getBoolean('confirm') || false;
 
-      const userLevel = await storage.getUserLevel(userId, guildId);
-      // La columna `level` es nullable en la BD (default 1)
-      const currentLevel = userLevel?.level ?? 1;
+      await interaction.deferReply();
+      const row = await getLevelRow(guildId, userId);
+      const currentLevel = row?.level ?? 1;
 
-      if (currentLevel < 100) {
-        await interaction.reply('❌ You need to reach level 100 before you can prestige!');
+      if (currentLevel < PRESTIGE_MIN_LEVEL) {
+        const missing = Math.max(xpToReachLevel(PRESTIGE_MIN_LEVEL) - rowTotalXp(row), 0);
+        await respond(
+          interaction,
+          `🔒 Necesitas llegar al nivel **${PRESTIGE_MIN_LEVEL}** para prestigiar. Vas en el nivel **${currentLevel}** (te faltan ${missing.toLocaleString('es-MX')} XP). ¡Sigue platicando!`,
+          { ephemeral: true }
+        );
         return;
       }
 
-      if (!confirm) {
-        const embed = new EmbedBuilder()
-          .setColor(0xFFD700)
-          .setTitle('🌟 Prestige System')
-          .setDescription('**Warning:** Prestiging will reset your level to 1 but you will keep:')
-          .addFields(
-            { name: '✅ Benefits You Keep', value: '• All economy money\n• All items and inventory\n• Prestige badge and title\n• 2x XP gain permanently', inline: false },
-            { name: '❌ What You Lose', value: '• Your current level (back to 1)\n• Current XP progress', inline: false },
-            { name: '🎯 Requirements', value: `Current Level: **${currentLevel}** ✅\nMinimum Required: **100** ✅`, inline: false }
-          )
-          .setFooter({ text: 'Use /prestige confirm:True to proceed' });
+      await ensureAccount(await resolveGuild(interaction), interaction.user);
+      const prestige = await getPrestigeLevel(guildId, userId);
+      const before = prestigeMultiplier(prestige);
+      const after = prestigeMultiplier(prestige + 1);
+      const bonusText = after > before
+        ? `${formatMultiplier(before)} → **${formatMultiplier(after)}**`
+        : `**${formatMultiplier(after)}** (ya tienes el máximo)`;
 
-        await interaction.reply({ embeds: [embed] });
-        return;
-      }
+      const ids = { confirm: `prestige:yes:${interaction.id}`, cancel: `prestige:no:${interaction.id}` };
+      const buttons = new ActionRowBuilder<ButtonBuilder>().addComponents(
+        new ButtonBuilder().setCustomId(ids.confirm).setLabel('Sí, prestigiar').setEmoji('🌟').setStyle(ButtonStyle.Danger),
+        new ButtonBuilder().setCustomId(ids.cancel).setLabel('Cancelar').setStyle(ButtonStyle.Secondary)
+      );
 
-      // Perform prestige (in real implementation, add prestige tracking)
-      await interaction.reply({
-        embeds: [
-          new EmbedBuilder()
-            .setColor(0x57F287)
-            .setTitle('🌟 Prestige Successful!')
-            .setDescription(`Congratulations! You have prestiged from level **${currentLevel}**!`)
-            .addFields(
-              { name: '⭐ New Status', value: 'Level 1 (Prestiged)', inline: true },
-              { name: '🚀 XP Multiplier', value: '2.0x permanent', inline: true },
-              { name: '👑 Title Unlocked', value: 'Prestige Master', inline: true }
-            )
-        ]
+      const confirmEmbed = new EmbedBuilder()
+        .setColor(0xFFD700)
+        .setTitle('🌟 ¿Seguro que quieres prestigiar?')
+        .setDescription(`Estás en el nivel **${currentLevel}**. Si confirmas, vuelves al nivel 1 y obtienes el prestigio **${prestige + 1}**.`)
+        .addFields(
+          { name: '✅ Conservas', value: '• Tus monedas (cartera y banco)\n• Tus boletos', inline: false },
+          { name: '❌ Pierdes', value: '• Tu nivel (vuelves al 1)\n• Tu XP acumulada', inline: false },
+          { name: '🚀 XP por mensaje', value: bonusText, inline: false }
+        )
+        .setFooter({ text: 'Tienes 30 segundos para confirmar.' });
+
+      const message = await interaction.editReply({ embeds: [confirmEmbed], components: [buttons] });
+
+      const choice = await new Promise<'confirm' | 'cancel' | 'timeout'>((resolve) => {
+        let decided = false;
+        const collector = message.createMessageComponentCollector({ componentType: ComponentType.Button, time: CONFIRM_TIMEOUT_MS });
+
+        collector.on('collect', async (click) => {
+          try {
+            if (click.user.id !== userId) {
+              await click.reply({ content: 'Solo quien usó `/prestige` puede responder aquí.', flags: MessageFlags.Ephemeral });
+              return;
+            }
+            if (!decided) {
+              decided = true;
+              collector.stop(click.customId === ids.confirm ? 'confirm' : 'cancel');
+            }
+            await click.deferUpdate();
+          } catch (error) {
+            console.error('Prestigio: error al responder un botón:', error);
+          }
+        });
+
+        collector.on('end', (_collected, reason) => {
+          resolve(reason === 'confirm' ? 'confirm' : reason === 'cancel' ? 'cancel' : 'timeout');
+        });
       });
+
+      if (choice !== 'confirm') {
+        await interaction.editReply({
+          content: choice === 'cancel' ? '👌 Cancelado: no cambió nada.' : '⏰ Se acabó el tiempo: no cambió nada.',
+          embeds: [],
+          components: [],
+        });
+        return;
+      }
+
+      // El UPDATE es condicional (nivel >= 100): dos clics o dos /prestige a la vez solo prestigian una vez
+      const result = await economyTask(guildId, userId, () => applyPrestige(guildId, userId));
+      if (!result.ok) {
+        await interaction.editReply({
+          content: `ℹ️ No se hizo ningún cambio: ya no estás en el nivel ${PRESTIGE_MIN_LEVEL} o más (¿ya prestigiaste?).`,
+          embeds: [],
+          components: [],
+        });
+        return;
+      }
+
+      const doneEmbed = new EmbedBuilder()
+        .setColor(0x57F287)
+        .setTitle('🌟 ¡Prestigio conseguido!')
+        .setDescription(`¡Felicidades, ${interaction.user}! Dejaste atrás el nivel **${currentLevel}** y ahora tienes el prestigio **${result.prestigeLevel}**.`)
+        .addFields(
+          { name: '⭐ Nivel', value: '1', inline: true },
+          { name: '🚀 XP por mensaje', value: formatMultiplier(prestigeMultiplier(result.prestigeLevel)), inline: true }
+        )
+        .setTimestamp();
+      await interaction.editReply({ content: '', embeds: [doneEmbed], components: [] });
     }
   },
 
-  // Level rewards command
   {
     data: new SlashCommandBuilder()
       .setName('levelrewards')
-      .setDescription('View rewards for reaching certain levels'),
-    
+      .setDescription('🎁 Mira qué ganas al subir de nivel'),
+
     async execute(interaction: ChatInputCommandInteraction, bot: DiscordBot) {
+      const examples = [5, 10, 25, 50, 100].map(level => {
+        const reward = levelUpReward(level);
+        return `**Nivel ${level}:** ${formatCoins(reward.coins)} + ${reward.tickets} ${reward.tickets === 1 ? 'boleto' : 'boletos'}`;
+      });
+
       const embed = new EmbedBuilder()
         .setColor(0x5865F2)
-        .setTitle('🎁 Level Rewards System')
-        .setDescription('Special rewards for milestone levels:')
+        .setTitle('🎁 Premios por subir de nivel')
+        .setDescription('Cada vez que subes de nivel recibes automáticamente:\n• **nivel² × 50** monedas\n• **nivel ÷ 5 + 1** boletos (redondeado hacia abajo)')
         .addFields(
-          { name: '🏆 Level 10', value: '500 coins + "Rising Star" badge', inline: false },
-          { name: '⭐ Level 25', value: '2,500 coins + "Quarter Master" role', inline: false },
-          { name: '🌟 Level 50', value: '10,000 coins + "Halfway Hero" role', inline: false },
-          { name: '💎 Level 75', value: '25,000 coins + "Diamond Tier" role', inline: false },
-          { name: '🚀 Level 100', value: '100,000 coins + "Max Level" role + Prestige unlock', inline: false },
-          { name: '🌌 Level 100+', value: 'Every 10 levels: 50,000 coins + Legendary status', inline: false }
+          { name: 'Ejemplos', value: examples.join('\n'), inline: false },
+          { name: `🌟 Nivel ${PRESTIGE_MIN_LEVEL}`, value: 'Desbloqueas `/prestige`: vuelves al nivel 1 y ganas más XP por mensaje.', inline: false }
         )
-        .setFooter({ text: 'Rewards are automatically given when you reach these levels!' });
+        .setFooter({ text: 'Además, cada mensaje te da unas cuantas monedas (más cuanto más alto sea tu nivel).' });
 
       await interaction.reply({ embeds: [embed] });
     }
   },
 
-  // XP info command
   {
     data: new SlashCommandBuilder()
       .setName('xpinfo')
-      .setDescription('Get detailed information about the XP system'),
-    
+      .setDescription('⚡ Cómo funciona el sistema de XP y niveles'),
+
     async execute(interaction: ChatInputCommandInteraction, bot: DiscordBot) {
+      const steps = [2, 10, 50, 100].map(level => `• Nivel ${level}: ${xpForLevelStep(level).toLocaleString('es-MX')} XP`).join('\n');
+      const maxBonus = Math.round(PRESTIGE_XP_BONUS * PRESTIGE_MAX_BONUS_LEVELS * 100);
+
       const embed = new EmbedBuilder()
         .setColor(0x5865F2)
-        .setTitle('⚡ XP System Information')
-        .setDescription('How the leveling system works:')
+        .setTitle('⚡ Sistema de XP')
         .addFields(
-          { name: '📈 XP Sources', value: '• Messages: 15-25 XP each\n• Voice chat: 10 XP per minute\n• Special events: Bonus XP', inline: false },
-          { name: '📊 Sistema Exponencial', value: '• Cada nivel requiere 10% más XP\n• Nivel 2: 100 XP\n• Nivel 10: 214 XP por nivel\n• Nivel 50: 9,701 XP por nivel\n• Nivel 100: 1,138,893 XP por nivel', inline: false },
-          { name: '🎯 Max Level', value: 'Level 100 is "max" but you can continue to 100+ for prestige!', inline: false },
-          { name: '🌟 Prestige', value: 'At level 100+, you can prestige to reset with permanent 2x XP bonus', inline: false }
+          { name: '📈 Cómo se gana', value: `• Cada mensaje da entre ${MESSAGE_XP_MIN} y ${MESSAGE_XP_MAX} XP\n• Solo cuenta un mensaje por minuto (para que el spam no sirva)`, inline: false },
+          { name: '📊 Cada nivel pide 10 % más XP', value: `XP para subir a…\n${steps}\n• Para llegar al nivel ${PRESTIGE_MIN_LEVEL} hacen falta ${xpToReachLevel(PRESTIGE_MIN_LEVEL).toLocaleString('es-MX')} XP en total`, inline: false },
+          { name: '🌟 Prestigio', value: `Desde el nivel ${PRESTIGE_MIN_LEVEL} puedes usar \`/prestige\`: vuelves al nivel 1 y cada prestigio te da +${Math.round(PRESTIGE_XP_BONUS * 100)} % de XP por mensaje (máximo +${maxBonus} %).`, inline: false }
         )
-        .setFooter({ text: 'The system gets progressively harder but more rewarding!' });
+        .setFooter({ text: 'Usa /level para ver tu progreso.' });
 
       await interaction.reply({ embeds: [embed] });
     }

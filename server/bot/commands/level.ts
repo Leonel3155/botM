@@ -1,190 +1,122 @@
-import { SlashCommandBuilder, ChatInputCommandInteraction, EmbedBuilder } from 'discord.js';
+import { SlashCommandBuilder, ChatInputCommandInteraction, EmbedBuilder, User } from 'discord.js';
 import { DiscordBot } from '../index';
 import { storage } from '../../storage';
+import { getPrestigeLevel } from '../services/economy';
+import { LevelRow, formatMultiplier, getLevelRank, getLevelRow, levelProgress, prestigeMultiplier, rowTotalXp } from '../services/levels';
+import { respond } from '../utils/interactions';
+
+function progressBar(current: number, total: number, size = 12): string {
+  const ratio = total > 0 ? Math.min(Math.max(current / total, 0), 1) : 0;
+  const filled = Math.round(ratio * size);
+  return '▰'.repeat(filled) + '▱'.repeat(size - filled);
+}
+
+// Compartido con &lv y &rank
+export async function buildLevelEmbed(guildId: string, target: User): Promise<EmbedBuilder> {
+  const row: LevelRow | undefined = await getLevelRow(guildId, target.id);
+  const embed = new EmbedBuilder()
+    .setColor(0x5865F2)
+    .setAuthor({ name: target.displayName, iconURL: target.displayAvatarURL() })
+    .setThumbnail(target.displayAvatarURL());
+
+  if (!row) {
+    return embed
+      .setTitle('📊 Nivel')
+      .setDescription(target.bot ? 'Los bots no suben de nivel. 🤖' : `${target} todavía no tiene XP. ¡Cada mensaje cuenta!`);
+  }
+
+  const totalXp = rowTotalXp(row);
+  const progress = levelProgress(totalXp);
+  const level = progress.level;
+  const [rank, prestige] = await Promise.all([
+    getLevelRank(guildId, target.id),
+    getPrestigeLevel(guildId, target.id),
+  ]);
+
+  embed
+    .setTitle('📊 Nivel')
+    .addFields(
+      { name: '🎯 Nivel', value: level.toLocaleString('es-MX'), inline: true },
+      { name: '⚡ XP total', value: totalXp.toLocaleString('es-MX'), inline: true },
+      { name: '🏆 Puesto', value: rank ? `#${rank}` : '—', inline: true },
+      {
+        name: '📈 Progreso al siguiente nivel',
+        value: `${progressBar(progress.intoLevel, progress.levelSize)}\n${progress.intoLevel.toLocaleString('es-MX')} / ${progress.levelSize.toLocaleString('es-MX')} XP (faltan ${progress.remaining.toLocaleString('es-MX')})`,
+        inline: false,
+      }
+    );
+
+  if (prestige > 0) {
+    embed.addFields({ name: '🌟 Prestigio', value: `${prestige} (${formatMultiplier(prestigeMultiplier(prestige))} XP)`, inline: true });
+  }
+  return embed.setFooter({ text: '¡Sigue platicando para subir de nivel!' });
+}
+
+export async function buildLevelLeaderboard(guildId: string, limit: number): Promise<EmbedBuilder | null> {
+  const top = await storage.getTopUsersByLevel(guildId, limit);
+  if (top.length === 0) return null;
+
+  const lines = top.map((entry, index) => {
+    const medal = index === 0 ? '🥇' : index === 1 ? '🥈' : index === 2 ? '🥉' : `**${index + 1}.**`;
+    return `${medal} <@${entry.userId}> — Nivel ${entry.level ?? 1} (${rowTotalXp(entry).toLocaleString('es-MX')} XP)`;
+  });
+
+  return new EmbedBuilder()
+    .setColor(0x5865F2)
+    .setTitle('🏆 Ranking de niveles')
+    .setDescription(lines.join('\n'))
+    .setTimestamp();
+}
+
+const levelData = (name: string, description: string) => new SlashCommandBuilder()
+  .setName(name)
+  .setDescription(description)
+  .addUserOption(option =>
+    option.setName('usuario')
+      .setDescription('A quién consultar (opcional)')
+      .setRequired(false)
+  );
+
+async function executeLevel(interaction: ChatInputCommandInteraction) {
+  const target = interaction.options.getUser('usuario') || interaction.user;
+  await interaction.deferReply();
+  const embed = await buildLevelEmbed(interaction.guildId!, target);
+  await respond(interaction, { embeds: [embed] });
+}
 
 export const levelCommands = [
   {
-    data: new SlashCommandBuilder()
-      .setName('level')
-      .setDescription('Check your level and XP')
-      .addUserOption(option =>
-        option.setName('user')
-          .setDescription('User to check level for (optional)')
-          .setRequired(false)
-      ),
-    
+    data: levelData('level', '📊 Mira tu nivel y XP, o los de otra persona'),
     async execute(interaction: ChatInputCommandInteraction, bot: DiscordBot) {
-      const targetUser = interaction.options.getUser('user') || interaction.user;
-      const guildId = interaction.guildId!;
-
-      let user = await storage.getUser(targetUser.id);
-      if (!user) {
-        user = await storage.createUser({
-          id: targetUser.id,
-          username: targetUser.username,
-          avatar: targetUser.avatar || null
-        });
-      }
-
-      const userLevel = await storage.getUserLevel(targetUser.id, guildId);
-      
-      if (!userLevel) {
-        const embed = new EmbedBuilder()
-          .setColor(0x5865F2)
-          .setTitle('Level Information')
-          .setDescription(`${targetUser} hasn't gained any XP yet!`)
-          .setThumbnail(targetUser.displayAvatarURL());
-        
-        await interaction.reply({ embeds: [embed] });
-        return;
-      }
-
-      // Fixed level system with proper null checks
-      const totalXp = userLevel.totalXp || 0;
-      const level = userLevel.level || 1;
-      
-      // Exponential XP system - each level requires more XP but balanced for level 100
-      const getXpForLevel = (lvl: number) => {
-        if (lvl <= 1) return 0;
-        let totalRequired = 0;
-        for (let i = 2; i <= lvl; i++) {
-          // Progressive system: starts at 100 XP, increases by 10% each level
-          totalRequired += Math.floor(100 * Math.pow(1.1, i - 2));
-        }
-        return totalRequired;
-      };
-      
-      const xpForThisLevel = getXpForLevel(level);
-      const xpForNextLevel = getXpForLevel(level + 1);
-      const xpProgress = totalXp - xpForThisLevel;
-      const xpNeeded = xpForNextLevel - totalXp;
-      const xpRequiredForNext = xpForNextLevel - xpForThisLevel;
-
-      const embed = new EmbedBuilder()
-        .setColor(0x5865F2)
-        .setTitle('Level Information')
-        .setDescription(`**${targetUser.username}**'s level stats`)
-        .addFields(
-          { name: '📊 Level', value: level.toString(), inline: true },
-          { name: '⚡ Total XP', value: totalXp.toString(), inline: true },
-          { name: '🎯 XP to Next Level', value: xpNeeded.toString(), inline: true },
-          { name: '🎤 Voice Time', value: `${Math.floor((userLevel.voiceTime || 0) / 60)}h ${(userLevel.voiceTime || 0) % 60}m`, inline: true }
-        )
-        .setThumbnail(targetUser.displayAvatarURL())
-        .setFooter({ text: `Progress: ${xpProgress}/${xpRequiredForNext} XP | Level ${level}${level >= 100 ? '+' : ''}` });
-
-      await interaction.reply({ embeds: [embed] });
+      await executeLevel(interaction);
     }
   },
 
-  // Abbreviated version: /lv for /level
+  // Atajo de /level
   {
-    data: new SlashCommandBuilder()
-      .setName('lv')
-      .setDescription('Check your level (short for /level)')
-      .addUserOption(option =>
-        option.setName('user')
-          .setDescription('User to check level for (optional)')
-          .setRequired(false)
-      ),
-    
+    data: levelData('lv', '📊 Atajo de /level: tu nivel y XP'),
     async execute(interaction: ChatInputCommandInteraction, bot: DiscordBot) {
-      const targetUser = interaction.options.getUser('user') || interaction.user;
-      const guildId = interaction.guildId!;
-
-      let user = await storage.getUser(targetUser.id);
-      if (!user) {
-        user = await storage.createUser({
-          id: targetUser.id,
-          username: targetUser.username,
-          avatar: targetUser.avatar || null
-        });
-      }
-
-      const userLevel = await storage.getUserLevel(targetUser.id, guildId);
-      
-      if (!userLevel) {
-        const embed = new EmbedBuilder()
-          .setColor(0x5865F2)
-          .setTitle('Level Information')
-          .setDescription(`${targetUser} hasn't gained any XP yet!`)
-          .setThumbnail(targetUser.displayAvatarURL())
-          .setFooter({ text: 'Tip: /lv is short for /level!' });
-        
-        await interaction.reply({ embeds: [embed] });
-        return;
-      }
-
-      const totalXp = userLevel.totalXp || 0;
-      const level = userLevel.level || 1;
-      
-      const getXpForLevel = (lvl: number) => {
-        if (lvl <= 1) return 0;
-        let totalRequired = 0;
-        for (let i = 2; i <= lvl; i++) {
-          totalRequired += Math.floor(100 * Math.pow(1.1, i - 2));
-        }
-        return totalRequired;
-      };
-      
-      const xpForThisLevel = getXpForLevel(level);
-      const xpForNextLevel = getXpForLevel(level + 1);
-      const xpNeeded = xpForNextLevel - totalXp;
-
-      const embed = new EmbedBuilder()
-        .setColor(0x5865F2)
-        .setTitle('Level Information (Quick Check)')
-        .setDescription(`**${targetUser.username}**'s level stats`)
-        .addFields(
-          { name: '📊 Level', value: level.toString(), inline: true },
-          { name: '⚡ Total XP', value: totalXp.toString(), inline: true },
-          { name: '🎯 XP to Next Level', value: xpNeeded.toString(), inline: true }
-        )
-        .setThumbnail(targetUser.displayAvatarURL())
-        .setFooter({ text: 'Tip: /lv is short for /level!' });
-
-      await interaction.reply({ embeds: [embed] });
+      await executeLevel(interaction);
     }
   },
 
-  // Abbreviated version: /lb for /leaderboard  
   {
     data: new SlashCommandBuilder()
       .setName('lb')
-      .setDescription('View server leaderboard (short for /leaderboard)')
+      .setDescription('🏆 Ranking de niveles del servidor (para monedas usa /leaderboard)')
       .addIntegerOption(option =>
-        option.setName('limit')
-          .setDescription('Number of users to show (max 25)')
+        option.setName('limite')
+          .setDescription('Cuántas personas mostrar (máximo 25)')
           .setMinValue(1)
           .setMaxValue(25)
           .setRequired(false)
       ),
-    
+
     async execute(interaction: ChatInputCommandInteraction, bot: DiscordBot) {
-      const limit = interaction.options.getInteger('limit') || 10;
-      const guildId = interaction.guildId!;
-
-      const topUsers = await storage.getTopUsersByLevel(guildId, limit);
-      
-      if (topUsers.length === 0) {
-        await interaction.reply('No users have gained XP in this server yet!');
-        return;
-      }
-
-      const embed = new EmbedBuilder()
-        .setColor(0x5865F2)
-        .setTitle(`🏆 Server Leaderboard`)
-        .setDescription('Top users by total XP');
-
-      const leaderboardText = topUsers.map((user: any, index: number) => {
-        const medal = index === 0 ? '🥇' : index === 1 ? '🥈' : index === 2 ? '🥉' : `${index + 1}.`;
-        return `${medal} <@${user.userId}> - Level ${user.level || 1} (${user.totalXp || 0} XP)`;
-      }).join('\n');
-
-      embed.setDescription(leaderboardText)
-        .setFooter({ text: 'Tip: /lb is short for /leaderboard!' });
-
-      await interaction.reply({ embeds: [embed] });
+      const limit = interaction.options.getInteger('limite') || 10;
+      await interaction.deferReply();
+      const embed = await buildLevelLeaderboard(interaction.guildId!, limit);
+      await respond(interaction, embed ? { embeds: [embed] } : 'Aún nadie tiene XP en este servidor. ¡El primer mensaje empieza la cuenta!');
     }
   }
 ];

@@ -1,20 +1,25 @@
-import { SlashCommandBuilder, ChatInputCommandInteraction, PermissionFlagsBits } from 'discord.js';
+import { SlashCommandBuilder, ChatInputCommandInteraction, PermissionFlagsBits, MessageFlags } from 'discord.js';
 import { DiscordBot } from '../index';
 import { globalQueue, queueForGuild, getQueueStats } from '../services/queues';
 import { lockForUser, getLockStats } from '../services/locks';
 
+// Solo se registra con NODE_ENV=development (ver commands/index.ts): ocupa las colas del bot a propósito
 export const data = new SlashCommandBuilder()
   .setName('stress')
-  .setDescription('🧪 Test de estrés para verificar el manejo de concurrencia')
+  .setDescription('🧪 [Desarrollo] Prueba de estrés de las colas y candados del bot')
   .addIntegerOption(option =>
-    option.setName('tasks').setDescription('Número de tareas a ejecutar (máx 50)').setRequired(false)
+    option.setName('tareas').setDescription('Número de tareas a ejecutar (máx. 50)').setRequired(false).setMinValue(1).setMaxValue(50)
   )
   .setDefaultMemberPermissions(PermissionFlagsBits.Administrator);
 
 export async function execute(interaction: ChatInputCommandInteraction, bot: DiscordBot) {
-  await interaction.deferReply({ flags: 64 }); // 64 = ephemeral flag
-  
-  const numTasks = Math.min(interaction.options.getInteger('tasks') || 20, 50);
+  if (process.env.NODE_ENV !== 'development' || !interaction.memberPermissions?.has('Administrator')) {
+    await interaction.reply({ content: '⛔ Este diagnóstico solo está disponible para administradores en modo desarrollo.', flags: MessageFlags.Ephemeral });
+    return;
+  }
+  await interaction.deferReply({ flags: MessageFlags.Ephemeral });
+
+  const numTasks = Math.min(interaction.options.getInteger('tareas') || 20, 50);
   const guildId = interaction.guildId!;
   const userId = interaction.user.id;
   
@@ -34,10 +39,10 @@ export async function execute(interaction: ChatInputCommandInteraction, bot: Dis
           
           // Simular operación de economía
           const amount = Math.floor(Math.random() * 100) + 1;
-          return `Task ${i + 1}: +${amount} coins (${Math.round(delay)}ms)`;
+          return `Tarea ${i + 1}: +${amount} (${Math.round(delay)} ms)`;
         });
       }, { throwOnTimeout: true });
-    }, { timeout: 120_000, throwOnTimeout: true }); // override puntual según ChatGPT
+    }, { timeout: 120_000, throwOnTimeout: true });
   });
   
   try {
@@ -53,7 +58,7 @@ export async function execute(interaction: ChatInputCommandInteraction, bot: Dis
     const lockStats = getLockStats();
     
     const response = [
-      `🧪 **Test de Estrés Completado**`,
+      `🧪 **Prueba de estrés completada**`,
       ``,
       `📊 **Resultados:**`,
       `• Tareas ejecutadas: ${numTasks}`,
@@ -66,9 +71,9 @@ export async function execute(interaction: ChatInputCommandInteraction, bot: Dis
       `• Colas por guild: ${queueStats.guilds}`,
       `• Colas de economía: ${queueStats.economy}`,
       ``,
-      `🔒 **Estadísticas de Locks:**`,
-      `• User locks activos: ${lockStats.activeUserLocks}/${lockStats.userLocks}`,
-      `• Guild locks activos: ${lockStats.activeGuildLocks}/${lockStats.guildLocks}`,
+      `🔒 **Estadísticas de candados:**`,
+      `• Por usuario activos: ${lockStats.activeUserLocks}/${lockStats.userLocks}`,
+      `• Por servidor activos: ${lockStats.activeGuildLocks}/${lockStats.guildLocks}`,
       ``,
       `✅ **Estado:** ${duration < 10000 ? 'EXCELENTE' : duration < 20000 ? 'BUENO' : 'NECESITA OPTIMIZACIÓN'}`
     ].join('\n');
@@ -76,7 +81,7 @@ export async function execute(interaction: ChatInputCommandInteraction, bot: Dis
     await interaction.editReply(response);
     
     // Log detallado para debugging
-    console.log('🧪 Stress test completed:', {
+    console.log('🧪 Prueba de estrés completada:', {
       tasks: numTasks,
       duration: duration,
       avgPerTask: Math.round(duration / numTasks),
@@ -86,8 +91,8 @@ export async function execute(interaction: ChatInputCommandInteraction, bot: Dis
     });
     
   } catch (error) {
-    console.error('Stress test failed:', error);
-    await interaction.editReply(`❌ Test de estrés falló: ${error}`);
+    console.error('La prueba de estrés falló:', error);
+    await interaction.editReply('❌ La prueba de estrés falló; revisa la consola del servidor.');
   }
 }
 
