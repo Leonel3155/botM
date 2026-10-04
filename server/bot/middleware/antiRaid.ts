@@ -8,7 +8,8 @@ import {
   GuildMember,
   GuildVerificationLevel,
   PermissionFlagsBits,
-  type SendableChannels,
+  type GuildBasedChannel,
+  type TextChannel,
 } from 'discord.js';
 import { storage } from '../../storage';
 import { antiRaidActions, defaultAntiRaidConfig, type AntiRaidAction, type AntiRaidSettings } from '@shared/schema';
@@ -32,6 +33,15 @@ interface RaidState {
   joinsDuringRaid: number;
   kicked: number;
   timer: NodeJS.Timeout | null;
+  // Se resuelve cuando triggerRaid ya guardó el evento, cambió la verificación y avisó al staff.
+  // liftLockdown lo espera para no levantar un raid a medio arrancar. Nunca se rechaza.
+  ready: Promise<void>;
+  lifted: boolean; // ya se levantó: triggerRaid deja de expulsar y no vuelve a tocar el servidor
+}
+
+// Algo a lo que se le puede mandar la alerta: un canal de texto o el dueño por mensaje directo
+interface AlertTarget {
+  send(options: { embeds: EmbedBuilder[] }): Promise<unknown>;
 }
 
 export const ANTI_RAID_ACTION_LABELS: Record<AntiRaidAction, string> = {
@@ -128,7 +138,7 @@ function accountAgeDays(member: GuildMember): number {
 }
 
 async function kickDuringRaid(member: GuildMember, state: RaidState): Promise<boolean> {
-  if (!member.kickable) return false;
+  if (state.lifted || !member.kickable) return false;
   try {
     await member.kick('Anti-raid: modo raid activo, no se permiten entradas por ahora');
     state.kicked++;
@@ -143,6 +153,7 @@ async function kickDuringRaid(member: GuildMember, state: RaidState): Promise<bo
 async function triggerRaid(guild: Guild, config: AntiRaidSettings, joins: JoinRecord[]) {
   const startedAt = Date.now();
   const durationMs = config.lockdownMinutes * 60_000;
+  let markReady!: () => void;
   const state: RaidState = {
     eventId: null,
     action: config.action,
@@ -152,6 +163,8 @@ async function triggerRaid(guild: Guild, config: AntiRaidSettings, joins: JoinRe
     joinsDuringRaid: 0,
     kicked: 0,
     timer: null,
+    ready: new Promise<void>((resolve) => { markReady = resolve; }),
+    lifted: false,
   };
   activeRaids.set(guild.id, state);
   state.timer = setTimeout(() => {
@@ -159,46 +172,37 @@ async function triggerRaid(guild: Guild, config: AntiRaidSettings, joins: JoinRe
   }, durationMs);
 
   const newAccounts = joins.filter((join) => join.accountAgeDays < config.minAccountAgeDays);
+  console.warn(`🚨 Anti-raid: ${joins.length} entradas en ${config.joinWindowSeconds}s en ${guild.name} (${guild.id}), acción: ${config.action}`);
+
+  try {
+    await startRaid(guild, config, joins, newAccounts, state);
+  } catch (error) {
+    console.error('Anti-raid: error al activar el modo raid:', error);
+  } finally {
+    markReady();
+  }
+
+  if (config.action === 'lockdown' && !state.lifted && guild.members.me?.permissions.has(PermissionFlagsBits.KickMembers)) {
+    for (const join of newAccounts) {
+      if (state.lifted) break; // lo levantaron a mitad: ya no expulsamos a nadie más
+      const member = guild.members.cache.get(join.userId) ?? await guild.members.fetch(join.userId).catch(() => null);
+      if (member) await kickDuringRaid(member, state);
+    }
+
+    // Para que un reinicio retome el contador (si ya se levantó, liftLockdown guardó el total)
+    if (state.eventId && !state.lifted) {
+      await storage.updateRaidEventDetails(state.eventId, { kickedAtStart: state.kicked })
+        .catch((error) => console.error('Anti-raid: no se pudo actualizar el evento de raid:', error));
+    }
+  }
+}
+
+// Primero guarda el evento (para que un reinicio o /antiraid levantar lo encuentren aunque lo demás falle),
+// luego sube la verificación y avisa al staff. Las expulsiones van después, fuera de esta parte.
+async function startRaid(guild: Guild, config: AntiRaidSettings, joins: JoinRecord[], newAccounts: JoinRecord[], state: RaidState) {
   const severity = newAccounts.length * 2 >= joins.length ? 'high' : 'medium';
   const actionsTaken: string[] = [];
   const me = guild.members.me;
-
-  console.warn(`🚨 Anti-raid: ${joins.length} entradas en ${config.joinWindowSeconds}s en ${guild.name} (${guild.id}), acción: ${config.action}`);
-
-  if (config.action === 'verification' || config.action === 'lockdown') {
-    if (guild.verificationLevel >= GuildVerificationLevel.VeryHigh) {
-      actionsTaken.push('🔐 La verificación ya estaba al máximo');
-    } else if (!me?.permissions.has(PermissionFlagsBits.ManageGuild)) {
-      actionsTaken.push('⚠️ No pude subir la verificación: me falta el permiso **Gestionar servidor**');
-    } else {
-      const previous = guild.verificationLevel;
-      try {
-        await guild.setVerificationLevel(GuildVerificationLevel.VeryHigh, 'Anti-raid: entrada masiva detectada');
-        state.previousVerificationLevel = previous;
-        actionsTaken.push('🔐 Subí el nivel de verificación al máximo (teléfono verificado)');
-      } catch (error) {
-        console.error('Anti-raid: no se pudo cambiar el nivel de verificación:', error);
-        actionsTaken.push('⚠️ No pude cambiar el nivel de verificación');
-      }
-    }
-  }
-
-  if (config.action === 'lockdown') {
-    if (me?.permissions.has(PermissionFlagsBits.KickMembers)) {
-      let kickedFromBurst = 0;
-      for (const join of newAccounts) {
-        const member = guild.members.cache.get(join.userId) ?? await guild.members.fetch(join.userId).catch(() => null);
-        if (member && await kickDuringRaid(member, state)) kickedFromBurst++;
-      }
-      actionsTaken.push(`👢 Expulsé ${kickedFromBurst} cuenta(s) nueva(s) de la ráfaga; quien entre durante el lockdown será expulsado`);
-    } else {
-      actionsTaken.push('⚠️ No puedo expulsar: me falta el permiso **Expulsar miembros**');
-    }
-  }
-
-  if (config.action === 'alert') {
-    actionsTaken.push('📣 Solo alerta (no se tocó nada del servidor)');
-  }
 
   try {
     await storage.ensureGuild(guild.id, guild.name, guild.ownerId);
@@ -214,14 +218,52 @@ async function triggerRaid(guild: Guild, config: AntiRaidSettings, joins: JoinRe
         newAccounts: newAccounts.length,
         userIds: joins.map((join) => join.userId).slice(0, MAX_STORED_USER_IDS),
         action: config.action,
-        previousVerificationLevel: state.previousVerificationLevel,
-        kickedAtStart: state.kicked,
+        previousVerificationLevel: null,
+        kickedAtStart: 0,
         liftAt: state.liftAt,
       },
     });
     state.eventId = event.id;
   } catch (error) {
     console.error('Anti-raid: no se pudo guardar el evento de raid:', error);
+  }
+
+  if ((config.action === 'verification' || config.action === 'lockdown') && !state.lifted) {
+    if (guild.verificationLevel >= GuildVerificationLevel.VeryHigh) {
+      actionsTaken.push('🔐 La verificación ya estaba al máximo');
+    } else if (!me?.permissions.has(PermissionFlagsBits.ManageGuild)) {
+      actionsTaken.push('⚠️ No pude subir la verificación: me falta el permiso **Gestionar servidor**');
+    } else {
+      const previous = guild.verificationLevel;
+      try {
+        await guild.setVerificationLevel(GuildVerificationLevel.VeryHigh, 'Anti-raid: entrada masiva detectada');
+        state.previousVerificationLevel = previous;
+        actionsTaken.push('🔐 Subí el nivel de verificación al máximo (teléfono verificado)');
+      } catch (error) {
+        console.error('Anti-raid: no se pudo cambiar el nivel de verificación:', error);
+        actionsTaken.push('⚠️ No pude cambiar el nivel de verificación');
+      }
+
+      // Si el bot se cae en pleno raid, al volver sabrá a qué nivel regresar la verificación
+      if (state.eventId && state.previousVerificationLevel !== null) {
+        await storage.updateRaidEventDetails(state.eventId, { previousVerificationLevel: state.previousVerificationLevel })
+          .catch((error) => console.error('Anti-raid: no se pudo actualizar el evento de raid:', error));
+      }
+    }
+  }
+
+  if (config.action === 'lockdown') {
+    if (me?.permissions.has(PermissionFlagsBits.KickMembers)) {
+      actionsTaken.push(newAccounts.length
+        ? `👢 Expulsando ${newAccounts.length} cuenta(s) nueva(s) de la ráfaga; quien entre durante el lockdown también será expulsado`
+        : '👢 Quien entre durante el lockdown será expulsado');
+    } else {
+      actionsTaken.push('⚠️ No puedo expulsar: me falta el permiso **Expulsar miembros**');
+    }
+  }
+
+  if (config.action === 'alert') {
+    actionsTaken.push('📣 Solo alerta (no se tocó nada del servidor)');
   }
 
   const embed = new EmbedBuilder()
@@ -254,7 +296,12 @@ export async function liftLockdown(guildId: string, liftedBy: string = 'manual')
   if (!state) return false;
 
   activeRaids.delete(guildId);
+  state.lifted = true;
   if (state.timer) clearTimeout(state.timer);
+
+  // Si el raid sigue arrancando, esperamos a que guarde el evento y suba la verificación
+  // para poder deshacerlo todo (si no, la verificación se quedaría al máximo y el evento abierto)
+  await state.ready;
 
   const guild = discordClient?.guilds.cache.get(guildId);
   const notes: string[] = [];
@@ -308,56 +355,102 @@ async function restorePendingRaids() {
   if (!discordClient) return;
 
   for (const guild of Array.from(discordClient.guilds.cache.values())) {
-    const events = await storage.getUnresolvedRaidEvents(guild.id);
-
-    for (const event of events) {
-      const details = (event.details ?? {}) as Record<string, unknown>;
-      const liftAt = details.liftAt;
-      if (event.type !== 'join_spam' || typeof liftAt !== 'number') continue;
-
-      // Solo puede haber un modo raid por servidor: los eventos más viejos se cierran
-      if (activeRaids.has(guild.id)) {
-        await storage.resolveRaidEvent(event.id, { liftedAt: Date.now(), liftedBy: 'restart' });
-        continue;
-      }
-
-      const action = antiRaidActions.includes(details.action as AntiRaidAction) ? details.action as AntiRaidAction : 'alert';
-      const state: RaidState = {
-        eventId: event.id,
-        action,
-        startedAt: event.createdAt?.getTime() ?? Date.now(),
-        liftAt,
-        previousVerificationLevel: typeof details.previousVerificationLevel === 'number' ? details.previousVerificationLevel : null,
-        joinsDuringRaid: 0,
-        kicked: typeof details.kickedAtStart === 'number' ? details.kickedAtStart : 0,
-        timer: null,
-      };
-      activeRaids.set(guild.id, state);
-      state.timer = setTimeout(() => {
-        liftLockdown(guild.id, 'auto').catch((error) => console.error('Anti-raid: error al levantar el modo raid:', error));
-      }, Math.max(0, state.liftAt - Date.now()));
-
-      console.log(`🛡️ Anti-raid: modo raid restaurado en ${guild.name} hasta ${new Date(state.liftAt).toISOString()}`);
+    try {
+      await restoreGuildRaids(guild);
+    } catch (error) {
+      console.error(`Anti-raid: no se pudo restaurar el modo raid de ${guild.id}:`, error);
     }
+  }
+}
+
+async function restoreGuildRaids(guild: Guild) {
+  const events = await storage.getUnresolvedRaidEvents(guild.id); // del más nuevo al más viejo
+  // Modo raid vigente: el que restauramos aquí o uno detectado justo después de arrancar
+  let current: RaidState | undefined;
+
+  for (const event of events) {
+    const details = (event.details ?? {}) as Record<string, unknown>;
+    const liftAt = details.liftAt;
+    if (event.type !== 'join_spam' || typeof liftAt !== 'number') continue;
+
+    if (!current) {
+      current = activeRaids.get(guild.id);
+      if (current) await current.ready; // así ya sabemos el ID de su evento
+    }
+
+    // Solo puede haber un modo raid por servidor: los demás eventos abiertos se cierran (nunca el del vigente)
+    if (current) {
+      if (current.eventId !== event.id) {
+        await storage.resolveRaidEvent(event.id, { liftedAt: Date.now(), liftedBy: 'restart' });
+      }
+      continue;
+    }
+
+    const action = antiRaidActions.includes(details.action as AntiRaidAction) ? details.action as AntiRaidAction : 'alert';
+    const state: RaidState = {
+      eventId: event.id,
+      action,
+      startedAt: event.createdAt?.getTime() ?? Date.now(),
+      liftAt,
+      previousVerificationLevel: typeof details.previousVerificationLevel === 'number' ? details.previousVerificationLevel : null,
+      joinsDuringRaid: 0,
+      kicked: typeof details.kickedAtStart === 'number' ? details.kickedAtStart : 0,
+      timer: null,
+      ready: Promise.resolve(),
+      lifted: false,
+    };
+    activeRaids.set(guild.id, state);
+    current = state;
+    state.timer = setTimeout(() => {
+      liftLockdown(guild.id, 'auto').catch((error) => console.error('Anti-raid: error al levantar el modo raid:', error));
+    }, Math.max(0, state.liftAt - Date.now()));
+
+    console.log(`🛡️ Anti-raid: modo raid restaurado en ${guild.name} hasta ${new Date(state.liftAt).toISOString()}`);
   }
 }
 
 // ===== Alertas =====
 async function sendAlert(guild: Guild, config: AntiRaidSettings, embed: EmbedBuilder) {
-  const channel = await findAlertChannel(guild, config);
-  if (!channel) {
-    console.warn(`Anti-raid: no encontré un canal para avisar en ${guild.name} (${guild.id})`);
+  const target = await findAlertTarget(guild, config);
+  if (!target) {
+    console.warn(`Anti-raid: no encontré dónde avisar en ${guild.name} (${guild.id})`);
     return;
   }
   try {
-    await channel.send({ embeds: [embed] });
+    await target.send({ embeds: [embed] });
   } catch (error) {
     console.error(`Anti-raid: no se pudo enviar la alerta en ${guild.id}:`, error);
   }
 }
 
-// Orden: canal configurado en /antiraid → canal de moderación del dashboard → canal tipo "mod-log" → canal del sistema
-async function findAlertChannel(guild: Guild, config: AntiRaidSettings): Promise<SendableChannels | null> {
+// Palabras (completas) que delatan un canal del staff: "mod-logs", "📋・registro-moderación", "staff"...
+// Por palabra y no por substring, para no caer en canales como "blog", "catalogo" o "changelog".
+const STAFF_CHANNEL_WORDS = new Set([
+  'mod', 'mods', 'modlog', 'modlogs', 'moderacion', 'moderation', 'moderadores', 'moderators',
+  'log', 'logs', 'registro', 'registros', 'staff', 'admin', 'admins', 'administracion',
+  'alertas', 'alerts', 'seguridad', 'security', 'raid', 'antiraid', 'auditoria', 'audit',
+]);
+
+function isStaffChannelName(name: string): boolean {
+  const words = name.toLowerCase().normalize('NFD').replace(/[\u0300-\u036f]/g, '').split(/[^a-z0-9]+/);
+  return words.some((word) => STAFF_CHANNEL_WORDS.has(word));
+}
+
+// El bot puede ver el canal y mandar embeds en él
+function canAlertIn(guild: Guild, channel: GuildBasedChannel | undefined): channel is GuildBasedChannel & AlertTarget {
+  const me = guild.members.me;
+  if (!channel || !channel.isSendable() || !me) return false;
+  return channel.permissionsFor(me)?.has([
+    PermissionFlagsBits.ViewChannel,
+    PermissionFlagsBits.SendMessages,
+    PermissionFlagsBits.EmbedLinks,
+  ]) ?? false;
+}
+
+// Orden: canal configurado en /antiraid → canal de moderación del dashboard → canal privado del staff
+// (por nombre y que @everyone no pueda ver) → mensaje directo al dueño. Nunca un canal público adivinado:
+// la alerta dice cuándo termina el modo raid y eso no lo deben ver los raiders.
+async function findAlertTarget(guild: Guild, config: AntiRaidSettings): Promise<AlertTarget | null> {
   const preferredIds: (string | null | undefined)[] = [config.logChannelId];
   try {
     preferredIds.push((await storage.getGuild(guild.id))?.moderationChannelId);
@@ -368,15 +461,27 @@ async function findAlertChannel(guild: Guild, config: AntiRaidSettings): Promise
   for (const id of preferredIds) {
     if (!id) continue;
     const channel = guild.channels.cache.get(id);
-    if (channel?.isSendable()) return channel;
+    if (canAlertIn(guild, channel)) return channel;
   }
 
-  const staffChannel = guild.channels.cache.find((channel) =>
-    channel.type === ChannelType.GuildText && /mod|log|staff|admin/i.test(channel.name)
-  );
-  if (staffChannel?.isSendable()) return staffChannel;
+  const everyone = guild.roles.everyone;
+  const staffChannel = guild.channels.cache
+    .filter((channel): channel is TextChannel =>
+      channel.type === ChannelType.GuildText &&
+      isStaffChannelName(channel.name) &&
+      channel.permissionsFor(everyone).has(PermissionFlagsBits.ViewChannel) === false &&
+      canAlertIn(guild, channel)
+    )
+    .sort((a, b) => a.rawPosition - b.rawPosition)
+    .first();
+  if (staffChannel) return staffChannel;
 
-  return guild.systemChannel;
+  try {
+    return await guild.fetchOwner();
+  } catch (error) {
+    console.error(`Anti-raid: no pude obtener al dueño de ${guild.id} para avisarle:`, error);
+    return null;
+  }
 }
 
 // ===== Estado para comandos / dashboard =====

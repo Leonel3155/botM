@@ -14,7 +14,7 @@ function configFields(config: AntiRaidSettings) {
     { name: '🛠️ Acción', value: ANTI_RAID_ACTION_LABELS[config.action], inline: false },
     {
       name: '📣 Canal de alertas',
-      value: config.logChannelId ? `<#${config.logChannelId}>` : 'Automático (canal de moderación, de logs o del sistema)',
+      value: config.logChannelId ? `<#${config.logChannelId}>` : 'Automático (canal de moderación o de logs privado del staff; si no hay, mensaje directo al dueño)',
       inline: false,
     },
   ];
@@ -79,6 +79,12 @@ export const antiraidCommands = [
     async execute(interaction: ChatInputCommandInteraction, bot: DiscordBot) {
       if (!interaction.guild) {
         await interaction.reply({ content: 'Este comando solo funciona en servidores.', flags: MessageFlags.Ephemeral });
+        return;
+      }
+
+      // Los permisos por defecto del comando se pueden cambiar en Integraciones, así que lo revisamos aquí también
+      if (!interaction.memberPermissions?.has(PermissionFlagsBits.ManageGuild)) {
+        await interaction.reply({ content: '⛔ Necesitas el permiso **Gestionar servidor** para usar este comando.', flags: MessageFlags.Ephemeral });
         return;
       }
 

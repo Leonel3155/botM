@@ -23,6 +23,15 @@ export interface ModerationLogEntry {
 
 export type ContentFeedUpdate = Partial<Omit<ContentFeed, 'id' | 'guildId'>>;
 
+export const MAX_CONTENT_FEEDS_PER_GUILD = 10;
+
+export class ContentFeedLimitError extends Error {
+  constructor(public readonly limit: number) {
+    super(`Este servidor ya tiene el máximo de ${limit} feeds de contenido. Borra alguno antes de crear otro.`);
+    this.name = 'ContentFeedLimitError';
+  }
+}
+
 export interface IStorage {
   // User methods
   getUser(id: string): Promise<User | undefined>;
@@ -69,6 +78,7 @@ export interface IStorage {
   getRaidEvents(guildId: string, limit?: number): Promise<RaidEvent[]>;
   getUnresolvedRaidEvents(guildId: string): Promise<RaidEvent[]>;
   resolveRaidEvent(id: string, extraDetails?: Record<string, unknown>): Promise<RaidEvent | undefined>;
+  updateRaidEventDetails(id: string, extraDetails: Record<string, unknown>): Promise<RaidEvent | undefined>;
   getAntiRaidConfig(guildId: string): Promise<AntiRaidSettings>;
   setAntiRaidConfig(guildId: string, updates: Partial<AntiRaidSettings>): Promise<AntiRaidSettings>;
 
@@ -449,6 +459,16 @@ export class DatabaseStorage implements IStorage {
     return event || undefined;
   }
 
+  // Mezcla datos en `details` sin cambiar si está resuelto (p. ej. el nivel de verificación previo)
+  async updateRaidEventDetails(id: string, extraDetails: Record<string, unknown>): Promise<RaidEvent | undefined> {
+    const [event] = await db
+      .update(raidEvents)
+      .set({ details: sql`${jsonObjectOrEmpty(raidEvents.details)} || ${JSON.stringify(extraDetails)}::jsonb` })
+      .where(eq(raidEvents.id, id))
+      .returning();
+    return event || undefined;
+  }
+
   // `enabled` sale de guilds.anti_raid_enabled (el mismo switch del dashboard);
   // el resto de guilds.settings.antiRaid, con valores por defecto para lo que falte
   async getAntiRaidConfig(guildId: string): Promise<AntiRaidSettings> {
@@ -492,9 +512,20 @@ export class DatabaseStorage implements IStorage {
       .where(eq(contentFeeds.guildId, guildId));
   }
 
+  // Cada feed publica solo y gasta llamadas a Reddit/Discord, así que hay un máximo por servidor
   async createContentFeed(feedData: InsertContentFeed): Promise<ContentFeed> {
-    const [feed] = await db.insert(contentFeeds).values(feedData).returning();
-    return feed;
+    return await db.transaction(async (tx) => {
+      // Serializa las altas del mismo servidor para que varias peticiones a la vez no se salten el límite
+      await tx.execute(sql`select pg_advisory_xact_lock(hashtext(${`content_feeds:${feedData.guildId}`}))`);
+      const [{ total }] = await tx
+        .select({ total: sql<number>`count(*)::int` })
+        .from(contentFeeds)
+        .where(eq(contentFeeds.guildId, feedData.guildId));
+      if (total >= MAX_CONTENT_FEEDS_PER_GUILD) throw new ContentFeedLimitError(MAX_CONTENT_FEEDS_PER_GUILD);
+
+      const [feed] = await tx.insert(contentFeeds).values(feedData).returning();
+      return feed;
+    });
   }
 
   async updateContentFeed(id: string, guildId: string, updates: ContentFeedUpdate): Promise<ContentFeed | undefined> {
