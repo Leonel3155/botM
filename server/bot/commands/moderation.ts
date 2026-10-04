@@ -1,4 +1,4 @@
-import { SlashCommandBuilder, ChatInputCommandInteraction, EmbedBuilder, GuildMember, TextChannel, PermissionFlagsBits, MessageFlags } from 'discord.js';
+import { SlashCommandBuilder, ChatInputCommandInteraction, EmbedBuilder, GuildMember, TextChannel, PermissionFlagsBits, MessageFlags, PermissionsString, PermissionOverwriteOptions } from 'discord.js';
 import { storage } from '../../storage';
 import { DiscordBot } from '../index';
 
@@ -18,6 +18,37 @@ function hasModeratorPermissions(member: GuildMember): boolean {
                         member.permissions.has(PermissionFlagsBits.ManageChannels);
 
   return hasRole || hasPermission;
+}
+
+// Tope del /mute: el auto-unmute usa setTimeout, que no admite más de ~24.8 días
+// (con un valor mayor Node lo dispara de inmediato).
+const MAX_MUTE_MINUTOS = 10080; // 1 semana
+
+// Permisos que se niegan al rol "Muteado". SendMessages no cubre los hilos:
+// escribir en hilos se controla con SendMessagesInThreads.
+const MUTE_DENY: PermissionsString[] = [
+  'SendMessages',
+  'SendMessagesInThreads',
+  'CreatePublicThreads',
+  'CreatePrivateThreads',
+  'AddReactions',
+  'Speak',
+  'Connect',
+];
+
+// Permisos que /lockdown quita a @everyone (incluye hilos del canal)
+const LOCKDOWN_PERMS: PermissionsString[] = [
+  'SendMessages',
+  'SendMessagesInThreads',
+  'CreatePublicThreads',
+  'CreatePrivateThreads',
+  'AddReactions',
+];
+
+function overwriteOptions(perms: PermissionsString[], value: boolean | null): PermissionOverwriteOptions {
+  const options: PermissionOverwriteOptions = {};
+  for (const perm of perms) options[perm] = value;
+  return options;
 }
 
 // Complete moderation system with Carl-bot style commands
@@ -197,7 +228,8 @@ export const moderationCommands = [
         option.setName('usuario').setDescription('Usuario a silenciar').setRequired(true)
       )
       .addIntegerOption(option =>
-        option.setName('minutos').setDescription('Minutos a silenciar').setRequired(true)
+        option.setName('minutos').setDescription('Minutos a silenciar (máx. 1 semana)').setRequired(true)
+          .setMinValue(1).setMaxValue(MAX_MUTE_MINUTOS)
       )
       .setDefaultMemberPermissions(PermissionFlagsBits.ManageRoles),
 
@@ -226,6 +258,11 @@ export const moderationCommands = [
         return;
       }
 
+      if (minutos < 1 || minutos > MAX_MUTE_MINUTOS) {
+        await interaction.reply({ content: `❌ Puedes silenciar entre 1 y ${MAX_MUTE_MINUTOS} minutos (1 semana).`, flags: MessageFlags.Ephemeral });
+        return;
+      }
+
       if (!interaction.guild.members.me?.permissions.has('ManageRoles')) {
         await interaction.reply({ content: '❌ No tengo permisos para gestionar roles.', flags: MessageFlags.Ephemeral });
         return;
@@ -237,6 +274,9 @@ export const moderationCommands = [
         return;
       }
 
+      // Configurar el rol y los canales puede tardar más de los 3 s que da Discord
+      await interaction.deferReply({ flags: MessageFlags.Ephemeral });
+
       // Busca o crea el rol "Muteado"
       let muteRole = interaction.guild.roles.cache.find(r => r.name === 'Muteado');
       if (!muteRole) {
@@ -245,33 +285,39 @@ export const moderationCommands = [
           color: 0x808080,
           reason: 'Rol autogenerado para silenciar usuarios',
         });
-
-        // Configurar permisos en canales (los hilos no tienen overwrites propios:
-        // heredan los permisos de su canal padre, así que se omiten)
-        for (const channel of Array.from(interaction.guild.channels.cache.values())) {
-          if (channel.isThread()) continue;
-          if (channel.isTextBased() || channel.isVoiceBased()) {
-            await channel.permissionOverwrites.edit(muteRole, {
-              SendMessages: false,
-              AddReactions: false,
-              Speak: false,
-              Connect: false,
-            }).catch(() => {});
-          }
-        }
       }
+      const rolMute = muteRole;
 
-      await targetMember.roles.add(muteRole);
-      await interaction.reply({ content: `🔇 **${usuario.tag}** fue silenciado por ${minutos} minuto(s).`, flags: MessageFlags.Ephemeral });
+      // Niega los permisos del mute en cada canal (también categorías y foros) donde
+      // aún no estén puestos; así se cubren canales nuevos y roles creados antes.
+      // Los hilos no tienen overwrites propios: heredan los del canal padre.
+      // Solo se tocan permisos sin valor: si un admin permitió algo a propósito, se respeta.
+      const ediciones: Promise<unknown>[] = [];
+      for (const channel of Array.from(interaction.guild.channels.cache.values())) {
+        if (channel.isThread()) continue;
+        const actual = channel.permissionOverwrites.cache.get(rolMute.id);
+        const faltantes = MUTE_DENY.filter(p => !actual?.deny.has(p) && !actual?.allow.has(p));
+        if (faltantes.length === 0) continue;
+        ediciones.push(channel.permissionOverwrites.edit(rolMute, overwriteOptions(faltantes, false)));
+      }
+      const fallidas = (await Promise.allSettled(ediciones)).filter(r => r.status === 'rejected').length;
 
-      // Auto-unmute después del tiempo especificado
+      await targetMember.roles.add(rolMute);
+
+      // Auto-unmute después del tiempo especificado (se programa antes de responder
+      // para que un fallo al contestar no deje al usuario muteado para siempre)
       setTimeout(async () => {
         try {
-          await targetMember.roles.remove(muteRole!);
+          await targetMember.roles.remove(rolMute);
         } catch (e) {
           console.error('Error al quitar el mute:', e);
         }
       }, minutos * 60 * 1000);
+
+      const aviso = fallidas > 0
+        ? `\n⚠️ No pude aplicar el mute en ${fallidas} canal(es); revisa mis permisos ahí.`
+        : '';
+      await interaction.editReply({ content: `🔇 **${usuario.tag}** fue silenciado por ${minutos} minuto(s).${aviso}` });
     }
   },
 
@@ -370,10 +416,11 @@ export const moderationCommands = [
         return;
       }
 
-      // Los hilos no tienen overwrites propios (heredan del canal padre)
+      // Los hilos no tienen overwrites propios: heredan los del canal padre, y el
+      // lockdown del padre también niega SendMessagesInThreads
       if (canal.isThread()) {
         await interaction.reply({
-          content: '❌ Este comando no funciona dentro de hilos. Úsalo en el canal principal o bloquea el hilo desde sus opciones.',
+          content: '❌ Este comando no funciona dentro de hilos. Úsalo en el canal principal: al bloquearlo también se bloquean sus hilos.',
           flags: MessageFlags.Ephemeral
         });
         return;
@@ -386,17 +433,18 @@ export const moderationCommands = [
 
       const everyoneRole = interaction.guild.roles.everyone;
 
-      if (accion === 'lock') {
-        await canal.permissionOverwrites.edit(everyoneRole, {
-          SendMessages: false,
-          AddReactions: false
-        });
-        await interaction.reply({ content: `🔒 Canal bloqueado. Solo el staff puede escribir.`, flags: MessageFlags.Ephemeral });
+      const bloquear = accion === 'lock';
+      try {
+        await canal.permissionOverwrites.edit(everyoneRole, overwriteOptions(LOCKDOWN_PERMS, bloquear ? false : null));
+      } catch (e) {
+        console.error('Error en lockdown:', e);
+        await interaction.reply({ content: '❌ No pude cambiar los permisos de este canal. Revisa que tenga **Gestionar roles** y los permisos de hilos aquí.', flags: MessageFlags.Ephemeral });
+        return;
+      }
+
+      if (bloquear) {
+        await interaction.reply({ content: `🔒 Canal y sus hilos bloqueados. Solo el staff puede escribir.`, flags: MessageFlags.Ephemeral });
       } else {
-        await canal.permissionOverwrites.edit(everyoneRole, {
-          SendMessages: null,
-          AddReactions: null
-        });
         await interaction.reply({ content: `🔓 Canal desbloqueado. Todos pueden escribir de nuevo.`, flags: MessageFlags.Ephemeral });
       }
     }
