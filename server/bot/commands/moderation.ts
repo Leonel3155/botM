@@ -51,6 +51,30 @@ function overwriteOptions(perms: PermissionsString[], value: boolean | null): Pe
   return options;
 }
 
+// Guarda la acción en el historial de moderación (si la BD falla, el comando sigue funcionando).
+// `deactivate` marca antes como inactivas las acciones vigentes de ese tipo (p. ej. el mute al quitarlo).
+async function registrarAccion(
+  interaction: ChatInputCommandInteraction,
+  type: string,
+  target: { id: string; username: string; avatar: string | null },
+  extra: { reason?: string; duration?: number; active?: boolean; deactivate?: string } = {}
+) {
+  if (!interaction.guild) return;
+  const { deactivate, ...details } = extra;
+  try {
+    if (deactivate) await storage.deactivateModerationActions(interaction.guild.id, target.id, deactivate);
+    await storage.logModerationAction({
+      guild: { id: interaction.guild.id, name: interaction.guild.name, ownerId: interaction.guild.ownerId },
+      moderator: interaction.user,
+      target,
+      type,
+      ...details,
+    });
+  } catch (error) {
+    console.error(`No se pudo registrar la acción de moderación (${type}):`, error);
+  }
+}
+
 // Complete moderation system with Carl-bot style commands
 export const moderationCommands = [
   {
@@ -101,6 +125,8 @@ export const moderationCommands = [
       }
 
       await interaction.reply({ content: `🧹 Listo, borré **${mensajesBorrados.size}** mensajes.`, flags: MessageFlags.Ephemeral });
+      // Acción sobre un canal: se registra con el propio moderador como "objetivo"
+      await registrarAccion(interaction, 'clear', interaction.user, { reason: `Borró ${mensajesBorrados.size} mensajes en #${canal.name}`, active: false });
     }
   },
 
@@ -159,6 +185,7 @@ export const moderationCommands = [
 
       await targetMember.kick(razon);
       await interaction.reply({ content: `✅ **${usuario.tag}** fue expulsado. Razón: ${razon}`, flags: MessageFlags.Ephemeral });
+      await registrarAccion(interaction, 'kick', usuario, { reason: razon, active: false });
     }
   },
 
@@ -217,6 +244,7 @@ export const moderationCommands = [
 
       await targetMember.ban({ reason: razon });
       await interaction.reply({ content: `✅ **${usuario.tag}** fue baneado. Razón: ${razon}`, flags: MessageFlags.Ephemeral });
+      await registrarAccion(interaction, 'ban', usuario, { reason: razon });
     }
   },
 
@@ -309,6 +337,7 @@ export const moderationCommands = [
       setTimeout(async () => {
         try {
           await targetMember.roles.remove(rolMute);
+          await storage.deactivateModerationActions(targetMember.guild.id, usuario.id, 'mute');
         } catch (e) {
           console.error('Error al quitar el mute:', e);
         }
@@ -318,6 +347,7 @@ export const moderationCommands = [
         ? `\n⚠️ No pude aplicar el mute en ${fallidas} canal(es); revisa mis permisos ahí.`
         : '';
       await interaction.editReply({ content: `🔇 **${usuario.tag}** fue silenciado por ${minutos} minuto(s).${aviso}` });
+      await registrarAccion(interaction, 'mute', usuario, { reason: `Silenciado por ${minutos} minuto(s)`, duration: minutos, deactivate: 'mute' });
     }
   },
 
@@ -373,6 +403,7 @@ export const moderationCommands = [
 
       await targetMember.roles.remove(muteRole);
       await interaction.reply({ content: `🔊 Se quitó el mute a **${usuario.tag}**.`, flags: MessageFlags.Ephemeral });
+      await registrarAccion(interaction, 'unmute', usuario, { active: false, deactivate: 'mute' });
     }
   },
 
@@ -447,6 +478,11 @@ export const moderationCommands = [
       } else {
         await interaction.reply({ content: `🔓 Canal desbloqueado. Todos pueden escribir de nuevo.`, flags: MessageFlags.Ephemeral });
       }
+      // Acción sobre un canal: se registra con el propio moderador como "objetivo"
+      await registrarAccion(interaction, accion === 'lock' ? 'lockdown' : 'unlock', interaction.user, {
+        reason: `${accion === 'lock' ? 'Bloqueó' : 'Desbloqueó'} el canal #${canal.name}`,
+        active: false,
+      });
     }
   },
 
@@ -487,8 +523,8 @@ export const moderationCommands = [
         return;
       }
 
-      // TODO: Save to database when moderation schema is ready
       await interaction.reply({ content: `⚠️ **${usuario.tag}** fue advertido. Razón: ${razon}`, flags: MessageFlags.Ephemeral });
+      await registrarAccion(interaction, 'warn', usuario, { reason: razon });
     }
   },
 
@@ -520,14 +556,42 @@ export const moderationCommands = [
         return;
       }
 
-      // TODO: Load from database when moderation schema is ready
+      await interaction.deferReply({ flags: MessageFlags.Ephemeral });
+
+      const historial = await storage.getUserModerationActions(interaction.guild.id, usuario.id, undefined, 500);
+      const advertencias = historial.filter(accion => accion.type === 'warn');
+      const contar = (tipo: string) => historial.filter(accion => accion.type === tipo).length;
+
       const embed = new EmbedBuilder()
         .setTitle(`📋 Advertencias de ${usuario.tag}`)
-        .setDescription('✅ Este usuario no tiene advertencias registradas.')
-        .setColor(0x00ff00)
+        .setThumbnail(usuario.displayAvatarURL())
         .setTimestamp();
 
-      await interaction.reply({ embeds: [embed], flags: MessageFlags.Ephemeral });
+      if (advertencias.length === 0) {
+        embed
+          .setDescription('✅ Este usuario no tiene advertencias registradas.')
+          .setColor(0x00ff00);
+      } else {
+        embed
+          .setDescription(`Tiene **${advertencias.length}** advertencia(s) registrada(s).`)
+          .setColor(advertencias.length >= 3 ? 0xED4245 : 0xFEE75C)
+          .addFields(advertencias.slice(0, 10).map((warn, i) => ({
+            name: `⚠️ Advertencia #${advertencias.length - i}`,
+            value: `${(warn.reason || 'Sin razón').slice(0, 400)}\nPor <@${warn.moderatorId}>` +
+              (warn.createdAt ? ` • <t:${Math.floor(warn.createdAt.getTime() / 1000)}:R>` : ''),
+          })));
+
+        if (advertencias.length > 10) {
+          embed.setFooter({ text: `Mostrando las 10 más recientes de ${advertencias.length}` });
+        }
+      }
+
+      embed.addFields({
+        name: '📁 Otros registros',
+        value: `🔇 Mutes: ${contar('mute')} • 👢 Expulsiones: ${contar('kick')} • 🔨 Baneos: ${contar('ban')}`,
+      });
+
+      await interaction.editReply({ embeds: [embed] });
     }
   }
 ];

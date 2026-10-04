@@ -8,6 +8,7 @@ interface RedditPost {
   thumbnail: string;
   subreddit: string;
   created_utc: number;
+  over_18?: boolean;
 }
 
 interface RedditResponse {
@@ -71,11 +72,13 @@ export class RedditService {
     const randomSubreddit = subreddits[Math.floor(Math.random() * subreddits.length)];
     const posts = await this.getHotPosts(randomSubreddit, 50);
     
-    // Filter for image posts
-    const imagePosts = posts.filter(post => 
-      post.url.match(/\.(jpg|jpeg|png|gif|webp)$/i) ||
-      post.url.includes('i.redd.it') ||
-      post.url.includes('imgur.com')
+    // Filter for image posts (never NSFW: these go to regular server channels)
+    const imagePosts = posts.filter(post =>
+      !post.over_18 && (
+        post.url.match(/\.(jpg|jpeg|png|gif|webp)$/i) ||
+        post.url.includes('i.redd.it') ||
+        post.url.includes('imgur.com')
+      )
     );
 
     if (imagePosts.length === 0) return null;

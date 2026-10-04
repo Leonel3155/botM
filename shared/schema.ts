@@ -200,6 +200,31 @@ export const raidEvents = pgTable("raid_events", {
   createdAt: timestamp("created_at").default(sql`now()`),
 });
 
+// Anti-raid configuration. `enabled` lives in guilds.anti_raid_enabled (the dashboard toggles it);
+// the rest is stored under guilds.settings.antiRaid (jsonb) so no extra columns are needed.
+export const antiRaidActions = ["alert", "verification", "lockdown"] as const;
+export type AntiRaidAction = typeof antiRaidActions[number];
+
+export const antiRaidConfigSchema = z.object({
+  joinThreshold: z.number().int().min(3).max(100),      // N entradas...
+  joinWindowSeconds: z.number().int().min(5).max(300),  // ...en T segundos = raid
+  action: z.enum(antiRaidActions),                      // qué hacer al detectar un raid
+  logChannelId: z.string().nullable(),                  // canal de alertas (null = automático)
+  minAccountAgeDays: z.number().int().min(0).max(365),  // cuentas más nuevas = sospechosas
+  lockdownMinutes: z.number().int().min(1).max(1440),   // cuánto dura el modo raid
+});
+export type AntiRaidConfig = z.infer<typeof antiRaidConfigSchema>;
+export type AntiRaidSettings = AntiRaidConfig & { enabled: boolean };
+
+export const defaultAntiRaidConfig: AntiRaidConfig = {
+  joinThreshold: 8,
+  joinWindowSeconds: 15,
+  action: "verification",
+  logChannelId: null,
+  minAccountAgeDays: 7,
+  lockdownMinutes: 10,
+};
+
 // Social content feeds
 export const contentFeeds = pgTable("content_feeds", {
   id: varchar("id").primaryKey().default(sql`gen_random_uuid()`),
@@ -207,9 +232,9 @@ export const contentFeeds = pgTable("content_feeds", {
   channelId: varchar("channel_id"), // Made nullable for configuration
   source: text("source").notNull(), // reddit, twitter
   sourceConfig: jsonb("source_config").default({}),
-  enabled: boolean("enabled").default(true),
+  enabled: boolean("enabled").notNull().default(true),
   lastPosted: timestamp("last_posted"),
-  postInterval: integer("post_interval").default(30), // in minutes
+  postInterval: integer("post_interval").notNull().default(30), // in minutes
 });
 
 // Posted content tracking
@@ -221,18 +246,6 @@ export const postedContent = pgTable("posted_content", {
   title: text("title"),
   url: text("url"),
   postedAt: timestamp("posted_at").default(sql`now()`),
-});
-
-// Music queue
-export const musicQueue = pgTable("music_queue", {
-  id: varchar("id").primaryKey().default(sql`gen_random_uuid()`),
-  guildId: varchar("guild_id").notNull().references(() => guilds.id),
-  userId: varchar("user_id").notNull().references(() => users.id),
-  title: text("title").notNull(),
-  url: text("url").notNull(),
-  duration: integer("duration"), // in seconds
-  position: integer("position").notNull(),
-  addedAt: timestamp("added_at").default(sql`now()`),
 });
 
 // Custom commands
@@ -252,7 +265,6 @@ export const usersRelations = relations(users, ({ many }) => ({
   levels: many(userLevels),
   economy: many(userEconomy),
   moderationActions: many(moderationActions),
-  musicQueue: many(musicQueue),
   customCommands: many(customCommands),
 }));
 
@@ -262,7 +274,6 @@ export const guildsRelations = relations(guilds, ({ many }) => ({
   moderationActions: many(moderationActions),
   raidEvents: many(raidEvents),
   contentFeeds: many(contentFeeds),
-  musicQueue: many(musicQueue),
   customCommands: many(customCommands),
 }));
 
@@ -277,7 +288,7 @@ export const insertUserLevelSchema = createInsertSchema(userLevels).omit({ id: t
 export const insertUserEconomySchema = createInsertSchema(userEconomy).omit({ id: true });
 export const insertModerationActionSchema = createInsertSchema(moderationActions).omit({ id: true, createdAt: true });
 export const insertContentFeedSchema = createInsertSchema(contentFeeds).omit({ id: true, lastPosted: true });
-export const insertMusicQueueSchema = createInsertSchema(musicQueue).omit({ id: true, addedAt: true });
+export const insertRaidEventSchema = createInsertSchema(raidEvents).omit({ id: true, createdAt: true });
 export const insertCustomCommandSchema = createInsertSchema(customCommands).omit({ id: true, createdAt: true, uses: true });
 
 // Types
@@ -293,8 +304,7 @@ export type InsertModerationAction = z.infer<typeof insertModerationActionSchema
 export type ModerationAction = typeof moderationActions.$inferSelect;
 export type InsertContentFeed = z.infer<typeof insertContentFeedSchema>;
 export type ContentFeed = typeof contentFeeds.$inferSelect;
-export type InsertMusicQueue = z.infer<typeof insertMusicQueueSchema>;
-export type MusicQueue = typeof musicQueue.$inferSelect;
+export type InsertRaidEvent = z.infer<typeof insertRaidEventSchema>;
 export type InsertCustomCommand = z.infer<typeof insertCustomCommandSchema>;
 export type CustomCommand = typeof customCommands.$inferSelect;
 export type RaidEvent = typeof raidEvents.$inferSelect;

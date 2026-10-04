@@ -92,9 +92,9 @@ export class ContentScheduler {
         console.log(`Posted Twitter content to ${guild.name}`);
       }
 
-      // Update last posted time
-      // This would need a new method in storage to update the feed
-      // For now, we'll just log success
+      // Guardamos la hora para respetar postInterval (sin esto el feed publicaría cada minuto).
+      // También cuenta un intento sin contenido (p. ej. Reddit no respondió) para no reintentar cada minuto.
+      await storage.updateContentFeed(feed.id, guild.id, { lastPosted: new Date() });
 
     } catch (error) {
       console.error(`Error posting content for feed ${feed.id}:`, error);

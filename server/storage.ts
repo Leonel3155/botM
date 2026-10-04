@@ -1,11 +1,37 @@
 import type { GuildEngagementSettings } from '@shared/schema';
 import { db } from './db';
 import { 
-  users, guilds, userLevels, userEconomy, economyTransactions, musicQueue,
+  users, guilds, userLevels, userEconomy, economyTransactions,
+  moderationActions, raidEvents, contentFeeds, postedContent,
+  antiRaidConfigSchema, defaultAntiRaidConfig,
   type User, type Guild, type UserLevel, type UserEconomy,
-  type InsertUser, type InsertGuild, type InsertUserLevel, type InsertUserEconomy
+  type InsertUser, type InsertGuild, type InsertUserLevel, type InsertUserEconomy,
+  type ModerationAction, type InsertModerationAction, type RaidEvent, type InsertRaidEvent,
+  type ContentFeed, type InsertContentFeed, type AntiRaidConfig, type AntiRaidSettings
 } from '@shared/schema';
-import { eq, and, desc, sql } from 'drizzle-orm';
+import { eq, and, desc, sql, gte } from 'drizzle-orm';
+
+// Datos mínimos para registrar una acción de moderación (encaja con User/Guild de discord.js)
+export interface ModerationLogEntry {
+  guild: { id: string; name: string; ownerId: string };
+  moderator: { id: string; username: string; avatar?: string | null };
+  target: { id: string; username: string; avatar?: string | null };
+  type: string; // warn, mute, unmute, kick, ban, clear, lockdown, unlock
+  reason?: string | null;
+  duration?: number | null; // minutos
+  active?: boolean;
+}
+
+export type ContentFeedUpdate = Partial<Omit<ContentFeed, 'id' | 'guildId'>>;
+
+export const MAX_CONTENT_FEEDS_PER_GUILD = 10;
+
+export class ContentFeedLimitError extends Error {
+  constructor(public readonly limit: number) {
+    super(`Este servidor ya tiene el máximo de ${limit} feeds de contenido. Borra alguno antes de crear otro.`);
+    this.name = 'ContentFeedLimitError';
+  }
+}
 
 export interface IStorage {
   // User methods
@@ -46,15 +72,26 @@ export interface IStorage {
   getAllUserEconomies(guildId: string): Promise<UserEconomy[]>;
   getTopUsersByEconomy(guildId: string, limit?: number): Promise<UserEconomy[]>;
   
-  // Music methods (placeholder for now)
-  getMusicQueue(guildId: string): Promise<any[]>;
-  addToQueue(song: any): Promise<any>;
-  clearQueue(guildId: string): Promise<void>;
-  
-  // Moderation methods (placeholder)
-  getModerationActions(guildId: string, limit?: number): Promise<any[]>;
-  getRecentRaidEvents(guildId: string, timeWindow?: number): Promise<any[]>;
-  createRaidEvent(data: any): Promise<any>;
+  // Moderation methods
+  createModerationAction(data: InsertModerationAction): Promise<ModerationAction>;
+  logModerationAction(entry: ModerationLogEntry): Promise<ModerationAction>;
+  getModerationActions(guildId: string, limit?: number): Promise<ModerationAction[]>;
+  getUserModerationActions(guildId: string, userId: string, type?: string, limit?: number): Promise<ModerationAction[]>;
+  deactivateModerationActions(guildId: string, userId: string, type: string): Promise<number>;
+
+  // Anti-raid methods
+  createRaidEvent(data: InsertRaidEvent): Promise<RaidEvent>;
+  getRecentRaidEvents(guildId: string, timeWindow?: number): Promise<RaidEvent[]>;
+  getRaidEvents(guildId: string, limit?: number): Promise<RaidEvent[]>;
+  getUnresolvedRaidEvents(guildId: string): Promise<RaidEvent[]>;
+  resolveRaidEvent(id: string, extraDetails?: Record<string, unknown>): Promise<RaidEvent | undefined>;
+  updateRaidEventDetails(id: string, extraDetails: Record<string, unknown>): Promise<RaidEvent | undefined>;
+  getAntiRaidConfig(guildId: string): Promise<AntiRaidSettings>;
+  setAntiRaidConfig(guildId: string, updates: Partial<AntiRaidSettings>): Promise<AntiRaidSettings>;
+
+  // Content feed methods
+  updateContentFeed(id: string, guildId: string, updates: ContentFeedUpdate): Promise<ContentFeed | undefined>;
+  deleteContentFeed(id: string, guildId: string): Promise<boolean>;
   getContentFeeds(guildId: string): Promise<any[]>;
   createContentFeed(feedData: any): Promise<any>;
   updateGuildSettings(guildId: string, settings: any): Promise<void>;
@@ -393,45 +430,208 @@ export class DatabaseStorage implements IStorage {
       .limit(limit);
   }
 
-  // ===== MUSIC METHODS (Mock for now) =====
-  async getMusicQueue(guildId: string): Promise<any[]> {
-    // TODO: Implement with real database when music schema is ready
-    return [];
+  // ===== MODERATION METHODS =====
+  async createModerationAction(data: InsertModerationAction): Promise<ModerationAction> {
+    const [action] = await db.insert(moderationActions).values(data).returning();
+    return action;
   }
 
-  async addToQueue(song: any): Promise<any> {
-    // TODO: Implement with real database when music schema is ready
-    return song;
+  // Guarda la acción asegurando antes que existan el servidor y ambos usuarios (las FKs lo exigen)
+  async logModerationAction(entry: ModerationLogEntry): Promise<ModerationAction> {
+    await this.ensureGuild(entry.guild.id, entry.guild.name, entry.guild.ownerId);
+    const people = entry.moderator.id === entry.target.id ? [entry.moderator] : [entry.moderator, entry.target];
+    for (const person of people) {
+      await this.upsertUser({ id: person.id, username: person.username, avatar: person.avatar ?? null });
+    }
+
+    return this.createModerationAction({
+      guildId: entry.guild.id,
+      userId: entry.target.id,
+      moderatorId: entry.moderator.id,
+      type: entry.type,
+      reason: entry.reason ?? null,
+      duration: entry.duration ?? null,
+      active: entry.active ?? true,
+    });
   }
 
-  async clearQueue(guildId: string): Promise<void> {
-    // TODO: Implement with real database when music schema is ready
+  async getModerationActions(guildId: string, limit: number = 50): Promise<ModerationAction[]> {
+    return await db
+      .select()
+      .from(moderationActions)
+      .where(eq(moderationActions.guildId, guildId))
+      .orderBy(desc(moderationActions.createdAt))
+      .limit(clampLimit(limit, 50));
   }
 
-  // ===== MODERATION METHODS (Mock for now) =====
-  async getModerationActions(guildId: string, limit: number = 50): Promise<any[]> {
-    // TODO: Implement with real database when moderation schema is ready
-    return [];
+  async getUserModerationActions(guildId: string, userId: string, type?: string, limit: number = 100): Promise<ModerationAction[]> {
+    const conditions = [eq(moderationActions.guildId, guildId), eq(moderationActions.userId, userId)];
+    if (type) conditions.push(eq(moderationActions.type, type));
+
+    return await db
+      .select()
+      .from(moderationActions)
+      .where(and(...conditions))
+      .orderBy(desc(moderationActions.createdAt))
+      .limit(clampLimit(limit, 100));
   }
 
-  async getRecentRaidEvents(guildId: string, timeWindow: number = 300000): Promise<any[]> {
-    // TODO: Implement with real database when raid schema is ready
-    return [];
+  // Marca como inactivas las acciones vigentes de un tipo (p. ej. el mute al quitarlo)
+  async deactivateModerationActions(guildId: string, userId: string, type: string): Promise<number> {
+    const updated = await db
+      .update(moderationActions)
+      .set({ active: false })
+      .where(and(
+        eq(moderationActions.guildId, guildId),
+        eq(moderationActions.userId, userId),
+        eq(moderationActions.type, type),
+        eq(moderationActions.active, true)
+      ))
+      .returning({ id: moderationActions.id });
+    return updated.length;
   }
 
-  async createRaidEvent(data: any): Promise<any> {
-    // TODO: Implement with real database when raid schema is ready
-    return { id: Date.now().toString(), ...data };
+  // ===== ANTI-RAID METHODS =====
+  async createRaidEvent(data: InsertRaidEvent): Promise<RaidEvent> {
+    const [event] = await db.insert(raidEvents).values(data).returning();
+    return event;
   }
 
-  async getContentFeeds(guildId: string): Promise<any[]> {
-    // TODO: Implement with real database when content feed schema is ready
-    return [];
+  // Eventos de los últimos `timeWindow` ms (por defecto 5 minutos), del más nuevo al más viejo
+  async getRecentRaidEvents(guildId: string, timeWindow: number = 300000): Promise<RaidEvent[]> {
+    const since = new Date(Date.now() - timeWindow);
+    return await db
+      .select()
+      .from(raidEvents)
+      .where(and(eq(raidEvents.guildId, guildId), gte(raidEvents.createdAt, since)))
+      .orderBy(desc(raidEvents.createdAt))
+      .limit(100);
   }
 
-  async createContentFeed(feedData: any): Promise<any> {
-    // TODO: Implement with real database when content feed schema is ready
-    return feedData;
+  async getRaidEvents(guildId: string, limit: number = 50): Promise<RaidEvent[]> {
+    return await db
+      .select()
+      .from(raidEvents)
+      .where(eq(raidEvents.guildId, guildId))
+      .orderBy(desc(raidEvents.createdAt))
+      .limit(clampLimit(limit, 50));
+  }
+
+  async getUnresolvedRaidEvents(guildId: string): Promise<RaidEvent[]> {
+    return await db
+      .select()
+      .from(raidEvents)
+      .where(and(eq(raidEvents.guildId, guildId), eq(raidEvents.resolved, false)))
+      .orderBy(desc(raidEvents.createdAt));
+  }
+
+  // Marca el evento como resuelto y mezcla datos extra en `details`
+  async resolveRaidEvent(id: string, extraDetails: Record<string, unknown> = {}): Promise<RaidEvent | undefined> {
+    const [event] = await db
+      .update(raidEvents)
+      .set({
+        resolved: true,
+        details: sql`${jsonObjectOrEmpty(raidEvents.details)} || ${JSON.stringify(extraDetails)}::jsonb`,
+      })
+      .where(eq(raidEvents.id, id))
+      .returning();
+    return event || undefined;
+  }
+
+  // Mezcla datos en `details` sin cambiar si está resuelto (p. ej. el nivel de verificación previo)
+  async updateRaidEventDetails(id: string, extraDetails: Record<string, unknown>): Promise<RaidEvent | undefined> {
+    const [event] = await db
+      .update(raidEvents)
+      .set({ details: sql`${jsonObjectOrEmpty(raidEvents.details)} || ${JSON.stringify(extraDetails)}::jsonb` })
+      .where(eq(raidEvents.id, id))
+      .returning();
+    return event || undefined;
+  }
+
+  // `enabled` sale de guilds.anti_raid_enabled (el mismo switch del dashboard);
+  // el resto de guilds.settings.antiRaid, con valores por defecto para lo que falte
+  async getAntiRaidConfig(guildId: string): Promise<AntiRaidSettings> {
+    const [row] = await db
+      .select({ enabled: guilds.antiRaidEnabled, settings: guilds.settings })
+      .from(guilds)
+      .where(eq(guilds.id, guildId));
+
+    const stored = (row?.settings as Record<string, unknown> | null | undefined)?.antiRaid;
+    return { enabled: row?.enabled ?? false, ...normalizeAntiRaidConfig(stored) };
+  }
+
+  // Solo toca la llave `antiRaid` del jsonb, sin pisar otros ajustes guardados en settings.
+  // El servidor debe existir ya en la tabla guilds (usa ensureGuild antes).
+  async setAntiRaidConfig(guildId: string, updates: Partial<AntiRaidSettings>): Promise<AntiRaidSettings> {
+    const { enabled, ...configUpdates } = updates;
+    const current = await this.getAntiRaidConfig(guildId);
+    const merged = normalizeAntiRaidConfig({ ...current, ...configUpdates });
+    const hasConfigUpdates = Object.keys(configUpdates).length > 0;
+
+    if (enabled !== undefined || hasConfigUpdates) {
+      await db
+        .update(guilds)
+        .set({
+          ...(enabled !== undefined ? { antiRaidEnabled: enabled } : {}),
+          ...(hasConfigUpdates
+            ? { settings: sql`${jsonObjectOrEmpty(guilds.settings)} || jsonb_build_object('antiRaid', ${JSON.stringify(merged)}::jsonb)` }
+            : {}),
+        })
+        .where(eq(guilds.id, guildId));
+    }
+
+    return { ...merged, enabled: enabled ?? current.enabled };
+  }
+
+  // ===== CONTENT FEED METHODS =====
+  async getContentFeeds(guildId: string): Promise<ContentFeed[]> {
+    return await db
+      .select()
+      .from(contentFeeds)
+      .where(eq(contentFeeds.guildId, guildId));
+  }
+
+  // Cada feed publica solo y gasta llamadas a Reddit/Discord, así que hay un máximo por servidor
+  async createContentFeed(feedData: InsertContentFeed): Promise<ContentFeed> {
+    return await db.transaction(async (tx) => {
+      // Serializa las altas del mismo servidor para que varias peticiones a la vez no se salten el límite
+      await tx.execute(sql`select pg_advisory_xact_lock(hashtext(${`content_feeds:${feedData.guildId}`}))`);
+      const [{ total }] = await tx
+        .select({ total: sql<number>`count(*)::int` })
+        .from(contentFeeds)
+        .where(eq(contentFeeds.guildId, feedData.guildId));
+      if (total >= MAX_CONTENT_FEEDS_PER_GUILD) throw new ContentFeedLimitError(MAX_CONTENT_FEEDS_PER_GUILD);
+
+      const [feed] = await tx.insert(contentFeeds).values(feedData).returning();
+      return feed;
+    });
+  }
+
+  async updateContentFeed(id: string, guildId: string, updates: ContentFeedUpdate): Promise<ContentFeed | undefined> {
+    const where = and(eq(contentFeeds.id, id), eq(contentFeeds.guildId, guildId));
+
+    if (Object.keys(updates).length === 0) {
+      const [feed] = await db.select().from(contentFeeds).where(where);
+      return feed || undefined;
+    }
+
+    const [feed] = await db.update(contentFeeds).set(updates).where(where).returning();
+    return feed || undefined;
+  }
+
+  // Borra también el historial de publicaciones del feed (posted_content tiene FK hacia el feed)
+  async deleteContentFeed(id: string, guildId: string): Promise<boolean> {
+    return await db.transaction(async (tx) => {
+      const [feed] = await tx
+        .select({ id: contentFeeds.id })
+        .from(contentFeeds)
+        .where(and(eq(contentFeeds.id, id), eq(contentFeeds.guildId, guildId)));
+      if (!feed) return false;
+
+      await tx.delete(postedContent).where(eq(postedContent.feedId, id));
+      await tx.delete(contentFeeds).where(eq(contentFeeds.id, id));
+      return true;
+    });
   }
 
   async updateGuildSettings(guildId: string, settings: any): Promise<void> {
@@ -444,6 +644,31 @@ export class DatabaseStorage implements IStorage {
       .set({ settings: sql`COALESCE(${guilds.settings}, '{}'::jsonb) || ${JSON.stringify(patch)}::jsonb` })
       .where(eq(guilds.id, guildId));
   }
+}
+
+
+// Limita el tamaño de las consultas (evita ?limit=999999 o valores negativos)
+function clampLimit(limit: number, fallback: number): number {
+  if (!Number.isFinite(limit) || limit < 1) return fallback;
+  return Math.min(Math.floor(limit), 500);
+}
+
+// La columna jsonb como objeto (o {} si está vacía / no es objeto) para poder mezclarla con ||
+function jsonObjectOrEmpty(column: typeof guilds.settings | typeof raidEvents.details) {
+  return sql`(case when jsonb_typeof(${column}) = 'object' then ${column} else '{}'::jsonb end)`;
+}
+
+// Valida la config guardada campo por campo; lo inválido o ausente toma el valor por defecto
+export function normalizeAntiRaidConfig(raw: unknown): AntiRaidConfig {
+  const source = raw && typeof raw === 'object' ? (raw as Record<string, unknown>) : {};
+  const result: Record<string, unknown> = { ...defaultAntiRaidConfig };
+  const fields = antiRaidConfigSchema.shape;
+
+  for (const key of Object.keys(fields) as (keyof AntiRaidConfig)[]) {
+    const parsed = fields[key].safeParse(source[key]);
+    if (parsed.success) result[key] = parsed.data;
+  }
+  return result as AntiRaidConfig;
 }
 
 export const storage = new DatabaseStorage();
