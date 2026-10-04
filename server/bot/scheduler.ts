@@ -2,10 +2,12 @@ import { DiscordBot } from './index';
 import { storage } from '../storage';
 import { redditService } from '../services/reddit';
 import { twitterService } from '../services/twitter';
+import { dailyQuestions } from './services/dailyQuestion';
 
 export class ContentScheduler {
   private bot: DiscordBot;
   private scheduledJobs: Map<string, NodeJS.Timeout> = new Map();
+  private interval: NodeJS.Timeout | null = null;
 
   constructor(bot: DiscordBot) {
     this.bot = bot;
@@ -14,13 +16,29 @@ export class ContentScheduler {
   async startScheduler() {
     console.log('🕐 Content scheduler started');
     
-    // Check for scheduled content every minute
-    setInterval(async () => {
-      await this.checkScheduledContent();
+    // Check for scheduled content and the daily question every minute
+    this.interval = setInterval(async () => {
+      await this.runChecks();
     }, 60000);
 
     // Initial check
-    await this.checkScheduledContent();
+    await this.runChecks();
+  }
+
+  private async runChecks() {
+    await Promise.all([
+      this.checkScheduledContent(),
+      this.checkDailyQuestions(),
+    ]);
+  }
+
+  // Pregunta del día: publica a la hora configurada en la zona horaria de cada servidor
+  private async checkDailyQuestions() {
+    try {
+      await dailyQuestions.tick(this.bot.client);
+    } catch (error) {
+      console.error('Error checking daily questions:', error);
+    }
   }
 
   private async checkScheduledContent() {
@@ -84,6 +102,11 @@ export class ContentScheduler {
   }
 
   stopScheduler() {
+    if (this.interval) {
+      clearInterval(this.interval);
+      this.interval = null;
+    }
+
     // Clear all scheduled jobs
     for (const [feedId, timeout] of this.scheduledJobs) {
       clearTimeout(timeout);
