@@ -1,7 +1,7 @@
 import { DiscordBot } from '../index';
 import { Events, GuildMember, Message, PartialGuildMember } from 'discord.js';
 import { storage } from '../../storage';
-import { handleMemberPassedScreening, handleMemberWelcome } from '../services/welcome';
+import { handleMemberAvailable, handleMemberPassedScreening, handleMemberWelcome } from '../services/welcome';
 
 // Tiempo mínimo entre mensajes que dan XP/monedas (evita farmear con spam)
 const XP_COOLDOWN_MS = 60_000;
@@ -105,6 +105,17 @@ export function setupEvents(bot: DiscordBot) {
     if (!oldMember.pending || newMember.pending) return;
     try {
       await handleMemberPassedScreening(newMember);
+    } catch (error) {
+      console.error('Welcome role error:', error);
+    }
+  });
+
+  // Mismo caso, pero cuando el miembro no estaba en caché (p. ej. tras reiniciar el bot):
+  // discord.js no emite GuildMemberUpdate sino GuildMemberAvailable
+  bot.client.on(Events.GuildMemberAvailable, async (member: GuildMember | PartialGuildMember) => {
+    if (member.partial || member.pending) return;
+    try {
+      await handleMemberAvailable(member);
     } catch (error) {
       console.error('Welcome role error:', error);
     }

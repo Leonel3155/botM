@@ -1,5 +1,7 @@
 // Preguntas para la "Pregunta del día". Todas son para romper el hielo y aptas para todo público.
-// Puedes agregar más al final de la lista: el bot las irá mezclando sin repetir hasta agotarlas.
+// Puedes agregar, quitar o reordenar preguntas cuando quieras: el bot recuerda (en la base de datos)
+// el texto de las que ya salieron y no repite ninguna hasta agotarlas. Ojo: si corriges el texto
+// de una pregunta, cuenta como pregunta nueva.
 export const PREGUNTAS_DEL_DIA: readonly string[] = [
   // 🎮 Videojuegos
   '¿Cuál fue el primer videojuego que te voló la cabeza y por qué?',

@@ -5,7 +5,9 @@ import {
   type ChatInputCommandInteraction,
   type Guild,
   type GuildBasedChannel,
+  type GuildMember,
   type GuildTextBasedChannel,
+  type PermissionsBitField,
 } from 'discord.js';
 
 // Nombres de permisos tal como aparecen en Discord (en español)
@@ -19,6 +21,7 @@ const PERMISSION_LABELS: Record<string, string> = {
   MentionEveryone: 'Mencionar @everyone, @here y todos los roles',
   ManageEvents: 'Gestionar eventos',
   CreateEvents: 'Crear eventos',
+  Connect: 'Conectar',
 };
 
 type PermissionName = keyof typeof PermissionFlagsBits;
@@ -60,6 +63,41 @@ export function checkSendableChannel(channel: GuildBasedChannel | null | undefin
   }
 
   return { ok: true, channel };
+}
+
+export type MemberChannelResult =
+  | { ok: true; permissions: Readonly<PermissionsBitField> }
+  | { ok: false; reason: string };
+
+// Comprueba que quien usa el comando tenga esos permisos en el canal de destino
+// (para que nadie use al bot para publicar o crear cosas donde no puede hacerlo por sí mismo)
+export function checkMemberChannelPermissions(
+  member: GuildMember,
+  channel: GuildBasedChannel,
+  needed: PermissionName[]
+): MemberChannelResult {
+  const permissions = channel.permissionsFor(member);
+  if (!permissions) {
+    return { ok: false, reason: `No pude revisar tus permisos en ${channel}.` };
+  }
+
+  const missing = needed.filter(name => !permissions.has(PermissionFlagsBits[name]));
+  if (missing.length > 0) {
+    return {
+      ok: false,
+      reason: `Te faltan permisos en ${channel}: ${missing.map(name => `**${permissionLabel(name)}**`).join(', ')}.`,
+    };
+  }
+
+  return { ok: true, permissions };
+}
+
+// Ver el canal y escribir en él (en hilos cuenta "Enviar mensajes en hilos")
+export function checkMemberCanPost(member: GuildMember, channel: GuildTextBasedChannel): MemberChannelResult {
+  return checkMemberChannelPermissions(member, channel, [
+    'ViewChannel',
+    channel.isThread() ? 'SendMessagesInThreads' : 'SendMessages',
+  ]);
 }
 
 export function resolveSendableChannel(guild: Guild, channelId: string | null | undefined): SendableChannelResult {

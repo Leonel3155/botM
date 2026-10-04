@@ -69,7 +69,7 @@ Cuando alguien entra, el bot publica un embed con su avatar en el canal elegido 
 
 - `/bienvenida canal` — canal donde se da la bienvenida.
 - `/bienvenida mensaje` — texto personalizado (vacío = mensaje predeterminado). Variables: `{usuario}` (mención), `{nombre}`, `{servidor}` y `{miembros}`. Escribe `\n` para un salto de línea.
-- `/bienvenida rol` — rol automático al entrar (vacío = ninguno). El rol del bot debe estar **por encima** de ese rol y por seguridad no se aceptan roles con permisos de moderación o administración.
+- `/bienvenida rol` — rol automático al entrar (vacío = ninguno). El rol del bot debe estar **por encima** de ese rol y por seguridad no se aceptan roles con permisos de moderación o administración. Para elegirlo necesitas además **Gestionar roles** y que el rol esté por debajo de tu rol más alto (salvo que seas el dueño del servidor).
 - `/bienvenida activar` / `/bienvenida desactivar`
 - `/bienvenida probar` — vista previa con tu usuario y revisión de permisos (opción `publicar` para verla en el canal).
 
@@ -77,7 +77,7 @@ Requiere **Server Members Intent** activado en Discord Developer Portal → Bot 
 
 ### ❓ Pregunta del día
 
-Una vez al día, a la hora elegida y en la zona horaria del servidor (por defecto `America/Mexico_City`), el bot publica una pregunta para romper el hielo y abre un hilo para las respuestas. Tiene más de 60 preguntas (videojuegos, música, comida, "¿qué prefieres...?", hipotéticas...) y no repite ninguna hasta usarlas todas. El progreso se guarda en la base de datos, así que reiniciar el bot no duplica ni repite preguntas.
+Una vez al día, a la hora elegida y en la zona horaria del servidor (por defecto `America/Mexico_City`), el bot publica una pregunta para romper el hielo y abre un hilo para las respuestas. Tiene más de 60 preguntas (videojuegos, música, comida, "¿qué prefieres...?", hipotéticas...) y no repite ninguna hasta usarlas todas. El progreso se guarda en la base de datos, así que reiniciar el bot no duplica ni repite preguntas. Puedes agregar o quitar preguntas en `server/bot/data/preguntasDelDia.ts` sin que se repitan las que ya salieron.
 
 - `/pregunta-del-dia canal` — canal (opción `hilo` para abrir o no un hilo de respuestas).
 - `/pregunta-del-dia hora` — hora de 0 a 23 (por defecto 18).
@@ -88,8 +88,8 @@ Una vez al día, a la hora elegida y en la zona horaria del servidor (por defect
 
 ### 📢 Anuncios y 📅 eventos
 
-- `/anuncio` — publica un anuncio con título, mensaje y, opcionalmente, canal, mención (`@everyone`, `@here` o un rol), imagen (URL) y color (`rojo`, `morado`, `#FF8800`...).
-- `/evento crear` — crea un evento nativo de Discord (en un canal de voz/escenario o en un lugar externo) y lo anuncia con un botón para marcar "Me interesa". La fecha se escribe como `AAAA-MM-DD HH:mm` (también `DD/MM/AAAA HH:mm`) en la zona horaria del servidor. Requiere **Gestionar eventos**.
+- `/anuncio` — publica un anuncio con título, mensaje y, opcionalmente, canal, mención (`@everyone`, `@here` o un rol), imagen (URL) y color (`rojo`, `morado`, `#FF8800`...). Solo se puede publicar en canales donde tú también puedes escribir (y mencionar a todos solo donde tienes ese permiso).
+- `/evento crear` — crea un evento nativo de Discord (en un canal de voz/escenario o en un lugar externo) y lo anuncia con un botón para marcar "Me interesa". La fecha se escribe como `AAAA-MM-DD HH:mm` (también `DD/MM/AAAA HH:mm`) en la zona horaria del servidor. Requiere **Gestionar eventos** (o **Crear eventos**); el anuncio solo se publica en un canal donde tú puedes escribir y el canal de voz debe ser uno al que puedas entrar.
 - `/evento lista` — muestra los próximos eventos (cualquiera puede usarlo).
 
 Permisos que necesita el bot para todo esto: **Ver canales**, **Enviar mensajes**, **Insertar enlaces**, **Crear hilos públicos**, **Gestionar roles** (rol automático), **Gestionar eventos** y, si quieres avisar a todos, **Mencionar @everyone, @here y todos los roles**.

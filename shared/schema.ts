@@ -40,6 +40,7 @@ export const guilds = pgTable("guilds", {
   dailyQuestionHour: integer("daily_question_hour").default(18), // 0-23, hora local del servidor
   dailyQuestionThread: boolean("daily_question_thread").default(true), // abrir un hilo para las respuestas
   dailyQuestionIndex: integer("daily_question_index").default(0), // preguntas publicadas hasta ahora
+  dailyQuestionUsed: jsonb("daily_question_used").default([]), // claves (hash del texto) de las que ya salieron en esta vuelta
   dailyQuestionLastPosted: varchar("daily_question_last_posted", { length: 10 }), // YYYY-MM-DD en la zona del servidor
   // Zona horaria IANA del servidor (pregunta del día y eventos)
   timezone: text("timezone").default("America/Mexico_City"),

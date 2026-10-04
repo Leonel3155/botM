@@ -22,8 +22,9 @@ export interface IStorage {
   // Bienvenida, pregunta del día y zona horaria (columnas tipadas de guilds)
   updateEngagementSettings(guildId: string, updates: Partial<GuildEngagementSettings>): Promise<Guild | undefined>;
   getDailyQuestionGuilds(): Promise<Guild[]>;
-  claimDailyQuestion(guildId: string, localDate: string, force?: boolean): Promise<number | null>;
+  claimDailyQuestion(guildId: string, localDate: string, force?: boolean): Promise<{ index: number; used: unknown } | null>;
   releaseDailyQuestion(guildId: string, localDate: string, previousDate: string | null): Promise<void>;
+  recordDailyQuestionUsed(guildId: string, questionKey: number, startNewCycle: boolean): Promise<void>;
   
   // User level methods
   getUserLevel(userId: string, guildId: string): Promise<UserLevel | undefined>;
@@ -139,9 +140,14 @@ export class DatabaseStorage implements IStorage {
   }
 
   // Reserva la pregunta del día de forma atómica: marca la fecha local y avanza el contador.
-  // Devuelve el índice de la pregunta a publicar, o null si ya se publicó hoy (o está desactivada).
+  // Devuelve el número de la pregunta (desde 0) y las que ya salieron en esta vuelta,
+  // o null si ya se publicó hoy (o está desactivada).
   // Con force=true (comando "ahora") se publica aunque ya haya salido una hoy.
-  async claimDailyQuestion(guildId: string, localDate: string, force: boolean = false): Promise<number | null> {
+  async claimDailyQuestion(
+    guildId: string,
+    localDate: string,
+    force: boolean = false
+  ): Promise<{ index: number; used: unknown } | null> {
     const condition = force
       ? eq(guilds.id, guildId)
       : and(
@@ -157,10 +163,11 @@ export class DatabaseStorage implements IStorage {
         dailyQuestionIndex: sql`COALESCE(${guilds.dailyQuestionIndex}, 0) + 1`,
       })
       .where(condition)
-      .returning({ index: guilds.dailyQuestionIndex });
+      .returning({ index: guilds.dailyQuestionIndex, used: guilds.dailyQuestionUsed });
 
     if (!row) return null;
-    return Math.max((row.index ?? 1) - 1, 0);
+    // used es JSON tal cual (un arreglo de números); el bot lo valida al elegir la pregunta
+    return { index: Math.max((row.index ?? 1) - 1, 0), used: row.used };
   }
 
   // Deshace una reserva si no se pudo publicar, para reintentar más tarde
@@ -172,6 +179,19 @@ export class DatabaseStorage implements IStorage {
         dailyQuestionIndex: sql`GREATEST(COALESCE(${guilds.dailyQuestionIndex}, 0) - 1, 0)`,
       })
       .where(and(eq(guilds.id, guildId), eq(guilds.dailyQuestionLastPosted, localDate)));
+  }
+
+  // Anota qué pregunta salió (por su clave). Con startNewCycle (ya habían salido todas) se empieza la lista de cero
+  async recordDailyQuestionUsed(guildId: string, questionKey: number, startNewCycle: boolean): Promise<void> {
+    const entry = JSON.stringify([questionKey]);
+    await db
+      .update(guilds)
+      .set({
+        dailyQuestionUsed: startNewCycle
+          ? sql`${entry}::jsonb`
+          : sql`COALESCE(${guilds.dailyQuestionUsed}, '[]'::jsonb) || ${entry}::jsonb`,
+      })
+      .where(eq(guilds.id, guildId));
   }
 
   // ===== USER LEVEL METHODS =====
@@ -415,15 +435,14 @@ export class DatabaseStorage implements IStorage {
   }
 
   async updateGuildSettings(guildId: string, settings: any): Promise<void> {
-    // Mezcla los ajustes nuevos con el JSON guardado (guilds.settings) y crea el servidor si aún no existe
+    // Mezcla los ajustes nuevos con el JSON guardado (guilds.settings).
+    // Solo actualiza servidores que ya existen: nunca crea filas para IDs desconocidos
+    // (quien llama debe asegurarse antes de que el servidor exista, p. ej. con ensureGuild).
     const patch = settings && typeof settings === 'object' && !Array.isArray(settings) ? settings : {};
     await db
-      .insert(guilds)
-      .values({ id: guildId, name: 'Unknown Guild', ownerId: 'unknown', settings: patch })
-      .onConflictDoUpdate({
-        target: guilds.id,
-        set: { settings: sql`COALESCE(${guilds.settings}, '{}'::jsonb) || excluded.settings` },
-      });
+      .update(guilds)
+      .set({ settings: sql`COALESCE(${guilds.settings}, '{}'::jsonb) || ${JSON.stringify(patch)}::jsonb` })
+      .where(eq(guilds.id, guildId));
   }
 }
 

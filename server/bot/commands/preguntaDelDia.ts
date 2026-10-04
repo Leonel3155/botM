@@ -15,7 +15,7 @@ import {
   replyGuildOnly,
   resolveSendableChannel,
 } from '../services/channels';
-import { DEFAULT_DAILY_QUESTION_HOUR, dailyQuestions } from '../services/dailyQuestion';
+import { DEFAULT_DAILY_QUESTION_HOUR, dailyQuestions, remainingDailyQuestions } from '../services/dailyQuestion';
 import {
   formatInTimezone,
   getLocalDateString,
@@ -260,6 +260,7 @@ export const preguntaDelDiaCommands = [
             const timezone = resolveTimezone(settings.timezone);
             const check = resolveSendableChannel(guild, settings.dailyQuestionChannelId);
             const posted = settings.dailyQuestionIndex ?? 0;
+            const remaining = remainingDailyQuestions(settings.dailyQuestionUsed);
             const lines = [
               '❓ **Pregunta del día**',
               describeSchedule(settings),
@@ -267,7 +268,9 @@ export const preguntaDelDiaCommands = [
                 (check.ok ? ' ✅' : ` ⚠️ ${check.reason}`),
               `**Hora:** ${formatHour(settings.dailyQuestionHour ?? DEFAULT_DAILY_QUESTION_HOUR)} · **Zona:** ${timezone}`,
               `**Hilo para respuestas:** ${(settings.dailyQuestionThread ?? true) ? 'sí' : 'no'}`,
-              `**Preguntas publicadas:** ${posted} (quedan ${PREGUNTAS_DEL_DIA.length - (posted % PREGUNTAS_DEL_DIA.length)} antes de repetir)`,
+              `**Preguntas publicadas:** ${posted} · ` + (remaining > 0
+                ? `quedan ${remaining} de ${PREGUNTAS_DEL_DIA.length} antes de repetir`
+                : `ya salieron las ${PREGUNTAS_DEL_DIA.length}; la siguiente empieza una vuelta nueva`),
             ];
             await interaction.editReply(lines.join('\n'));
             break;

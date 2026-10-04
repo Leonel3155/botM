@@ -134,6 +134,22 @@ export const bienvenidaCommands = [
               break;
             }
 
+            // Quien configura el rol también debe poder darlo a mano (igual que en Discord),
+            // para que el bot no reparta roles que esa persona no podría asignar
+            const member = interaction.member;
+            if (member.id !== guild.ownerId) {
+              if (!member.permissions.has(PermissionFlagsBits.ManageRoles)) {
+                await interaction.editReply('⛔ Para elegir el rol automático también necesitas el permiso **Gestionar roles**.');
+                break;
+              }
+              if (member.roles.highest.comparePositionTo(role) <= 0) {
+                await interaction.editReply(
+                  `⛔ Solo puedes elegir un rol que esté **por debajo** de tu rol más alto, y ${role} no lo está.`
+                );
+                break;
+              }
+            }
+
             const check = checkWelcomeRole(guild, role.id);
             if (!check.ok) {
               await interaction.editReply(`❌ No puedo usar ese rol: ${check.reason}`);

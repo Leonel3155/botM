@@ -20,6 +20,8 @@ import {
 import { DiscordBot } from '../index';
 import { storage } from '../../storage';
 import {
+  checkMemberCanPost,
+  checkMemberChannelPermissions,
   checkSendableChannel,
   ensureMemberPermission,
   replyGuildOnly,
@@ -166,13 +168,34 @@ export const anuncioCommands = [
         return;
       }
 
-      // Menciones: @everyone/@here y roles no mencionables requieren el permiso correspondiente
+      const channelOption = interaction.options.getChannel('canal', false, [...TEXT_CHANNEL_TYPES]);
+      const channel = channelOption ? guild.channels.cache.get(channelOption.id) : interaction.channel;
+      const target = checkSendableChannel(channel);
+      if (!target.ok) {
+        await interaction.reply({
+          content: `❌ No puedo publicar el anuncio ahí. ${target.reason}`,
+          flags: MessageFlags.Ephemeral,
+        });
+        return;
+      }
+
+      // Quien publica también debe poder escribir en ese canal (si no, usaría al bot para saltarse los permisos)
+      const memberCheck = checkMemberCanPost(interaction.member, target.channel);
+      if (!memberCheck.ok) {
+        await interaction.reply({
+          content: `⛔ Solo puedes publicar anuncios en canales donde tú puedes escribir. ${memberCheck.reason}`,
+          flags: MessageFlags.Ephemeral,
+        });
+        return;
+      }
+
+      // Menciones: @everyone/@here y roles no mencionables requieren el permiso correspondiente en el canal de destino
       const pingEveryone = mention === 'everyone' || mention === 'here' || role?.id === guild.id;
       const pingRole = role && role.id !== guild.id ? role : null;
       const needsMentionEveryone = pingEveryone || (pingRole !== null && !pingRole.mentionable);
-      if (needsMentionEveryone && !interaction.memberPermissions.has(PermissionFlagsBits.MentionEveryone)) {
+      if (needsMentionEveryone && !memberCheck.permissions.has(PermissionFlagsBits.MentionEveryone)) {
         await interaction.reply({
-          content: '⛔ Para mencionar a @everyone, @here o a un rol no mencionable necesitas el permiso **Mencionar @everyone, @here y todos los roles**.',
+          content: `⛔ Para mencionar a @everyone, @here o a un rol no mencionable en ${target.channel} necesitas el permiso **Mencionar @everyone, @here y todos los roles** en ese canal.`,
           flags: MessageFlags.Ephemeral,
         });
         return;
@@ -181,14 +204,6 @@ export const anuncioCommands = [
       await interaction.deferReply({ flags: MessageFlags.Ephemeral });
 
       try {
-        const channelOption = interaction.options.getChannel('canal', false, [...TEXT_CHANNEL_TYPES]);
-        const channel = channelOption ? guild.channels.cache.get(channelOption.id) : interaction.channel;
-        const target = checkSendableChannel(channel);
-        if (!target.ok) {
-          await interaction.editReply(`❌ No puedo publicar el anuncio ahí. ${target.reason}`);
-          return;
-        }
-
         const embed = new EmbedBuilder()
           .setColor(color)
           .setAuthor({ name: guild.name, iconURL: guild.iconURL() ?? undefined })
@@ -331,12 +346,60 @@ async function createEvent(interaction: ChatInputCommandInteraction<'cached'>) {
   }
 
   const mention = interaction.options.getString('mencion');
-  if (mention && !interaction.memberPermissions.has(PermissionFlagsBits.MentionEveryone)) {
-    await interaction.reply({
-      content: '⛔ Para mencionar a @everyone o @here necesitas el permiso **Mencionar @everyone, @here y todos los roles**.',
-      flags: MessageFlags.Ephemeral,
-    });
-    return;
+  const voiceOption = interaction.options.getChannel('canal_voz', false, [...VOICE_CHANNEL_TYPES]);
+  const announceOption = interaction.options.getChannel('canal_anuncio', false, [...TEXT_CHANNEL_TYPES]);
+  const announce = interaction.options.getBoolean('anunciar') ?? true;
+
+  // Para un evento en un canal de voz o escenario, quien lo crea debe poder entrar a ese canal
+  // y crear eventos ahí (así no se pueden anunciar canales privados que no le corresponden)
+  if (voiceOption) {
+    const voiceChannel = guild.channels.cache.get(voiceOption.id);
+    const voiceCheck = voiceChannel
+      ? checkMemberChannelPermissions(interaction.member, voiceChannel, ['ViewChannel', 'Connect'])
+      : null;
+    let problem: string | null = null;
+    if (!voiceCheck) {
+      problem = 'Ese canal de voz ya no existe o no lo puedo ver.';
+    } else if (!voiceCheck.ok) {
+      problem = voiceCheck.reason;
+    } else if (!voiceCheck.permissions.any([
+      PermissionFlagsBits.ManageEvents,
+      PermissionFlagsBits.CreateEvents,
+      PermissionFlagsBits.ManageGuild,
+    ])) {
+      problem = `No tienes permiso para crear eventos en ${voiceChannel}.`;
+    }
+    if (problem) {
+      await interaction.reply({
+        content: `⛔ No puedes crear un evento en ese canal. ${problem}`,
+        flags: MessageFlags.Ephemeral,
+      });
+      return;
+    }
+  }
+
+  // Canal del anuncio: quien crea el evento también debe poder escribir ahí. Si es el bot el que
+  // no puede publicar, el evento se crea igual y solo se avisa al final.
+  const announceTarget = announce
+    ? checkSendableChannel(announceOption ? guild.channels.cache.get(announceOption.id) : interaction.channel)
+    : null;
+  if (announceTarget?.ok) {
+    const memberCheck = checkMemberCanPost(interaction.member, announceTarget.channel);
+    if (!memberCheck.ok) {
+      await interaction.reply({
+        content: `⛔ Solo puedes anunciar el evento en un canal donde tú puedes escribir. ${memberCheck.reason}\n` +
+          'Elige otro canal en `canal_anuncio` o desactiva la opción `anunciar`.',
+        flags: MessageFlags.Ephemeral,
+      });
+      return;
+    }
+    if (mention && !memberCheck.permissions.has(PermissionFlagsBits.MentionEveryone)) {
+      await interaction.reply({
+        content: `⛔ Para mencionar a @everyone o @here en ${announceTarget.channel} necesitas el permiso **Mencionar @everyone, @here y todos los roles** en ese canal.`,
+        flags: MessageFlags.Ephemeral,
+      });
+      return;
+    }
   }
 
   await interaction.deferReply({ flags: MessageFlags.Ephemeral });
@@ -347,9 +410,6 @@ async function createEvent(interaction: ChatInputCommandInteraction<'cached'>) {
   const description = descriptionInput ? withLineBreaks(descriptionInput).trim() : undefined;
   const duration = interaction.options.getInteger('duracion') ?? 60;
   const place = interaction.options.getString('lugar')?.trim() || 'Discord';
-  const voiceOption = interaction.options.getChannel('canal_voz', false, [...VOICE_CHANNEL_TYPES]);
-  const announceOption = interaction.options.getChannel('canal_anuncio', false, [...TEXT_CHANNEL_TYPES]);
-  const announce = interaction.options.getBoolean('anunciar') ?? true;
 
   if (!name) {
     await interaction.editReply('❌ El evento necesita un nombre.');
@@ -404,9 +464,8 @@ async function createEvent(interaction: ChatInputCommandInteraction<'cached'>) {
       `🔗 ${event.url}`,
     ];
 
-    if (announce) {
-      const channel = announceOption ? guild.channels.cache.get(announceOption.id) : interaction.channel;
-      const target = checkSendableChannel(channel);
+    if (announceTarget) {
+      const target = announceTarget;
       if (!target.ok) {
         lines.push(`⚠️ No pude publicar el anuncio: ${target.reason}`);
       } else {

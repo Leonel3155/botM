@@ -21,7 +21,10 @@ const CONFIG_REFRESH_MS = 60 * 60 * 1000;
 // Si falla la publicación, se reintenta pasado este tiempo
 const RETRY_AFTER_ERROR_MS = 15 * 60 * 1000;
 
-// ===== Orden de preguntas: barajado por servidor, sin repetir hasta agotar la lista =====
+// ===== Elección de preguntas: sin repetir hasta agotar la lista =====
+// Cada pregunta se identifica por un hash de su texto y en la base de datos se guardan las que ya
+// salieron en la vuelta actual. Así se pueden agregar, quitar o reordenar preguntas en la lista
+// sin que se repitan las que ya se publicaron.
 
 function hashString(text: string): number {
   let hash = 0x811c9dc5;
@@ -32,48 +35,65 @@ function hashString(text: string): number {
   return hash >>> 0;
 }
 
-function seededRandom(seed: number): () => number {
-  let state = seed;
-  return () => {
-    state = (state + 0x6d2b79f5) | 0;
-    let t = Math.imul(state ^ (state >>> 15), 1 | state);
-    t = (t + Math.imul(t ^ (t >>> 7), 61 | t)) ^ t;
-    return ((t ^ (t >>> 14)) >>> 0) / 4294967296;
-  };
+export function questionKey(question: string): number {
+  return hashString(question.trim());
 }
 
-function shuffledOrder(guildId: string, cycle: number, size: number): number[] {
-  const random = seededRandom(hashString(`${guildId}:${cycle}`));
-  const order = Array.from({ length: size }, (_, i) => i);
-  for (let i = size - 1; i > 0; i--) {
-    const j = Math.floor(random() * (i + 1));
-    [order[i], order[j]] = [order[j], order[i]];
-  }
-  return order;
+const QUESTIONS = PREGUNTAS_DEL_DIA.map(text => ({ text, key: questionKey(text) }));
+
+// Lo guardado en la base de datos es JSON: nos quedamos solo con números
+function usedKeys(used: unknown): number[] {
+  return Array.isArray(used) ? used.filter((key): key is number => typeof key === 'number') : [];
 }
 
-// index = cuántas preguntas se han publicado antes en este servidor
-export function pickDailyQuestion(guildId: string, index: number): string {
-  const size = PREGUNTAS_DEL_DIA.length;
-  const safeIndex = Math.max(0, Math.floor(index));
-  const cycle = Math.floor(safeIndex / size);
-  const order = shuffledOrder(guildId, cycle, size);
+export interface DailyQuestionPick {
+  question: string;
+  key: number;
+  // true = ya habían salido todas y esta empieza una vuelta nueva
+  newCycle: boolean;
+}
 
-  // Que la primera de una vuelta nueva no sea la misma que la última de la anterior
-  if (cycle > 0 && size > 1 && order[0] === shuffledOrder(guildId, cycle - 1, size)[size - 1]) {
-    [order[0], order[1]] = [order[1], order[0]];
+export function pickDailyQuestion(used: unknown): DailyQuestionPick {
+  if (QUESTIONS.length === 0) throw new Error('La lista de preguntas del día está vacía');
+  const keys = usedKeys(used);
+  const usedSet = new Set(keys);
+  let candidates = QUESTIONS.filter(question => !usedSet.has(question.key));
+  let newCycle = false;
+
+  if (candidates.length === 0) {
+    // Vuelta nueva: que la primera no sea la misma que la última que salió
+    newCycle = true;
+    const last = keys[keys.length - 1];
+    candidates = QUESTIONS.filter(question => question.key !== last);
+    if (candidates.length === 0) candidates = QUESTIONS;
   }
-  return PREGUNTAS_DEL_DIA[order[safeIndex % size]];
+
+  const choice = candidates[Math.floor(Math.random() * candidates.length)];
+  return { question: choice.text, key: choice.key, newCycle };
+}
+
+// Cuántas preguntas de la lista actual no han salido en esta vuelta
+export function remainingDailyQuestions(used: unknown): number {
+  const usedSet = new Set(usedKeys(used));
+  return QUESTIONS.filter(question => !usedSet.has(question.key)).length;
+}
+
+async function rememberDailyQuestion(guildId: string, pick: DailyQuestionPick): Promise<void> {
+  try {
+    await storage.recordDailyQuestionUsed(guildId, pick.key, pick.newCycle);
+  } catch (error) {
+    console.error(`[PREGUNTA-DEL-DIA] No se pudo guardar qué pregunta salió en ${guildId}:`, error);
+  }
 }
 
 // ===== Publicación =====
 
 export async function publishDailyQuestion(
   channel: GuildTextBasedChannel,
+  question: string,
   index: number,
   createThread: boolean
 ): Promise<Message> {
-  const question = pickDailyQuestion(channel.guild.id, index);
   const withThread = createThread && canCreateThreads(channel);
 
   const embed = new EmbedBuilder()
@@ -209,24 +229,28 @@ class DailyQuestionService {
     }
 
     const previousDate = config.lastPosted;
-    const index = await storage.claimDailyQuestion(config.guildId, today);
-    if (index === null) {
+    const claim = await storage.claimDailyQuestion(config.guildId, today);
+    if (!claim) {
       // Ya se publicó hoy (otra instancia o el comando "ahora") o se desactivó
       config.lastPosted = today;
       return;
     }
 
+    const pick = pickDailyQuestion(claim.used);
     try {
-      await publishDailyQuestion(target.channel, index, config.thread);
+      await publishDailyQuestion(target.channel, pick.question, claim.index, config.thread);
       config.lastPosted = today;
-      console.log(`[PREGUNTA-DEL-DIA] Pregunta #${index + 1} publicada en ${guild.name}`);
+      console.log(`[PREGUNTA-DEL-DIA] Pregunta #${claim.index + 1} publicada en ${guild.name}`);
     } catch (error) {
       console.error(`[PREGUNTA-DEL-DIA] Error al publicar en ${guild.name}:`, error);
       this.retryAt.set(config.guildId, Date.now() + RETRY_AFTER_ERROR_MS);
       await storage.releaseDailyQuestion(config.guildId, today, previousDate).catch(releaseError =>
         console.error('[PREGUNTA-DEL-DIA] No se pudo liberar la reserva:', releaseError)
       );
+      return;
     }
+
+    await rememberDailyQuestion(config.guildId, pick);
   }
 
   // Comando "/pregunta-del-dia ahora": publica ya y cuenta como la pregunta de hoy
@@ -238,20 +262,24 @@ class DailyQuestionService {
     const timezone = resolveTimezone(settings.timezone);
     const today = getLocalDateString(new Date(), timezone);
 
-    const index = await storage.claimDailyQuestion(guild.id, today, true);
-    if (index === null) {
+    const claim = await storage.claimDailyQuestion(guild.id, today, true);
+    if (!claim) {
       throw new Error(`Guild ${guild.id} not found in database`);
     }
 
+    const pick = pickDailyQuestion(claim.used);
+    let message: Message;
     try {
-      const message = await publishDailyQuestion(channel, index, settings.dailyQuestionThread ?? true);
-      const cached = this.configs.get(guild.id);
-      if (cached) cached.lastPosted = today;
-      return { message, number: index + 1 };
+      message = await publishDailyQuestion(channel, pick.question, claim.index, settings.dailyQuestionThread ?? true);
     } catch (error) {
       await storage.releaseDailyQuestion(guild.id, today, settings.dailyQuestionLastPosted ?? null).catch(() => {});
       throw error;
     }
+
+    const cached = this.configs.get(guild.id);
+    if (cached) cached.lastPosted = today;
+    await rememberDailyQuestion(guild.id, pick);
+    return { message, number: claim.index + 1 };
   }
 }
 

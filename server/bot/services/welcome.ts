@@ -1,5 +1,6 @@
 import {
   EmbedBuilder,
+  GuildFeature,
   PermissionFlagsBits,
   escapeMarkdown,
   type Guild,
@@ -23,6 +24,10 @@ const WELCOME_BURST_LIMIT = 8;
 const WELCOME_BURST_WINDOW_MS = 60_000;
 const recentWelcomes = new Map<string, number[]>();
 
+// Si el bot se reinicia mientras alguien está aceptando las reglas, le damos el rol pendiente
+// solo si entró hace poco (así no se le da a miembros antiguos a los que se les quitó a propósito)
+const PENDING_ROLE_WINDOW_MS = 3 * 24 * 60 * 60 * 1000;
+
 // Permisos que nunca damos automáticamente al entrar
 const DANGEROUS_PERMISSIONS = [
   PermissionFlagsBits.Administrator,
@@ -35,15 +40,24 @@ const DANGEROUS_PERMISSIONS = [
   PermissionFlagsBits.BanMembers,
   PermissionFlagsBits.ModerateMembers,
   PermissionFlagsBits.MentionEveryone,
+  PermissionFlagsBits.MuteMembers,
+  PermissionFlagsBits.DeafenMembers,
+  PermissionFlagsBits.MoveMembers,
+  PermissionFlagsBits.ManageNicknames,
+  PermissionFlagsBits.ManageThreads,
+  PermissionFlagsBits.ManageEvents,
+  PermissionFlagsBits.ManageGuildExpressions,
+  PermissionFlagsBits.ViewAuditLog,
 ];
 
 export function renderWelcomeTemplate(template: string | null | undefined, member: GuildMember): string {
   const text = template?.trim() ? template : DEFAULT_WELCOME_MESSAGE;
+  // Reemplazos con función: así un "$" en el nombre del servidor o del usuario se copia tal cual
   return text
-    .replace(/\{usuario\}/gi, `<@${member.id}>`)
-    .replace(/\{nombre\}/gi, escapeMarkdown(member.user.username))
-    .replace(/\{servidor\}/gi, escapeMarkdown(member.guild.name))
-    .replace(/\{miembros\}/gi, member.guild.memberCount.toLocaleString('es-MX'));
+    .replace(/\{usuario\}/gi, () => `<@${member.id}>`)
+    .replace(/\{nombre\}/gi, () => escapeMarkdown(member.user.username))
+    .replace(/\{servidor\}/gi, () => escapeMarkdown(member.guild.name))
+    .replace(/\{miembros\}/gi, () => member.guild.memberCount.toLocaleString('es-MX'));
 }
 
 export function buildWelcomeEmbed(member: GuildMember, template: string | null | undefined): EmbedBuilder {
@@ -154,7 +168,7 @@ export async function handleMemberWelcome(member: GuildMember): Promise<void> {
     }
   }
 
-  // Si el servidor usa verificación de reglas, el rol se da al completarla (GuildMemberUpdate)
+  // Si el servidor usa verificación de reglas, el rol se da al completarla (GuildMemberUpdate o GuildMemberAvailable)
   if (settings.welcomeRoleId && !member.pending) {
     await assignWelcomeRole(member, settings.welcomeRoleId);
   }
@@ -165,6 +179,23 @@ export async function handleMemberPassedScreening(member: GuildMember): Promise<
   if (member.user.bot) return;
   const settings = await storage.getGuild(member.guild.id);
   if (settings?.welcomeRoleId) {
+    await assignWelcomeRole(member, settings.welcomeRoleId);
+  }
+}
+
+// Se llama desde GuildMemberAvailable. Si el miembro no estaba en caché (p. ej. después de reiniciar
+// el bot en un servidor grande), discord.js emite este evento en lugar de GuildMemberUpdate cuando
+// alguien termina de aceptar las reglas, así que aquí recuperamos el rol automático pendiente.
+export async function handleMemberAvailable(member: GuildMember): Promise<void> {
+  if (member.user.bot || member.pending) return;
+  // Solo aplica a servidores con verificación de reglas; en los demás el rol se da al entrar
+  if (!member.guild.features.includes(GuildFeature.MemberVerificationGateEnabled)) return;
+
+  const joinedAt = member.joinedTimestamp;
+  if (!joinedAt || Date.now() - joinedAt > PENDING_ROLE_WINDOW_MS) return;
+
+  const settings = await storage.getGuild(member.guild.id);
+  if (settings?.welcomeRoleId && !member.roles.cache.has(settings.welcomeRoleId)) {
     await assignWelcomeRole(member, settings.welcomeRoleId);
   }
 }
