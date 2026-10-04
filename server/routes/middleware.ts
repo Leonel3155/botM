@@ -26,9 +26,6 @@ declare module "express-session" {
     discordToken?: string;
     /** Momento (ms) en que caduca el access token de Discord */
     discordTokenExpiresAt?: number;
-    /** State anti-CSRF del flujo OAuth (un solo uso) */
-    oauthState?: string;
-    oauthStateCreatedAt?: number;
   }
 }
 
@@ -58,10 +55,40 @@ export function isDevSession(session: Partial<SessionData> | null | undefined): 
   return !!session?.devBypass && isSessionAuthenticated(session);
 }
 
+// =============================================
+// Fin de una sesión (logout, nuevo login, token caducado o revocado)
+// =============================================
+type SessionEndedListener = (sessionId: string) => void;
+const sessionEndedListeners = new Set<SessionEndedListener>();
+
+/** Avísame cuando una sesión deje de ser válida (lo usa el WebSocket para cerrar sus conexiones). */
+export function onSessionEnded(listener: SessionEndedListener): () => void {
+  sessionEndedListeners.add(listener);
+  return () => {
+    sessionEndedListeners.delete(listener);
+  };
+}
+
+/**
+ * Esa sesión ya no vale: olvidamos su caché de servidores y avisamos a quien
+ * tenga algo abierto con ella (las conexiones del WebSocket se cierran con 4401).
+ */
+export function endSession(sessionId: string | undefined): void {
+  if (!sessionId) return;
+  forgetUserGuilds(sessionId);
+  sessionEndedListeners.forEach((listener) => {
+    try {
+      listener(sessionId);
+    } catch (error) {
+      console.error("[AUTH] Error al cerrar las conexiones de una sesión:", error);
+    }
+  });
+}
+
 /** Quita los datos de login de la sesión (token caducado/revocado, modo dev desactivado...). */
 export function clearSessionAuth(session: AppSession | null | undefined): void {
   if (!session) return;
-  forgetUserGuilds(session.id);
+  endSession(session.id);
   delete session.authenticated;
   delete session.devBypass;
   delete session.user;

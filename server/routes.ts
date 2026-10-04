@@ -1,6 +1,8 @@
 import type { Express, Request, Response, NextFunction, RequestHandler } from "express";
+import type { Store } from "express-session";
 import { createServer, type IncomingMessage, type Server } from "http";
 import type { Duplex } from "stream";
+import type { Guild as DiscordGuild } from "discord.js";
 import { WebSocketServer, WebSocket } from "ws";
 import { storage } from "./storage";
 import { z } from "zod";
@@ -25,6 +27,7 @@ import {
   isDevSession,
   isSessionAuthenticated,
   isSnowflake,
+  onSessionEnded,
   parseBody,
   parseLimit,
   snowflakeSchema
@@ -33,13 +36,77 @@ import {
 interface WebSocketClient extends WebSocket {
   guildId?: string;
   userId?: string;
+  /** Sesión con la que se abrió la conexión (para cerrarla al hacer logout o si caduca) */
+  sessionId?: string;
+  sessionStore?: Store;
+  /** Respondió al último ping */
+  isAlive?: boolean;
+  /** Cuenta los "join" para que una respuesta vieja no pise a una nueva */
+  joinSeq?: number;
 }
 
 // Petición HTTP del upgrade, ya con la sesión de express-session cargada
 type SessionIncomingMessage = IncomingMessage & {
   session?: AppSession;
   sessionID?: string;
+  sessionStore?: Store;
 };
+
+// Cada 30 s: ping a los WebSockets (los muertos se cierran) y repaso de que su sesión siga viva
+const WS_HEARTBEAT_MS = 30_000;
+// Protocolo con el que se conecta el cliente de HMR de Vite (solo en desarrollo)
+const VITE_HMR_PROTOCOL = 'vite-hmr';
+
+// Miembros y conectados de cada servidor: caché corta para no pedírselos a Discord en cada visita
+const GUILD_COUNTS_TTL_MS = 60_000;
+
+interface GuildCounts {
+  fetchedAt: number;
+  memberCount: number;
+  presenceCount: number;
+}
+
+const guildCountsCache = new Map<string, GuildCounts>();
+const pendingGuildCounts = new Map<string, Promise<GuildCounts>>();
+
+/**
+ * Pide los contadores aproximados del servidor con el cliente REST de discord.js
+ * (respeta los rate limits y los Retry-After de Discord), como mucho una vez por
+ * minuto y por servidor, y con las peticiones simultáneas agrupadas.
+ */
+async function getGuildCounts(guild: DiscordGuild): Promise<GuildCounts> {
+  const cached = guildCountsCache.get(guild.id);
+  if (cached && Date.now() - cached.fetchedAt < GUILD_COUNTS_TTL_MS) {
+    return cached;
+  }
+
+  const pending = pendingGuildCounts.get(guild.id);
+  if (pending) return pending;
+
+  const request = (async () => {
+    try {
+      const fresh = await guild.fetch();
+      const counts: GuildCounts = {
+        fetchedAt: Date.now(),
+        memberCount: fresh.approximateMemberCount ?? fresh.memberCount ?? 0,
+        presenceCount: fresh.approximatePresenceCount ?? 0
+      };
+      guildCountsCache.set(guild.id, counts);
+      return counts;
+    } catch (error) {
+      if (cached) {
+        console.warn('[DASH] Discord no respondió; usando los contadores en caché:', (error as Error).message);
+        return cached;
+      }
+      throw error;
+    } finally {
+      pendingGuildCounts.delete(guild.id);
+    }
+  })();
+
+  pendingGuildCounts.set(guild.id, request);
+  return request;
+}
 
 interface RegisterRoutesOptions {
   /** El mismo middleware de express-session que usa la app (para leer la sesión en el WebSocket) */
@@ -165,31 +232,50 @@ export async function registerRoutes(app: Express, { sessionParser }: RegisterRo
     socket.destroy();
   };
 
+  // En desarrollo Vite atiende sus propios upgrades (HMR) en este mismo servidor
+  const isDevServer = app.get('env') === 'development';
+
   httpServer.on('upgrade', (req: SessionIncomingMessage, socket: Duplex, head: Buffer) => {
+    // Lo primero: sin este listener, un ECONNRESET en el socket tumbaría todo el proceso
+    socket.on('error', (error) => console.warn('[WS] Error en el socket:', error.message));
+
     let pathname = '';
     try {
       pathname = new URL(req.url || '/', 'http://localhost').pathname;
     } catch {
       // URL inválida: no es nuestra
     }
-    // Otros upgrades (por ejemplo el HMR de Vite en desarrollo) no son nuestros
-    if (pathname !== '/ws') return;
 
-    socket.on('error', (error) => console.error('[WS] Socket error:', error));
+    if (pathname !== '/ws') {
+      // El HMR de Vite (solo en desarrollo) lo atiende su propio listener
+      if (isDevServer && req.headers['sec-websocket-protocol'] === VITE_HMR_PROTOCOL) return;
+      // Cualquier otro upgrade se rechaza: no lo dejamos colgado
+      return rejectUpgrade(socket, 400, 'Bad Request');
+    }
 
     if (!isAllowedOrigin(req.headers.origin, req.headers)) {
       return rejectUpgrade(socket, 403, 'Forbidden');
     }
 
     // Cargamos la sesión con el mismo middleware de express-session
-    sessionParser(req as unknown as Request, {} as Response, () => {
-      if (!isSessionAuthenticated(req.session)) {
-        return rejectUpgrade(socket, 401, 'Unauthorized');
-      }
-      wss.handleUpgrade(req, socket, head, (ws) => {
-        wss.emit('connection', ws, req);
+    try {
+      sessionParser(req as unknown as Request, {} as Response, () => {
+        try {
+          if (!isSessionAuthenticated(req.session)) {
+            return rejectUpgrade(socket, 401, 'Unauthorized');
+          }
+          wss.handleUpgrade(req, socket, head, (ws) => {
+            wss.emit('connection', ws, req);
+          });
+        } catch (error) {
+          console.error('[WS] Error al aceptar la conexión:', error);
+          rejectUpgrade(socket, 500, 'Internal Server Error');
+        }
       });
-    });
+    } catch (error) {
+      console.error('[WS] Error al leer la sesión:', error);
+      rejectUpgrade(socket, 500, 'Internal Server Error');
+    }
   });
 
   const sendWs = (ws: WebSocket, message: Record<string, unknown>) => {
@@ -198,7 +284,84 @@ export async function registerRoutes(app: Express, { sessionParser }: RegisterRo
     }
   };
 
+  // Sesión cerrada o ya no válida: fuera del tiempo real (el cliente debe volver a iniciar sesión)
+  const closeUnauthorized = (ws: WebSocketClient, reason = 'Sesion no valida') => {
+    ws.guildId = undefined;
+    ws.userId = undefined;
+    if (ws.readyState === WebSocket.OPEN) {
+      ws.close(4401, reason);
+    }
+  };
+
+  // Logout, nuevo login o token caducado/revocado: cerramos los WebSockets de esa sesión
+  onSessionEnded((sessionId) => {
+    wss.clients.forEach((client) => {
+      const wsClient = client as WebSocketClient;
+      if (wsClient.sessionId === sessionId) {
+        closeUnauthorized(wsClient, 'Sesion cerrada');
+      }
+    });
+  });
+
+  // ¿La sesión de una conexión ya abierta sigue existiendo y con login válido?
+  const revalidateSocketSession = (ws: WebSocketClient) => {
+    const { sessionId, sessionStore } = ws;
+    if (!sessionId || !sessionStore) {
+      return closeUnauthorized(ws);
+    }
+    try {
+      sessionStore.get(sessionId, (error, data) => {
+        if (error) {
+          console.warn('[WS] No se pudo comprobar la sesión:', error);
+          return closeUnauthorized(ws);
+        }
+        if (!isSessionAuthenticated(data)) {
+          closeUnauthorized(ws, 'Sesion caducada');
+        }
+      });
+    } catch (error) {
+      console.warn('[WS] No se pudo comprobar la sesión:', error);
+      closeUnauthorized(ws);
+    }
+  };
+
+  const heartbeat = setInterval(() => {
+    wss.clients.forEach((client) => {
+      const wsClient = client as WebSocketClient;
+      if (wsClient.isAlive === false) {
+        // No contestó al ping anterior: conexión muerta
+        wsClient.terminate();
+        return;
+      }
+      wsClient.isAlive = false;
+      try {
+        wsClient.ping();
+      } catch {
+        wsClient.terminate();
+        return;
+      }
+      revalidateSocketSession(wsClient);
+    });
+  }, WS_HEARTBEAT_MS);
+  heartbeat.unref();
+  wss.on('close', () => clearInterval(heartbeat));
+
   wss.on('connection', (ws: WebSocketClient, req: SessionIncomingMessage) => {
+    // Sin este listener, un mensaje demasiado grande o un frame inválido tumbaría el proceso
+    ws.on('error', (error) => {
+      console.warn('[WS] Error del cliente:', error.message);
+      ws.terminate();
+    });
+
+    ws.isAlive = true;
+    ws.on('pong', () => {
+      ws.isAlive = true;
+    });
+
+    ws.sessionId = req.sessionID;
+    ws.sessionStore = req.sessionStore;
+    ws.joinSeq = 0;
+
     ws.on('message', (message) => {
       let data: any;
       try {
@@ -212,25 +375,32 @@ export async function registerRoutes(app: Express, { sessionParser }: RegisterRo
       const guildId = data.guildId;
       const session = req.session;
       if (!session) {
-        return ws.close(4401, 'Sesion no valida');
+        return closeUnauthorized(ws);
       }
+
+      const joinSeq = (ws.joinSeq ?? 0) + 1;
+      ws.joinSeq = joinSeq;
 
       // Recargamos la sesión: si cerró sesión o caducó desde que conectó, fuera
       session.reload(async (reloadError) => {
         try {
           const currentSession = req.session;
           if (reloadError || !currentSession || !isSessionAuthenticated(currentSession)) {
-            ws.guildId = undefined;
-            return ws.close(4401, 'Sesion no valida');
+            return closeUnauthorized(ws);
           }
 
           const access = await checkGuildAccess(currentSession, guildId);
+          if (!access.ok && access.status === 401) {
+            // Discord rechazó el token: la sesión ya se limpió; la guardamos así y fuera
+            currentSession.save(() => closeUnauthorized(ws));
+            return;
+          }
+
+          // Ya se cerró la conexión o llegó otro "join" mientras esperábamos a Discord
+          if (ws.readyState !== WebSocket.OPEN || ws.joinSeq !== joinSeq) return;
+
           if (!access.ok) {
             ws.guildId = undefined;
-            if (access.status === 401) {
-              currentSession.save(() => ws.close(4401, 'Sesion no valida'));
-              return;
-            }
             return sendWs(ws, { type: 'error', status: access.status, ...access.body });
           }
 
@@ -354,41 +524,24 @@ export async function registerRoutes(app: Express, { sessionParser }: RegisterRo
   });
 
   // Dashboard stats
-  app.get('/api/dashboard/:guildId/stats', ...guildAdminWithBot, async (req: Request, res: Response) => {
+  app.get('/api/dashboard/:guildId/stats', ...guildAdminWithBot, async (_req: Request, res: Response) => {
     try {
-      const { guildId } = req.params;
-      try {
-        // Fetch real guild data from Discord API
-        const guildResponse = await fetch(`https://discord.com/api/v10/guilds/${guildId}?with_counts=true`, {
-          headers: {
-            'Authorization': `Bot ${process.env.DISCORD_TOKEN}`,
-            'Content-Type': 'application/json'
-          }
-        });
+      // Datos reales del servidor (con caché y respetando los rate limits de Discord)
+      const counts = await getGuildCounts(getBotGuild(res));
 
-        if (guildResponse.ok) {
-          const guildData = await guildResponse.json();
+      const stats = {
+        totalMembers: counts.memberCount,
+        activeUsers: Math.floor(counts.presenceCount * 0.7),
+        commandsUsed: 15200,
+        moderationActions: 47
+      };
 
-          const stats = {
-            totalMembers: guildData.approximate_member_count || 0,
-            activeUsers: Math.floor((guildData.approximate_presence_count || 0) * 0.7),
-            commandsUsed: 15200,
-            moderationActions: 47
-          };
-
-          return res.json(stats);
-        }
-
-        throw new Error('Discord API request failed');
-      } catch (discordError) {
-        console.error('Failed to fetch Discord data:', discordError);
-        return res.status(503).json({
-          error: 'No se pudieron obtener los datos del servidor desde Discord.'
-        });
-      }
-    } catch (error) {
-      console.error('[DASH-ERROR] Dashboard stats error:', error);
-      res.status(500).json({ error: 'No se pudieron obtener las estadísticas.' });
+      return res.json(stats);
+    } catch (discordError) {
+      console.error('[DASH-ERROR] Failed to fetch Discord data:', discordError);
+      return res.status(503).json({
+        error: 'No se pudieron obtener los datos del servidor desde Discord.'
+      });
     }
   });
 

@@ -1,4 +1,5 @@
 import type { Express, Request, Response } from "express";
+import { ChannelType } from "discord.js";
 import { z } from "zod";
 import { storage } from "../storage";
 import {
@@ -113,33 +114,19 @@ export function setupChannelRoutes(app: Express) {
     try {
       const { guildId } = req.params;
 
-      console.log(`[DISCORD-CHANNELS-001] Fetching Discord channels for guild: ${guildId}`);
+      console.log(`[DISCORD-CHANNELS-001] Listing Discord channels for guild: ${guildId}`);
 
-      // Fetch channels from Discord API
-      const channelsResponse = await fetch(`https://discord.com/api/v10/guilds/${guildId}/channels`, {
-        headers: {
-          'Authorization': `Bot ${process.env.DISCORD_TOKEN}`,
-          'Content-Type': 'application/json'
-        }
-      });
-
-      if (!channelsResponse.ok) {
-        console.error('[DISCORD-CHANNELS-002] Failed to fetch channels:', channelsResponse.status);
-        return res.status(502).json({ error: 'No se pudieron obtener los canales de Discord.' });
-      }
-
-      const channels = await channelsResponse.json();
-
-      // Filter and format channels
-      const formattedChannels = channels
-        .filter((channel: any) => channel.type === 0 || channel.type === 2) // Text (0) and Voice (2) channels
-        .map((channel: any) => ({
+      // Canales de la caché del bot (llegan por el gateway): sin llamar a la API REST
+      // de Discord en cada visita, así no gastamos el rate limit del token del bot.
+      const formattedChannels = getBotGuild(res).channels.cache
+        .filter((channel) => channel.type === ChannelType.GuildText || channel.type === ChannelType.GuildVoice)
+        .map((channel) => ({
           id: channel.id,
           name: channel.name,
-          type: channel.type === 0 ? 'text' : 'voice',
-          category: channel.parent_id ? channels.find((c: any) => c.id === channel.parent_id)?.name || 'No Category' : 'No Category'
+          type: channel.type === ChannelType.GuildText ? 'text' : 'voice',
+          category: channel.parent?.name || 'Sin categoría'
         }))
-        .sort((a: any, b: any) => a.name.localeCompare(b.name));
+        .sort((a, b) => a.name.localeCompare(b.name));
 
       console.log(`[DISCORD-CHANNELS-003] Found ${formattedChannels.length} channels`);
       res.json(formattedChannels);
