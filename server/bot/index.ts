@@ -3,6 +3,10 @@ import { setupCommands } from './commands';
 import { setupEvents } from './events';
 import { setupAntiRaid } from './middleware/antiRaid';
 import { setupCustomCommands } from './customCommands';
+import { installProcessErrorHandlers } from './utils/processErrors';
+
+// Un error suelto (p. ej. Discord caído un momento) no debe tumbar el bot ni el panel
+installProcessErrorHandlers();
 
 export class DiscordBot {
   public client: Client;
@@ -19,8 +23,15 @@ export class DiscordBot {
       ]
     });
 
+    // Sin estos oyentes, un error de conexión de discord.js se convierte en una excepción no capturada
+    this.client.on(Events.Error, (error) => console.error('⚠️ Error del cliente de Discord:', error));
+    this.client.on(Events.ShardError, (error, shardId) => console.error(`⚠️ Error de conexión (shard ${shardId}):`, error));
+    this.client.on(Events.Warn, (warning) => console.warn('⚠️ Aviso de discord.js:', warning));
+
     this.commands = new Collection();
-    this.init();
+    this.init().catch((error) => {
+      console.error('❌ Error al preparar el bot (comandos/eventos):', error);
+    });
   }
 
   private async init() {
@@ -34,8 +45,8 @@ export class DiscordBot {
     this.prefixHandler = new PrefixCommandHandler(this);
 
     this.client.once(Events.ClientReady, () => {
-      console.log(`🤖 Discord bot ready as ${this.client.user?.tag}`);
-      console.log(`📋 Prefix commands enabled alongside slash commands`);
+      console.log(`🤖 Bot de Discord listo como ${this.client.user?.tag}`);
+      console.log('📋 Comandos con prefijo activos junto a los comandos de barra');
     });
 
     // Handle prefix-based messages
@@ -44,7 +55,7 @@ export class DiscordBot {
       try {
         await this.prefixHandler.handleMessage(message);
       } catch (error) {
-        console.error('Prefix command error:', error);
+        console.error('Error en comando con prefijo:', error);
       }
     });
 
@@ -55,11 +66,21 @@ export class DiscordBot {
       const command = this.commands.get(interaction.commandName);
       if (!command) return;
 
+      // Todos los comandos trabajan con datos del servidor: en mensajes directos no tienen sentido
+      if (!interaction.inGuild()) {
+        await interaction.reply({ content: 'Este comando solo funciona dentro de un servidor. 🙂', flags: MessageFlags.Ephemeral })
+          .catch((error) => console.error('No se pudo responder en mensaje directo:', error));
+        return;
+      }
+
       try {
         await command.execute(interaction, this);
       } catch (error) {
-        console.error('Command execution error:', error);
-        const reply = { content: 'There was an error executing this command!', flags: MessageFlags.Ephemeral } as const;
+        console.error(`Error al ejecutar /${interaction.commandName}:`, error);
+        const reply = {
+          content: '😵 Uy, algo salió mal con este comando. Intenta de nuevo en un momento.',
+          flags: MessageFlags.Ephemeral,
+        } as const;
 
         try {
           if (interaction.replied || interaction.deferred) {
@@ -68,7 +89,7 @@ export class DiscordBot {
             await interaction.reply(reply);
           }
         } catch (replyError) {
-          console.error('Could not send error reply:', replyError);
+          console.error('No se pudo enviar el aviso de error:', replyError);
         }
       }
     });
@@ -77,14 +98,14 @@ export class DiscordBot {
   public async start() {
     const token = process.env.DISCORD_TOKEN;
     if (!token) {
-      throw new Error('DISCORD_TOKEN environment variable is required');
+      throw new Error('Falta la variable de entorno DISCORD_TOKEN');
     }
 
     await this.client.login(token);
   }
 
   public async stop() {
-    this.client.destroy();
+    await this.client.destroy();
   }
 }
 

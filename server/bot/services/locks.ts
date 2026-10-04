@@ -1,42 +1,40 @@
 import { Mutex } from 'async-mutex';
 
-// Lock por usuario para operaciones económicas
-const userLocks = new Map<string, Mutex>();
-export function lockForUser(userId: string) {
-  let m = userLocks.get(userId);
-  if (!m) { 
-    m = new Mutex(); 
-    userLocks.set(userId, m);
-    
-    // Cleanup de locks inactivos después de 10 minutos
-    setTimeout(() => {
-      if (!m?.isLocked()) {
-        userLocks.delete(userId);
-      }
-    }, 10 * 60 * 1000);
-  }
-  return m;
+const CLEANUP_MS = 10 * 60 * 1000;
+
+// Borra el candado tras 10 minutos sin uso; si en ese momento está ocupado, vuelve a intentarlo más tarde
+function scheduleCleanup(map: Map<string, Mutex>, key: string, mutex: Mutex) {
+  const timer = setTimeout(() => {
+    if (map.get(key) !== mutex) return;
+    if (mutex.isLocked()) scheduleCleanup(map, key, mutex);
+    else map.delete(key);
+  }, CLEANUP_MS);
+  timer.unref?.();
 }
 
-// Lock por guild para operaciones de configuración
+function getOrCreate(map: Map<string, Mutex>, key: string): Mutex {
+  let mutex = map.get(key);
+  if (!mutex) {
+    mutex = new Mutex();
+    map.set(key, mutex);
+    scheduleCleanup(map, key, mutex);
+  }
+  return mutex;
+}
+
+// Candado por usuario para operaciones económicas (la clave puede incluir el servidor: "guildId:userId")
+const userLocks = new Map<string, Mutex>();
+export function lockForUser(key: string) {
+  return getOrCreate(userLocks, key);
+}
+
+// Candado por servidor para operaciones de configuración
 const guildLocks = new Map<string, Mutex>();
 export function lockForGuild(guildId: string) {
-  let m = guildLocks.get(guildId);
-  if (!m) {
-    m = new Mutex();
-    guildLocks.set(guildId, m);
-    
-    // Cleanup de locks inactivos después de 10 minutos
-    setTimeout(() => {
-      if (!m?.isLocked()) {
-        guildLocks.delete(guildId);
-      }
-    }, 10 * 60 * 1000);
-  }
-  return m;
+  return getOrCreate(guildLocks, guildId);
 }
 
-// Estadísticas de locks
+// Estadísticas de candados
 export function getLockStats() {
   return {
     userLocks: userLocks.size,

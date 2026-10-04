@@ -1,14 +1,42 @@
 import { DiscordBot } from '../index';
 import { Events, GuildMember, Message, PartialGuildMember } from 'discord.js';
 import { storage } from '../../storage';
+import { getGuildSettings, warmGuildSettings } from '../services/guildSettings';
 import { handleMemberAvailable, handleMemberPassedScreening, handleMemberWelcome } from '../services/welcome';
+import { ensureAccount, formatCoins, getPrestigeLevel, grantActivityRewards } from '../services/economy';
+import { MESSAGE_XP_MAX, MESSAGE_XP_MIN, PRESTIGE_MIN_LEVEL, awardXp, levelUpReward, prestigeMultiplier } from '../services/levels';
 
 // Tiempo mínimo entre mensajes que dan XP/monedas (evita farmear con spam)
 const XP_COOLDOWN_MS = 60_000;
 const lastRewardAt = new Map<string, number>();
 
+// Probabilidad de un "golpe de suerte" (monedas extra) por mensaje premiado
+const LUCKY_CHANCE = 0.005;
+const LUCKY_COINS = 100;
+
+function milestoneText(level: number): string {
+  if (level === 10) return '\n🏆 ¡Primer gran logro!';
+  if (level === 25) return '\n⭐ ¡Ya llevas un cuarto del camino al prestigio!';
+  if (level === 50) return '\n🌟 ¡Mitad del camino al prestigio!';
+  if (level === 75) return '\n💎 ¡Nivel 75, qué constancia!';
+  if (level === PRESTIGE_MIN_LEVEL) return '\n🚀 ¡Nivel 100! Ya puedes usar `/prestige`.';
+  if (level > PRESTIGE_MIN_LEVEL) return '\n🌌 ¡Leyenda del servidor! Recuerda que puedes usar `/prestige`.';
+  return '';
+}
+
 export function setupEvents(bot: DiscordBot) {
-  // Message XP system
+  // Precarga los ajustes de cada servidor para que el filtro de economía de los comandos de barra
+  // responda desde memoria (corre antes de deferReply, dentro de los 3 s que da Discord)
+  const warmAll = () => {
+    void warmGuildSettings([...bot.client.guilds.cache.keys()]);
+  };
+  if (bot.client.isReady()) warmAll();
+  else bot.client.once(Events.ClientReady, warmAll);
+  bot.client.on(Events.GuildCreate, (guild) => {
+    void warmGuildSettings([guild.id]);
+  });
+
+  // XP y monedas por participar
   bot.client.on(Events.MessageCreate, async (message: Message) => {
     if (message.author.bot || !message.guild) return;
 
@@ -19,64 +47,63 @@ export function setupEvents(bot: DiscordBot) {
     const now = Date.now();
     if (now - (lastRewardAt.get(cooldownKey) || 0) < XP_COOLDOWN_MS) return;
     lastRewardAt.set(cooldownKey, now);
+    // Limpieza ocasional para que el mapa no crezca sin límite
+    if (lastRewardAt.size > 10_000) {
+      for (const [key, at] of lastRewardAt) {
+        if (now - at >= XP_COOLDOWN_MS) lastRewardAt.delete(key);
+      }
+    }
 
     try {
-      await storage.ensureGuild(guildId, message.guild.name, message.guild.ownerId);
-      await storage.upsertUser({
-        id: userId,
-        username: message.author.username,
-        avatar: message.author.avatar
-      });
+      // Crea servidor, usuario y cuenta si faltan
+      await ensureAccount(message.guild, message.author);
 
-      const previousLevel = (await storage.getUserLevel(userId, guildId))?.level || 1;
+      // XP (15-25 por mensaje) con el bono de prestigio: +10 % por prestigio, máximo x2
+      const prestige = await getPrestigeLevel(guildId, userId);
+      const baseXp = Math.floor(Math.random() * (MESSAGE_XP_MAX - MESSAGE_XP_MIN + 1)) + MESSAGE_XP_MIN;
+      const xpGain = Math.round(baseXp * prestigeMultiplier(prestige));
+      const { previousLevel, level } = await awardXp(guildId, userId, xpGain);
+      const leveledUp = level > previousLevel;
 
-      // Award XP (15-25 per message)
-      const xpGain = Math.floor(Math.random() * 11) + 15;
-      const updatedLevel = await storage.updateUserXP(userId, guildId, xpGain);
-      const level = updatedLevel.level || 1;
-
-      // Monedas y boletos por participar (escalan con el nivel)
-      const coinGain = Math.floor(Math.random() * (level * 3)) + level;
-      const ticketGain = Math.random() < 0.1 ? 2 : 1;
-      await storage.addCoins(userId, guildId, coinGain);
-      await storage.addLotteryTickets(userId, guildId, ticketGain);
-
-      // Objeto raro (0.5% por mensaje)
-      let rareDropMessage = '';
-      if (Math.random() < 0.005) {
-        const rareDrop = await storage.giveRandomRareItem(userId, guildId, level);
-        if (rareDrop) {
-          rareDropMessage = `\n✨ **RARE DROP!** ${rareDrop.emoji} ${rareDrop.name} (${rareDrop.rarity})`;
-        }
+      // Monedas y boletos por participar (escalan con el nivel), más los premios de subir de nivel.
+      // Si la economía está apagada desde el panel, solo se gana XP.
+      const settings = await getGuildSettings(guildId);
+      const economyOn = settings?.economyEnabled !== false;
+      const lucky = economyOn && Math.random() < LUCKY_CHANCE;
+      const reward = leveledUp ? levelUpReward(level) : { coins: 0, tickets: 0 };
+      if (economyOn) {
+        const coinGain = Math.floor(Math.random() * (level * 3)) + level;
+        const ticketGain = Math.random() < 0.1 ? 2 : 1;
+        await grantActivityRewards(
+          guildId,
+          userId,
+          coinGain + (lucky ? LUCKY_COINS : 0) + reward.coins,
+          ticketGain + reward.tickets
+        );
       }
 
-      if (level > previousLevel) {
-        const levelReward = Math.floor(level * level * 50); // n² × 50 coins
-        const bonusTickets = Math.floor(level / 5) + 1;
-        const prestigeBonus = level >= 100 ? '\n🏆 **PRESTIGE ELIGIBLE!** Use `/prestige`' : '';
+      if (!leveledUp && !lucky) return;
+      // El panel permite apagar los avisos del bot en el chat
+      if (settings?.levelUpMessages === false) return;
+      if (!message.channel.isSendable()) return;
 
-        await storage.addCoins(userId, guildId, levelReward);
-        await storage.addLotteryTickets(userId, guildId, bonusTickets);
+      const luckyText = lucky ? `\n🍀 ¡Golpe de suerte! Encontraste **${formatCoins(LUCKY_COINS)}** extra.` : '';
 
-        let levelMessage = `🎉 <@${userId}> **LEVEL UP!** Level **${level}**!${prestigeBonus}`;
-
-        if (level === 10) levelMessage += '\n🏆 **First milestone - Economy unlocked!**';
-        else if (level === 25) levelMessage += '\n⭐ **Quarter century - VIP status!**';
-        else if (level === 50) levelMessage += '\n🌟 **Halfway to prestige!**';
-        else if (level === 75) levelMessage += '\n💎 **Diamond tier reached!**';
-        else if (level === 100) levelMessage += '\n🚀 **MAX LEVEL! Prestige available!**';
-        else if (level > 100) levelMessage += '\n🌌 **LEGENDARY STATUS!**';
-
-        levelMessage += `\n💰 **+${levelReward.toLocaleString()} coins** • 🎫 **+${bonusTickets} tickets** • ⚡ **${level}x earning power!**`;
-
-        if (message.channel.isSendable()) {
-          await message.channel.send(levelMessage + rareDropMessage);
-        }
-      } else if (rareDropMessage && message.channel.isSendable()) {
-        await message.channel.send(`<@${userId}>${rareDropMessage}`);
+      if (leveledUp) {
+        const ticketsText = `${reward.tickets} ${reward.tickets === 1 ? 'boleto' : 'boletos'}`;
+        const rewardText = economyOn ? `\n💰 +${formatCoins(reward.coins)} • 🎫 +${ticketsText}` : '';
+        await message.channel.send({
+          content: `🎉 ¡<@${userId}> subió al nivel **${level}**!${milestoneText(level)}${rewardText}${luckyText}`,
+          allowedMentions: { users: [userId] },
+        });
+      } else {
+        await message.channel.send({
+          content: `<@${userId}>${luckyText}`,
+          allowedMentions: { users: [userId] },
+        });
       }
     } catch (error) {
-      console.error('XP system error:', error);
+      console.error('Error en el sistema de XP:', error);
     }
   });
 

@@ -1,7 +1,6 @@
 import { DiscordBot } from './index';
 import { storage } from '../storage';
 import { redditService } from '../services/reddit';
-import { twitterService } from '../services/twitter';
 import { dailyQuestions } from './services/dailyQuestion';
 
 export class ContentScheduler {
@@ -85,11 +84,8 @@ export class ContentScheduler {
           console.log(`Posted Reddit content from r/${subreddit} to ${guild.name}`);
         }
       } else if (feed.source === 'twitter') {
-        // For Twitter, use mock content if API not available
-        const mockContent = twitterService.getMockTweet();
-        await channel.send(mockContent);
-        
-        console.log(`Posted Twitter content to ${guild.name}`);
+        // No hay integración real con Twitter/X: nunca publicamos contenido inventado
+        console.warn(`Feed ${feed.id} (${guild.name}): las publicaciones de Twitter/X todavía no están disponibles; no se publica nada.`);
       }
 
       // Guardamos la hora para respetar postInterval (sin esto el feed publicaría cada minuto).

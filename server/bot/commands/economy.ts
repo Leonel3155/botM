@@ -1,151 +1,187 @@
-import { SlashCommandBuilder, ChatInputCommandInteraction, EmbedBuilder, MessageFlags } from 'discord.js';
-import { storage } from '../../storage';
+import { SlashCommandBuilder, ChatInputCommandInteraction, EmbedBuilder, MessageFlags, PermissionFlagsBits, User } from 'discord.js';
 import { DiscordBot } from '../index';
-import { globalQueue, economyQueueFor } from '../services/queues';
-import { lockForUser } from '../services/locks';
-import { db } from '../../db';
-import { sql } from 'drizzle-orm';
+import {
+  AMOUNT_HINT,
+  BankResult,
+  DailyResult,
+  EconomyRow,
+  MAX_COINS,
+  ROB_MIN_ROBBER,
+  ROB_MIN_TARGET,
+  adminAddCoins,
+  adminAddCoinsToMany,
+  adminRemoveCoins,
+  adminResetAccount,
+  attemptRob,
+  claimDaily,
+  deposit,
+  economyStats,
+  economyTask,
+  ensureAccount,
+  formatCoins,
+  getAccount,
+  parseAmount,
+  runTimedAction,
+  toCoins,
+  topByWealth,
+  transfer,
+  withdraw,
+} from '../services/economy';
+import { ADMIN_ONLY, discordRelativeTime, isAdmin, resolveGuild, respond } from '../utils/interactions';
 
-// Complete economy system with all UnbelievaBoat-style commands
+// ===== Mensajes compartidos con los comandos de prefijo (&bal, &daily, &dep, &with) =====
+
+export function balanceEmbed(target: User, account: EconomyRow | undefined, requester?: User): EmbedBuilder {
+  const wallet = toCoins(account?.balance);
+  const bank = toCoins(account?.bank);
+  const prestige = account?.prestigeLevel ?? 0;
+
+  const embed = new EmbedBuilder()
+    .setColor(0xFFD700)
+    .setAuthor({ name: target.displayName, iconURL: target.displayAvatarURL() })
+    .setTitle('💰 Saldo')
+    .addFields(
+      { name: '💵 Cartera', value: formatCoins(wallet), inline: true },
+      { name: '🏦 Banco', value: formatCoins(bank), inline: true },
+      { name: '💎 Total', value: formatCoins(wallet + bank), inline: true }
+    )
+    .setTimestamp();
+
+  if (prestige > 0) {
+    embed.addFields({ name: '🌟 Prestigio', value: `Nivel de prestigio **${prestige}**`, inline: true });
+  }
+  if (!account) {
+    embed.setDescription(target.bot ? 'Los bots no juegan a la economía. 🤖' : 'Todavía no tiene monedas. ¡Con `/daily` se empieza!');
+  }
+  if (requester) {
+    embed.setFooter({ text: `Consultado por ${requester.displayName}`, iconURL: requester.displayAvatarURL() });
+  }
+  return embed;
+}
+
+export function dailyEmbed(result: DailyResult): EmbedBuilder {
+  if (!result.ok) {
+    return new EmbedBuilder()
+      .setColor(0xF39C12)
+      .setTitle('⏳ Ya reclamaste tu recompensa diaria')
+      .setDescription(`Podrás volver a reclamarla ${discordRelativeTime(result.retryInMs)}.`);
+  }
+
+  const streakText = result.streakLost
+    ? `${result.streak} día (pasaron más de 48 h, así que la racha empezó de nuevo)`
+    : `${result.streak} ${result.streak === 1 ? 'día' : 'días'} seguidos`;
+
+  return new EmbedBuilder()
+    .setColor(0x4CAF50)
+    .setTitle('🎁 ¡Recompensa diaria reclamada!')
+    .setDescription(`Recibiste **${formatCoins(result.reward)}**.`)
+    .addFields(
+      { name: '🔥 Racha', value: streakText, inline: true },
+      { name: '🎯 Bono por nivel', value: `+${formatCoins(result.levelBonus)}`, inline: true },
+      { name: '💵 Cartera', value: formatCoins(result.balance), inline: true }
+    )
+    .setFooter({ text: 'Vuelve mañana: si pasan más de 48 h, la racha se reinicia.' })
+    .setTimestamp();
+}
+
+export function bankEmbed(kind: 'deposit' | 'withdraw', result: Extract<BankResult, { ok: true }>): EmbedBuilder {
+  return new EmbedBuilder()
+    .setColor(kind === 'deposit' ? 0x2196F3 : 0x4CAF50)
+    .setTitle(kind === 'deposit' ? '🏦 Depósito hecho' : '🏦 Retiro hecho')
+    .setDescription(kind === 'deposit'
+      ? `Guardaste **${formatCoins(result.amount)}** en el banco.`
+      : `Sacaste **${formatCoins(result.amount)}** del banco.`)
+    .addFields(
+      { name: '💵 Cartera', value: formatCoins(result.balance), inline: true },
+      { name: '🏦 Banco', value: formatCoins(result.bank), inline: true }
+    )
+    .setTimestamp();
+}
+
+export function bankErrorMessage(kind: 'deposit' | 'withdraw', result: Extract<BankResult, { ok: false }>): string {
+  const where = kind === 'deposit' ? 'tu cartera' : 'el banco';
+  switch (result.reason) {
+    case 'empty':
+      return kind === 'deposit' ? '❌ No tienes monedas en la cartera para depositar.' : '❌ No tienes monedas guardadas en el banco.';
+    case 'insufficient':
+      return `❌ No te alcanza: en ${where} tienes ${formatCoins(result.available)}.`;
+    case 'full':
+      return `❌ Esa cantidad supera el máximo permitido (${formatCoins(MAX_COINS)}).`;
+  }
+}
+
+function insufficientMessage(available: number): string {
+  return available <= 0
+    ? '❌ No tienes monedas en la cartera. Usa `/daily` o `/work` para conseguir algunas.'
+    : `❌ No te alcanza: en la cartera tienes ${formatCoins(available)}.`;
+}
+
+function cooldownEmbed(title: string, retryInMs: number): EmbedBuilder {
+  return new EmbedBuilder()
+    .setColor(0xF39C12)
+    .setTitle(title)
+    .setDescription(`Podrás intentarlo de nuevo ${discordRelativeTime(retryInMs)}.`);
+}
+
+function pick<T>(items: T[]): T {
+  return items[Math.floor(Math.random() * items.length)];
+}
+
+const JOBS = {
+  constructor: { emoji: '👷', min: 150, max: 300, name: 'Constructor' },
+  oficinista: { emoji: '👨‍💼', min: 100, max: 250, name: 'Oficinista' },
+  repartidor: { emoji: '🍕', min: 80, max: 200, name: 'Repartidor' },
+  programador: { emoji: '🧑‍💻', min: 200, max: 500, name: 'Programador' },
+  artista: { emoji: '🎨', min: 50, max: 400, name: 'Artista' },
+} as const;
+
+type JobKey = keyof typeof JOBS;
+
+// Sistema de economía: todos los cambios de saldo pasan por services/economy (transacciones con bloqueo)
 export const economyCommands = [
   {
     data: new SlashCommandBuilder()
       .setName('balance')
-      .setDescription('💰 Ver tu saldo actual o el de otro usuario')
+      .setDescription('💰 Mira tu saldo o el de otra persona')
       .addUserOption(option =>
         option.setName('usuario')
-          .setDescription('Usuario para consultar (opcional)')
+          .setDescription('A quién quieres consultar (opcional)')
           .setRequired(false)
       ),
-    
+
     async execute(interaction: ChatInputCommandInteraction, bot: DiscordBot) {
-      const targetUser = interaction.options.getUser('usuario') || interaction.user;
-      
-      let userEcon = await storage.getUserEconomy(targetUser.id, interaction.guildId!);
-      if (!userEcon) {
-        userEcon = await storage.createUserEconomy({
-          userId: targetUser.id,
-          guildId: interaction.guildId!,
-          balance: "0",
-          bank: "0"
-        });
-      }
-      
-      const balance = parseFloat(userEcon.balance || "0");
-      const bank = parseFloat(userEcon.bank || "0");
-      const total = balance + bank;
-      
-      const embed = new EmbedBuilder()
-        .setColor(0xFFD700)
-        .setAuthor({ 
-          name: targetUser.displayName, 
-          iconURL: targetUser.displayAvatarURL() 
-        })
-        .setTitle('💰 Balance')
-        .addFields(
-          { name: '💵 En cartera', value: `${balance.toLocaleString()} monedas`, inline: true },
-          { name: '🏦 En banco', value: `${bank.toLocaleString()} monedas`, inline: true },
-          { name: '💎 Total', value: `${total.toLocaleString()} monedas`, inline: true }
-        )
-        .setFooter({ 
-          text: `Solicitado por ${interaction.user.displayName}`, 
-          iconURL: interaction.user.displayAvatarURL() 
-        })
-        .setTimestamp();
-      
-      await interaction.reply({ 
-        embeds: [embed],
-        flags: targetUser.id !== interaction.user.id ? MessageFlags.Ephemeral : undefined
-      });
+      const target = interaction.options.getUser('usuario') || interaction.user;
+      const isSelf = target.id === interaction.user.id;
+
+      await interaction.deferReply({ flags: isSelf ? undefined : MessageFlags.Ephemeral });
+      const account = target.bot ? undefined : await getAccount(interaction.guildId!, target.id);
+      await interaction.editReply({ embeds: [balanceEmbed(target, account, interaction.user)] });
     }
   },
 
   {
     data: new SlashCommandBuilder()
       .setName('daily')
-      .setDescription('🎁 Reclama tu recompensa diaria'),
-    
+      .setDescription('🎁 Reclama tu recompensa diaria (la racha se pierde si pasan más de 48 h)'),
+
     async execute(interaction: ChatInputCommandInteraction, bot: DiscordBot) {
-      // Patrón de concurrencia de ChatGPT - Ack temprano + colas + locks
-      await interaction.deferReply({ flags: MessageFlags.Ephemeral });
-      
-      await globalQueue.add(() =>
-        economyQueueFor(interaction.guildId!).add(async () =>
-          lockForUser(interaction.user.id).runExclusive(async () => {
-            const userId = interaction.user.id;
-            
-            // Transacción atómica con advisory lock
-            try {
-              let userEcon = await storage.getUserEconomy(userId, interaction.guildId!);
-              if (!userEcon) {
-                userEcon = await storage.createUserEconomy({
-                  userId: userId,
-                  guildId: interaction.guildId!,
-                  balance: "0",
-                  bank: "0"
-                });
-              }
-              
-              // Verificar cooldown de 24 horas
-              const now = new Date();
-              const lastDaily = userEcon.lastDaily ? new Date(userEcon.lastDaily) : new Date(0);
-              const cooldown = 24 * 60 * 60 * 1000; // 24 horas
-              
-              if (now.getTime() - lastDaily.getTime() < cooldown) {
-                const timeLeft = cooldown - (now.getTime() - lastDaily.getTime());
-                const hours = Math.floor(timeLeft / (1000 * 60 * 60));
-                const minutes = Math.floor((timeLeft % (1000 * 60 * 60)) / (1000 * 60));
-                const seconds = Math.floor((timeLeft % (1000 * 60)) / 1000);
-                
-                const embed = new EmbedBuilder()
-                  .setColor(0xf39c12)
-                  .setTitle('⏳ Daily en Cooldown')
-                  .setDescription(`¡Ya reclamaste tu daily!\nVuelve en **${hours}h ${minutes}m ${seconds}s**.`);
-                
-                await interaction.editReply({ embeds: [embed] });
-                return;
-              }
-              
-              const dailyAmount = 500;
-              const newBalance = parseFloat(userEcon.balance || "0") + dailyAmount;
-              const newStreak = (userEcon.dailyStreak || 0) + 1;
-              
-              // Operación atómica - no puede haber race conditions
-              await storage.updateUserEconomy(userId, interaction.guildId!, {
-                balance: newBalance.toString(),
-                lastDaily: now,
-                dailyStreak: newStreak
-              });
-              
-              const embed = new EmbedBuilder()
-                .setColor(0x4CAF50)
-                .setTitle('🎁 ¡Daily Reclamado!')
-                .setDescription(`Has recibido **${dailyAmount.toLocaleString()}** monedas.\nTu nuevo saldo es **${newBalance.toLocaleString()}** monedas.`)
-                .addFields(
-                  { name: '🔥 Racha diaria', value: `${newStreak} días`, inline: true },
-                  { name: '💰 Ganancia', value: `+${dailyAmount.toLocaleString()} monedas`, inline: true }
-                )
-                .setTimestamp();
-              
-              await interaction.editReply({ embeds: [embed] });
-              
-            } catch (error) {
-              console.error('Daily command error:', error);
-              await interaction.editReply('❌ Error al procesar daily. Intenta de nuevo.');
-            }
-          })
-        )
-      );
+      await interaction.deferReply();
+      const guildId = interaction.guildId!;
+      const userId = interaction.user.id;
+
+      await ensureAccount(await resolveGuild(interaction), interaction.user);
+      const result = await economyTask(guildId, userId, () => claimDaily(guildId, userId));
+      await respond(interaction, { embeds: [dailyEmbed(result)] }, { ephemeral: !result.ok });
     }
   },
 
   {
     data: new SlashCommandBuilder()
       .setName('work')
-      .setDescription('💼 Trabaja para ganar dinero')
+      .setDescription('💼 Trabaja para ganar monedas (una vez por hora)')
       .addStringOption(option =>
         option.setName('trabajo')
-          .setDescription('Tipo de trabajo que quieres hacer')
+          .setDescription('Qué trabajo quieres hacer (si no eliges, te toca uno al azar)')
           .setRequired(false)
           .addChoices(
             { name: '👷 Constructor', value: 'constructor' },
@@ -155,739 +191,537 @@ export const economyCommands = [
             { name: '🎨 Artista', value: 'artista' }
           )
       ),
-    
+
     async execute(interaction: ChatInputCommandInteraction, bot: DiscordBot) {
+      const choice = interaction.options.getString('trabajo');
+      const jobKey: JobKey = choice && choice in JOBS ? choice as JobKey : pick(Object.keys(JOBS) as JobKey[]);
+      const job = JOBS[jobKey];
+      const guildId = interaction.guildId!;
       const userId = interaction.user.id;
-      const jobType = interaction.options.getString('trabajo') || 'random';
-      
-      let userEcon = await storage.getUserEconomy(userId, interaction.guildId!);
-      if (!userEcon) {
-        userEcon = await storage.createUserEconomy({
-          userId: userId,
-          guildId: interaction.guildId!,
-          balance: "0",
-          bank: "0"
-        });
+
+      await interaction.deferReply();
+      await ensureAccount(await resolveGuild(interaction), interaction.user);
+
+      const result = await economyTask(guildId, userId, () => runTimedAction(guildId, userId, 'work', () => ({
+        delta: Math.floor(Math.random() * (job.max - job.min + 1)) + job.min,
+        info: null,
+      })));
+
+      if (!result.ok) {
+        const embed = 'retryInMs' in result
+          ? cooldownEmbed('⏳ Todavía estás cansado del último turno', result.retryInMs)
+          : new EmbedBuilder().setColor(0xF39C12).setDescription(result.blocked);
+        await respond(interaction, { embeds: [embed] }, { ephemeral: true });
+        return;
       }
-      
-      const jobs = {
-        constructor: { emoji: '👷', min: 150, max: 300, name: 'Constructor' },
-        oficinista: { emoji: '👨‍💼', min: 100, max: 250, name: 'Oficinista' },
-        repartidor: { emoji: '🍕', min: 80, max: 200, name: 'Repartidor' },
-        programador: { emoji: '🧑‍💻', min: 200, max: 500, name: 'Programador' },
-        artista: { emoji: '🎨', min: 50, max: 400, name: 'Artista' }
-      };
-      
-      const selectedJob = jobType === 'random' ? 
-        Object.values(jobs)[Math.floor(Math.random() * Object.values(jobs).length)] :
-        jobs[jobType as keyof typeof jobs];
-      
-      const amount = Math.floor(Math.random() * (selectedJob.max - selectedJob.min + 1)) + selectedJob.min;
-      const newBalance = parseFloat(userEcon.balance || "0") + amount;
-      
-      await storage.updateUserEconomy(userId, interaction.guildId!, {
-        balance: newBalance.toString()
-      });
-      
+
       const embed = new EmbedBuilder()
         .setColor(0x4CAF50)
-        .setTitle(`${selectedJob.emoji} Trabajo: ${selectedJob.name}`)
-        .setDescription(`Has trabajado como **${selectedJob.name}** y ganaste **${amount.toLocaleString()} monedas**.`)
-        .addFields(
-          { name: '💰 Nuevo saldo', value: `${newBalance.toLocaleString()} monedas`, inline: true }
-        )
+        .setTitle(`${job.emoji} Trabajo: ${job.name}`)
+        .setDescription(`Trabajaste como **${job.name}** y ganaste **${formatCoins(result.delta)}**.`)
+        .addFields({ name: '💵 Cartera', value: formatCoins(result.balance), inline: true })
+        .setFooter({ text: 'Puedes volver a trabajar en 1 hora.' })
         .setTimestamp();
-      
-      await interaction.reply({ embeds: [embed] });
+      await respond(interaction, { embeds: [embed] });
     }
   },
 
   {
     data: new SlashCommandBuilder()
       .setName('deposit')
-      .setDescription('🏦 Depositar dinero en el banco')
+      .setDescription('🏦 Guarda monedas en el banco (ahí nadie te las puede robar)')
       .addStringOption(option =>
         option.setName('cantidad')
-          .setDescription('Cantidad a depositar o "all" para depositar todo')
+          .setDescription('Cuánto depositar, o "todo"')
           .setRequired(true)
       ),
-    
+
     async execute(interaction: ChatInputCommandInteraction, bot: DiscordBot) {
+      const request = parseAmount(interaction.options.getString('cantidad', true));
+      if (!request) {
+        await respond(interaction, `❌ Cantidad no válida. ${AMOUNT_HINT}`, { ephemeral: true });
+        return;
+      }
+      const guildId = interaction.guildId!;
       const userId = interaction.user.id;
-      const amountInput = interaction.options.getString('cantidad', true);
-      
-      let userEcon = await storage.getUserEconomy(userId, interaction.guildId!);
-      if (!userEcon) {
-        await interaction.reply('❌ No tienes una cuenta económica. Trabaja primero para crear una.');
+
+      await interaction.deferReply();
+      await ensureAccount(await resolveGuild(interaction), interaction.user);
+      const result = await economyTask(guildId, userId, () => deposit(guildId, userId, request));
+
+      if (!result.ok) {
+        await respond(interaction, bankErrorMessage('deposit', result), { ephemeral: true });
         return;
       }
-      
-      const balance = parseFloat(userEcon.balance || "0");
-      let amount: number;
-      
-      if (amountInput.toLowerCase() === 'all') {
-        amount = balance;
-      } else {
-        amount = parseInt(amountInput);
-        if (isNaN(amount) || amount <= 0) {
-          await interaction.reply('❌ Cantidad inválida. Usa un número positivo o "all".');
-          return;
-        }
-      }
-      
-      if (balance < amount) {
-        await interaction.reply(`❌ No tienes suficiente dinero en tu cartera. Tienes ${balance.toLocaleString()} monedas.`);
-        return;
-      }
-      
-      const newBalance = balance - amount;
-      const newBank = parseFloat(userEcon.bank || "0") + amount;
-      
-      await storage.updateUserEconomy(userId, interaction.guildId!, {
-        balance: newBalance.toString(),
-        bank: newBank.toString()
-      });
-      
-      const embed = new EmbedBuilder()
-        .setColor(0x2196F3)
-        .setTitle('🏦 Depósito Realizado')
-        .setDescription(`Has depositado **${amount.toLocaleString()} monedas** en el banco.`)
-        .addFields(
-          { name: '💵 En cartera', value: `${newBalance.toLocaleString()} monedas`, inline: true },
-          { name: '🏦 En banco', value: `${newBank.toLocaleString()} monedas`, inline: true }
-        )
-        .setTimestamp();
-      
-      await interaction.reply({ embeds: [embed] });
+      await respond(interaction, { embeds: [bankEmbed('deposit', result)] });
     }
   },
 
   {
     data: new SlashCommandBuilder()
       .setName('withdraw')
-      .setDescription('🏦 Retirar dinero del banco')
+      .setDescription('🏦 Saca monedas del banco a tu cartera')
       .addStringOption(option =>
         option.setName('cantidad')
-          .setDescription('Cantidad a retirar o "all" para retirar todo')
+          .setDescription('Cuánto retirar, o "todo"')
           .setRequired(true)
       ),
-    
+
     async execute(interaction: ChatInputCommandInteraction, bot: DiscordBot) {
+      const request = parseAmount(interaction.options.getString('cantidad', true));
+      if (!request) {
+        await respond(interaction, `❌ Cantidad no válida. ${AMOUNT_HINT}`, { ephemeral: true });
+        return;
+      }
+      const guildId = interaction.guildId!;
       const userId = interaction.user.id;
-      const amountInput = interaction.options.getString('cantidad', true);
-      
-      let userEcon = await storage.getUserEconomy(userId, interaction.guildId!);
-      if (!userEcon) {
-        await interaction.reply('❌ No tienes una cuenta económica.');
+
+      await interaction.deferReply();
+      await ensureAccount(await resolveGuild(interaction), interaction.user);
+      const result = await economyTask(guildId, userId, () => withdraw(guildId, userId, request));
+
+      if (!result.ok) {
+        await respond(interaction, bankErrorMessage('withdraw', result), { ephemeral: true });
         return;
       }
-      
-      const bank = parseFloat(userEcon.bank || "0");
-      let amount: number;
-      
-      if (amountInput.toLowerCase() === 'all') {
-        amount = bank;
-      } else {
-        amount = parseInt(amountInput);
-        if (isNaN(amount) || amount <= 0) {
-          await interaction.reply('❌ Cantidad inválida. Usa un número positivo o "all".');
-          return;
-        }
-      }
-      
-      if (bank < amount) {
-        await interaction.reply(`❌ No tienes suficiente dinero en el banco. Tienes ${bank.toLocaleString()} monedas guardadas.`);
-        return;
-      }
-      
-      const newBank = bank - amount;
-      const newBalance = parseFloat(userEcon.balance || "0") + amount;
-      
-      await storage.updateUserEconomy(userId, interaction.guildId!, {
-        balance: newBalance.toString(),
-        bank: newBank.toString()
-      });
-      
-      const embed = new EmbedBuilder()
-        .setColor(0x4CAF50)
-        .setTitle('🏦 Retiro Realizado')
-        .setDescription(`Has retirado **${amount.toLocaleString()} monedas** del banco.`)
-        .addFields(
-          { name: '💵 En cartera', value: `${newBalance.toLocaleString()} monedas`, inline: true },
-          { name: '🏦 En banco', value: `${newBank.toLocaleString()} monedas`, inline: true }
-        )
-        .setTimestamp();
-      
-      await interaction.reply({ embeds: [embed] });
+      await respond(interaction, { embeds: [bankEmbed('withdraw', result)] });
     }
   },
 
   {
     data: new SlashCommandBuilder()
       .setName('crime')
-      .setDescription('🔫 Arriesga el 20% de tu saldo cometiendo un crimen'),
-    
+      .setDescription('🔫 Arriesga el 20 % de tu cartera en un crimen (50 % de salir bien, cada 2 horas)'),
+
     async execute(interaction: ChatInputCommandInteraction, bot: DiscordBot) {
-      const userId = interaction.user.id;
       const guildId = interaction.guildId!;
-      
-      let userEcon = await storage.getUserEconomy(userId, guildId);
-      if (!userEcon) {
-        await interaction.reply('❌ No tienes una cuenta económica. Escribe algo en el chat primero.');
+      const userId = interaction.user.id;
+
+      await interaction.deferReply();
+      await ensureAccount(await resolveGuild(interaction), interaction.user);
+
+      const result = await economyTask(guildId, userId, () => runTimedAction<{ risk: number }>(guildId, userId, 'crime', (wallet) => {
+        const risk = Math.floor(wallet * 0.2);
+        if (risk <= 0) return { blocked: '❌ Necesitas al menos 5 monedas en la cartera para arriesgarte.' };
+        const won = Math.random() < 0.5;
+        return { delta: won ? risk : -risk, info: { risk } };
+      }));
+
+      if (!result.ok) {
+        const embed = 'retryInMs' in result
+          ? cooldownEmbed('🚓 La policía todavía te anda buscando', result.retryInMs)
+          : new EmbedBuilder().setColor(0xF39C12).setDescription(result.blocked);
+        await respond(interaction, { embeds: [embed] }, { ephemeral: true });
         return;
       }
-      
-      const balance = parseFloat(userEcon.balance || "0");
-      const riskAmount = Math.floor(balance * 0.2);
-      
-      if (riskAmount <= 0) {
-        await interaction.reply({ content: '❌ No tienes saldo suficiente para arriesgar.', flags: MessageFlags.Ephemeral });
-        return;
-      }
-      
-      const winChance = Math.random() < 0.5;
-      const winMessages = [
-        '¡Lograste robar un banco y ganaste **{amount} monedas**!',
-        '¡Asaltaste una tienda y obtuviste **{amount} monedas**!',
-        '¡Cometiste un crimen perfecto y te llevaste **{amount} monedas**!'
-      ];
-      
-      const loseMessages = [
-        '¡Te atrapó la policía y perdiste **{amount} monedas**!',
-        '¡El crimen salió mal y te quitaron **{amount} monedas**!',
-        '¡Te descubrieron y perdiste **{amount} monedas**!'
-      ];
-      
-      let newBalance: number;
-      let resultMsg: string;
-      let color: number;
-      
-      if (winChance) {
-        newBalance = balance + riskAmount;
-        resultMsg = winMessages[Math.floor(Math.random() * winMessages.length)].replace('{amount}', riskAmount.toString());
-        color = 0x4CAF50;
-      } else {
-        newBalance = balance - riskAmount;
-        resultMsg = loseMessages[Math.floor(Math.random() * loseMessages.length)].replace('{amount}', riskAmount.toString());
-        color = 0xF44336;
-      }
-      
-      await storage.updateUserEconomy(userId, guildId, {
-        balance: newBalance.toString()
-      });
-      
+
+      const amount = formatCoins(Math.abs(result.delta));
+      const won = result.delta > 0;
+      const text = won
+        ? pick([
+          `¡Asaltaste un banco y te llevaste **${amount}**!`,
+          `¡Robaste una tienda y obtuviste **${amount}**!`,
+          `¡Cometiste el crimen perfecto y ganaste **${amount}**!`,
+        ])
+        : pick([
+          `¡Te atrapó la policía y perdiste **${amount}**!`,
+          `¡El plan salió mal y te quitaron **${amount}**!`,
+          `¡Te descubrieron y perdiste **${amount}**!`,
+        ]);
+
       const embed = new EmbedBuilder()
-        .setColor(color)
-        .setTitle('🔫 Crime')
-        .setDescription(resultMsg)
+        .setColor(won ? 0x4CAF50 : 0xF44336)
+        .setTitle('🔫 Crimen')
+        .setDescription(text)
         .addFields(
-          { name: 'Cantidad arriesgada', value: `${riskAmount} monedas`, inline: true },
-          { name: 'Nuevo saldo', value: `${newBalance} monedas`, inline: true }
+          { name: 'Arriesgaste', value: formatCoins(result.info.risk), inline: true },
+          { name: '💵 Cartera', value: formatCoins(result.balance), inline: true }
         )
+        .setFooter({ text: 'Puedes volver a intentarlo en 2 horas.' })
         .setTimestamp();
-      
-      await interaction.reply({ embeds: [embed] });
+      await respond(interaction, { embeds: [embed] });
     }
   },
 
   {
     data: new SlashCommandBuilder()
       .setName('give')
-      .setDescription('💸 Envía monedas a otro usuario')
+      .setDescription('💸 Regálale monedas de tu cartera a otra persona')
       .addUserOption(option =>
-        option.setName('usuario').setDescription('Usuario a quien dar monedas').setRequired(true)
+        option.setName('usuario').setDescription('A quién le das las monedas').setRequired(true)
       )
       .addIntegerOption(option =>
-        option.setName('cantidad').setDescription('Cantidad de monedas a enviar').setRequired(true)
+        option.setName('cantidad').setDescription('Cuántas monedas').setRequired(true).setMinValue(1).setMaxValue(MAX_COINS)
       ),
-    
+
     async execute(interaction: ChatInputCommandInteraction, bot: DiscordBot) {
       const from = interaction.user;
       const to = interaction.options.getUser('usuario', true);
       const amount = interaction.options.getInteger('cantidad', true);
       const guildId = interaction.guildId!;
-      
+
       if (to.id === from.id) {
-        await interaction.reply({ content: '⛔ No puedes enviarte monedas a ti mismo.', flags: MessageFlags.Ephemeral });
+        await respond(interaction, '⛔ No puedes darte monedas a ti mismo.', { ephemeral: true });
         return;
       }
-      
-      if (amount <= 0) {
-        await interaction.reply({ content: 'La cantidad debe ser mayor a 0.', flags: MessageFlags.Ephemeral });
+      if (to.bot) {
+        await respond(interaction, '🤖 Los bots no usan monedas; elige a una persona.', { ephemeral: true });
         return;
       }
-      
-      // Verificar saldo del remitente
-      let fromEcon = await storage.getUserEconomy(from.id, guildId);
-      if (!fromEcon) {
-        await interaction.reply({ content: '❌ No tienes una cuenta económica.', flags: MessageFlags.Ephemeral });
+      if (!Number.isSafeInteger(amount) || amount <= 0) {
+        await respond(interaction, '❌ La cantidad debe ser un número entero mayor que 0.', { ephemeral: true });
         return;
       }
-      
-      const fromBalance = parseFloat(fromEcon.balance || "0");
-      if (fromBalance < amount) {
-        await interaction.reply({ content: '❌ No tienes suficiente saldo.', flags: MessageFlags.Ephemeral });
+
+      await interaction.deferReply();
+      const guild = await resolveGuild(interaction);
+      await ensureAccount(guild, from);
+      await ensureAccount(guild, to);
+
+      const result = await economyTask(guildId, from.id, () => transfer(guildId, from.id, to.id, amount));
+      if (!result.ok) {
+        const message = result.reason === 'insufficient'
+          ? insufficientMessage(result.available)
+          : `❌ ${to.displayName} ya tiene el máximo de monedas permitido en la cartera.`;
+        await respond(interaction, message, { ephemeral: true });
         return;
       }
-      
-      // Crear cuenta del receptor si no existe
-      let toEcon = await storage.getUserEconomy(to.id, guildId);
-      if (!toEcon) {
-        toEcon = await storage.createUserEconomy({
-          userId: to.id,
-          guildId: guildId,
-          balance: "0",
-          bank: "0"
-        });
-      }
-      
-      const toBalance = parseFloat(toEcon.balance || "0");
-      
-      // Realizar transferencia
-      await storage.updateUserEconomy(from.id, guildId, {
-        balance: (fromBalance - amount).toString()
-      });
-      
-      await storage.updateUserEconomy(to.id, guildId, {
-        balance: (toBalance + amount).toString()
-      });
-      
+
       const embed = new EmbedBuilder()
         .setColor(0x00C3FF)
         .setTitle('💸 Transferencia')
-        .setDescription(`**${from.username}** ha enviado **${amount.toLocaleString()} monedas** a **${to.username}**`)
+        .setDescription(`**${from.displayName}** le dio **${formatCoins(amount)}** a ${to}.`)
+        .addFields({ name: 'Tu cartera', value: formatCoins(result.fromBalance), inline: true })
         .setTimestamp();
-      
-      await interaction.reply({ embeds: [embed] });
+      await respond(interaction, { embeds: [embed] });
     }
   },
 
   {
     data: new SlashCommandBuilder()
       .setName('rob')
-      .setDescription('🥷 Intenta robar monedas a otro usuario')
+      .setDescription('🥷 Intenta robarle monedas de la cartera a alguien (cada 4 horas)')
       .addUserOption(option =>
-        option.setName('usuario').setDescription('Usuario a robar').setRequired(true)
+        option.setName('usuario').setDescription('A quién intentas robar').setRequired(true)
       ),
-    
+
     async execute(interaction: ChatInputCommandInteraction, bot: DiscordBot) {
       const robber = interaction.user;
       const target = interaction.options.getUser('usuario', true);
       const guildId = interaction.guildId!;
-      
+
       if (target.id === robber.id) {
-        await interaction.reply({ content: '⛔ No puedes robarte a ti mismo.', flags: MessageFlags.Ephemeral });
+        await respond(interaction, '⛔ No puedes robarte a ti mismo.', { ephemeral: true });
         return;
       }
-      
-      // Verificar balances
-      let robberEcon = await storage.getUserEconomy(robber.id, guildId);
-      let targetEcon = await storage.getUserEconomy(target.id, guildId);
-      
-      if (!robberEcon) {
-        await interaction.reply({ content: '❌ No tienes una cuenta económica.', flags: MessageFlags.Ephemeral });
+      if (target.bot) {
+        await respond(interaction, '🤖 Los bots no tienen cartera que robar.', { ephemeral: true });
         return;
       }
-      
-      if (!targetEcon) {
-        await interaction.reply({ content: '❌ El usuario objetivo no tiene una cuenta económica.', flags: MessageFlags.Ephemeral });
+
+      await interaction.deferReply();
+      const guild = await resolveGuild(interaction);
+      await ensureAccount(guild, robber);
+      await ensureAccount(guild, target);
+
+      const result = await economyTask(guildId, robber.id, () => attemptRob(guildId, robber.id, target.id));
+      if (!result.ok) {
+        if (result.reason === 'cooldown') {
+          await respond(interaction, { embeds: [cooldownEmbed('🚔 Mejor espera a que se calme la cosa', result.retryInMs)] }, { ephemeral: true });
+        } else if (result.reason === 'target_poor') {
+          await respond(interaction, `❌ ${target.displayName} no trae suficiente dinero en la cartera (mínimo ${formatCoins(ROB_MIN_TARGET)}).`, { ephemeral: true });
+        } else {
+          await respond(interaction, `❌ Necesitas al menos ${formatCoins(ROB_MIN_ROBBER)} en la cartera para intentar un robo.`, { ephemeral: true });
+        }
         return;
       }
-      
-      const robberBalance = parseFloat(robberEcon.balance || "0");
-      const targetBalance = parseFloat(targetEcon.balance || "0");
-      
-      if (targetBalance < 100) {
-        await interaction.reply({ content: '❌ El usuario objetivo no tiene suficiente dinero para ser robado (mínimo 100).', flags: MessageFlags.Ephemeral });
-        return;
-      }
-      
-      if (robberBalance < 100) {
-        await interaction.reply({ content: '❌ Necesitas al menos 100 monedas para intentar robar.', flags: MessageFlags.Ephemeral });
-        return;
-      }
-      
-      // 60% éxito, 40% fallo
-      const success = Math.random() < 0.6;
-      const maxSteal = Math.min(targetBalance * 0.1, 1000); // Máximo 10% o 1000
-      const amount = Math.floor(Math.random() * maxSteal) + 50;
-      
-      let embed: EmbedBuilder;
-      
-      if (success) {
-        // Robo exitoso
-        await storage.updateUserEconomy(robber.id, guildId, {
-          balance: (robberBalance + amount).toString()
-        });
-        
-        await storage.updateUserEconomy(target.id, guildId, {
-          balance: (targetBalance - amount).toString()
-        });
-        
-        embed = new EmbedBuilder()
+
+      const embed = result.success
+        ? new EmbedBuilder()
           .setColor(0x4CAF50)
-          .setTitle('💰 Robo Exitoso')
-          .setDescription(`**${robber.username}** logró robar **${amount} monedas** a **${target.username}**`)
-          .addFields(
-            { name: 'Tu nuevo saldo', value: `${(robberBalance + amount).toLocaleString()} monedas`, inline: true }
-          );
-      } else {
-        // Robo fallido - el ladrón pierde dinero
-        const penalty = Math.floor(robberBalance * 0.05); // Pierde 5%
-        
-        await storage.updateUserEconomy(robber.id, guildId, {
-          balance: (robberBalance - penalty).toString()
-        });
-        
-        embed = new EmbedBuilder()
+          .setTitle('💰 ¡Robo exitoso!')
+          .setDescription(`**${robber.displayName}** le robó **${formatCoins(result.amount)}** a ${target}.`)
+          .addFields({ name: 'Tu cartera', value: formatCoins(result.robberBalance), inline: true })
+        : new EmbedBuilder()
           .setColor(0xF44336)
-          .setTitle('🚔 Robo Fallido')
-          .setDescription(`**${robber.username}** falló al robar a **${target.username}** y perdió **${penalty} monedas** como multa`)
-          .addFields(
-            { name: 'Tu nuevo saldo', value: `${(robberBalance - penalty).toLocaleString()} monedas`, inline: true }
-          );
-      }
-      
-      await interaction.reply({ embeds: [embed] });
+          .setTitle('🚔 Robo fallido')
+          .setDescription(`**${robber.displayName}** intentó robarle a ${target}, lo atraparon y pagó una multa de **${formatCoins(result.fine)}**.`)
+          .addFields({ name: 'Tu cartera', value: formatCoins(result.robberBalance), inline: true });
+      embed.setFooter({ text: 'Consejo: lo que guardas en el banco no se puede robar.' }).setTimestamp();
+      await respond(interaction, { embeds: [embed] });
     }
   },
 
   {
     data: new SlashCommandBuilder()
       .setName('slut')
-      .setDescription('💋 Trabajo de alto riesgo con mayor recompensa'),
-    
+      .setDescription('💋 Trabajo nocturno de alto riesgo y mejor paga (cada 2 horas)'),
+
     async execute(interaction: ChatInputCommandInteraction, bot: DiscordBot) {
-      const userId = interaction.user.id;
       const guildId = interaction.guildId!;
-      
-      let userEcon = await storage.getUserEconomy(userId, guildId);
-      if (!userEcon) {
-        userEcon = await storage.createUserEconomy({
-          userId: userId,
-          guildId: guildId,
-          balance: "0",
-          bank: "0"
-        });
+      const userId = interaction.user.id;
+
+      await interaction.deferReply();
+      await ensureAccount(await resolveGuild(interaction), interaction.user);
+
+      // 70 % gana entre 200 y 1,000; 30 % pierde el 10 % de la cartera (máx. 300)
+      const result = await economyTask(guildId, userId, () => runTimedAction(guildId, userId, 'slut', (wallet) => {
+        if (Math.random() < 0.7) {
+          return { delta: Math.floor(Math.random() * 801) + 200, info: null };
+        }
+        return { delta: -Math.min(Math.floor(wallet * 0.1), 300), info: null };
+      }));
+
+      if (!result.ok) {
+        const embed = 'retryInMs' in result
+          ? cooldownEmbed('😴 Necesitas descansar un rato', result.retryInMs)
+          : new EmbedBuilder().setColor(0xF39C12).setDescription(result.blocked);
+        await respond(interaction, { embeds: [embed] }, { ephemeral: true });
+        return;
       }
-      
-      const balance = parseFloat(userEcon.balance || "0");
-      
-      // 70% chance de éxito, recompensas más altas que work normal
-      const success = Math.random() < 0.7;
-      const baseAmount = Math.floor(Math.random() * 800) + 200; // 200-1000
-      
-      const successMessages = [
-        '💋 Tuviste una noche exitosa y ganaste **{amount} monedas**',
-        '💄 Cliente generoso te dio **{amount} monedas**',
-        '✨ Trabajo bien pagado, obtuviste **{amount} monedas**'
-      ];
-      
-      const failMessages = [
-        '🚔 La policía te multó y perdiste **{amount} monedas**',
-        '😠 Cliente problemático, perdiste **{amount} monedas**',
-        '💸 Noche sin suerte, perdiste **{amount} monedas**'
-      ];
-      
-      let newBalance: number;
-      let resultMsg: string;
-      let color: number;
-      
-      if (success) {
-        newBalance = balance + baseAmount;
-        resultMsg = successMessages[Math.floor(Math.random() * successMessages.length)].replace('{amount}', baseAmount.toString());
-        color = 0xFF69B4;
+
+      const amount = formatCoins(Math.abs(result.delta));
+      let text: string;
+      if (result.delta > 0) {
+        text = pick([
+          `💋 Tuviste una noche exitosa y ganaste **${amount}**.`,
+          `💄 Un cliente generoso te dio **${amount}**.`,
+          `✨ Trabajo bien pagado: obtuviste **${amount}**.`,
+        ]);
+      } else if (result.delta < 0) {
+        text = pick([
+          `🚔 La policía te multó y perdiste **${amount}**.`,
+          `😠 Cliente problemático: perdiste **${amount}**.`,
+          `💸 Noche sin suerte: perdiste **${amount}**.`,
+        ]);
       } else {
-        const lossAmount = Math.min(Math.floor(balance * 0.1), 300); // Máximo 10% o 300
-        newBalance = balance - lossAmount;
-        resultMsg = failMessages[Math.floor(Math.random() * failMessages.length)].replace('{amount}', lossAmount.toString());
-        color = 0xF44336;
+        text = '💸 Noche sin suerte, pero como no traías dinero no perdiste nada.';
       }
-      
-      await storage.updateUserEconomy(userId, guildId, {
-        balance: newBalance.toString()
-      });
-      
+
       const embed = new EmbedBuilder()
-        .setColor(color)
-        .setTitle('💋 Trabajo Nocturno')
-        .setDescription(resultMsg)
-        .addFields(
-          { name: 'Nuevo saldo', value: `${newBalance.toLocaleString()} monedas`, inline: true }
-        )
+        .setColor(result.delta > 0 ? 0xFF69B4 : 0xF44336)
+        .setTitle('💋 Trabajo nocturno')
+        .setDescription(text)
+        .addFields({ name: '💵 Cartera', value: formatCoins(result.balance), inline: true })
+        .setFooter({ text: 'Puedes volver a intentarlo en 2 horas.' })
         .setTimestamp();
-      
-      await interaction.reply({ embeds: [embed] });
+      await respond(interaction, { embeds: [embed] });
     }
   },
 
   {
     data: new SlashCommandBuilder()
       .setName('leaderboard')
-      .setDescription('🏆 Ver el ranking económico del servidor')
+      .setDescription('🏆 Ranking de las personas con más monedas (cartera + banco)')
       .addIntegerOption(option =>
         option.setName('limite')
-          .setDescription('Número de usuarios a mostrar (máximo 25)')
+          .setDescription('Cuántas personas mostrar (máximo 25)')
           .setMinValue(1)
           .setMaxValue(25)
           .setRequired(false)
       ),
-    
+
     async execute(interaction: ChatInputCommandInteraction, bot: DiscordBot) {
       const limit = interaction.options.getInteger('limite') || 10;
-      const guildId = interaction.guildId!;
+      await interaction.deferReply();
 
-      const topUsers = await storage.getTopUsersByEconomy(guildId, limit);
-      
-      if (topUsers.length === 0) {
-        await interaction.reply('No hay usuarios con dinero en este servidor aún.');
+      const top = await topByWealth(interaction.guildId!, limit);
+      if (top.length === 0) {
+        await respond(interaction, 'Aún no hay nadie con monedas en este servidor. ¡Usa `/daily` para empezar!');
         return;
       }
+
+      const lines = top.map((entry, index) => {
+        const medal = index === 0 ? '🥇' : index === 1 ? '🥈' : index === 2 ? '🥉' : `**${index + 1}.**`;
+        return `${medal} <@${entry.userId}> — ${formatCoins(entry.total)}`;
+      });
 
       const embed = new EmbedBuilder()
         .setColor(0xFFD700)
-        .setTitle(`🏆 Leaderboard Económico`)
-        .setDescription('Top usuarios por dinero total (cartera + banco)');
-
-      const leaderboardText = topUsers.map((user: any, index: number) => {
-        const medal = index === 0 ? '🥇' : index === 1 ? '🥈' : index === 2 ? '🥉' : `${index + 1}.`;
-        const total = parseFloat(user.balance || "0") + parseFloat(user.bank || "0");
-        return `${medal} <@${user.userId}> - ${total.toLocaleString()} monedas`;
-      }).join('\n');
-
-      embed.setDescription(leaderboardText);
-
-      await interaction.reply({ embeds: [embed] });
+        .setTitle('🏆 Ranking de monedas')
+        .setDescription(lines.join('\n'))
+        .setFooter({ text: 'Cuenta cartera + banco' })
+        .setTimestamp();
+      await respond(interaction, { embeds: [embed] });
     }
   },
 
-  // Admin commands for economy management
+  // ===== Administración de la economía =====
   {
     data: new SlashCommandBuilder()
       .setName('add-money')
-      .setDescription('⚙️ Añade dinero a un usuario (solo admins)')
+      .setDescription('⚙️ Dale monedas a alguien (solo admins)')
+      .setDefaultMemberPermissions(PermissionFlagsBits.Administrator)
       .addUserOption(option =>
-        option.setName('usuario').setDescription('Usuario a quien añadir dinero').setRequired(true)
+        option.setName('usuario').setDescription('A quién darle monedas').setRequired(true)
       )
       .addIntegerOption(option =>
-        option.setName('cantidad').setDescription('Cantidad a añadir').setRequired(true)
+        option.setName('cantidad').setDescription('Cuántas monedas').setRequired(true).setMinValue(1).setMaxValue(MAX_COINS)
       ),
-    
+
     async execute(interaction: ChatInputCommandInteraction, bot: DiscordBot) {
-      if (!interaction.memberPermissions?.has('Administrator')) {
-        await interaction.reply({ content: '⛔ Solo administradores pueden usar este comando.', flags: MessageFlags.Ephemeral });
+      if (!isAdmin(interaction)) {
+        await respond(interaction, ADMIN_ONLY, { ephemeral: true });
         return;
       }
-      
-      const usuario = interaction.options.getUser('usuario', true);
-      const cantidad = interaction.options.getInteger('cantidad', true);
+      const target = interaction.options.getUser('usuario', true);
+      const amount = interaction.options.getInteger('cantidad', true);
       const guildId = interaction.guildId!;
-      
-      if (cantidad <= 0) {
-        await interaction.reply({ content: 'La cantidad debe ser mayor a 0.', flags: MessageFlags.Ephemeral });
+
+      if (target.bot) {
+        await respond(interaction, '🤖 Los bots no usan monedas.', { ephemeral: true });
         return;
       }
-      
-      let userEcon = await storage.getUserEconomy(usuario.id, guildId);
-      if (!userEcon) {
-        userEcon = await storage.createUserEconomy({
-          userId: usuario.id,
-          guildId: guildId,
-          balance: "0",
-          bank: "0"
-        });
+      if (!Number.isSafeInteger(amount) || amount <= 0) {
+        await respond(interaction, '❌ La cantidad debe ser mayor que 0.', { ephemeral: true });
+        return;
       }
-      
-      const newBalance = parseFloat(userEcon.balance || "0") + cantidad;
-      await storage.updateUserEconomy(usuario.id, guildId, {
-        balance: newBalance.toString()
-      });
-      
-      await interaction.reply({ content: `✅ Añadido ${cantidad.toLocaleString()} monedas a ${usuario.tag}.`, flags: MessageFlags.Ephemeral });
+
+      await interaction.deferReply({ flags: MessageFlags.Ephemeral });
+      await ensureAccount(await resolveGuild(interaction), target);
+      const balance = await economyTask(guildId, target.id, () => adminAddCoins(guildId, target.id, amount));
+      await respond(interaction, `✅ Le diste ${formatCoins(amount)} a ${target}. Su cartera ahora tiene ${formatCoins(balance)}.`);
     }
   },
 
   {
     data: new SlashCommandBuilder()
       .setName('remove-money')
-      .setDescription('⚙️ Quita dinero a un usuario (solo admins)')
+      .setDescription('⚙️ Quítale monedas de la cartera a alguien (solo admins)')
+      .setDefaultMemberPermissions(PermissionFlagsBits.Administrator)
       .addUserOption(option =>
-        option.setName('usuario').setDescription('Usuario a quien quitar dinero').setRequired(true)
+        option.setName('usuario').setDescription('A quién quitarle monedas').setRequired(true)
       )
       .addStringOption(option =>
-        option.setName('cantidad').setDescription('Cantidad a quitar o "all"').setRequired(true)
+        option.setName('cantidad').setDescription('Cuántas monedas, o "todo"').setRequired(true)
       ),
-    
+
     async execute(interaction: ChatInputCommandInteraction, bot: DiscordBot) {
-      if (!interaction.memberPermissions?.has('Administrator')) {
-        await interaction.reply({ content: '⛔ Solo administradores pueden usar este comando.', flags: MessageFlags.Ephemeral });
+      if (!isAdmin(interaction)) {
+        await respond(interaction, ADMIN_ONLY, { ephemeral: true });
         return;
       }
-      
-      const usuario = interaction.options.getUser('usuario', true);
-      const cantidadRaw = interaction.options.getString('cantidad', true);
+      const target = interaction.options.getUser('usuario', true);
+      const request = parseAmount(interaction.options.getString('cantidad', true));
       const guildId = interaction.guildId!;
-      
-      let userEcon = await storage.getUserEconomy(usuario.id, guildId);
-      if (!userEcon) {
-        await interaction.reply({ content: `❌ ${usuario.tag} no tiene una cuenta económica.`, flags: MessageFlags.Ephemeral });
+
+      if (!request) {
+        await respond(interaction, `❌ Cantidad no válida. ${AMOUNT_HINT}`, { ephemeral: true });
         return;
       }
-      
-      const saldo = parseFloat(userEcon.balance || "0");
-      let cantidad: number;
-      
-      if (cantidadRaw === 'all') {
-        cantidad = saldo;
-      } else {
-        cantidad = parseInt(cantidadRaw, 10);
-        if (isNaN(cantidad) || cantidad <= 0) {
-          await interaction.reply({ content: 'La cantidad debe ser mayor a 0 o "all".', flags: MessageFlags.Ephemeral });
-          return;
-        }
+
+      await interaction.deferReply({ flags: MessageFlags.Ephemeral });
+      const account = await getAccount(guildId, target.id);
+      if (!account) {
+        await respond(interaction, `❌ ${target} todavía no tiene cuenta en la economía.`);
+        return;
       }
-      
-      const newBalance = Math.max(0, saldo - cantidad);
-      await storage.updateUserEconomy(usuario.id, guildId, {
-        balance: newBalance.toString()
-      });
-      
-      await interaction.reply({ content: `✅ Quitado ${cantidad.toLocaleString()} monedas a ${usuario.tag}.`, flags: MessageFlags.Ephemeral });
+      const result = await economyTask(guildId, target.id, () => adminRemoveCoins(guildId, target.id, request));
+      await respond(interaction, `✅ Le quitaste ${formatCoins(result.removed)} a ${target}. Su cartera ahora tiene ${formatCoins(result.balance)}.`);
     }
   },
 
   {
     data: new SlashCommandBuilder()
       .setName('reset-money')
-      .setDescription('⚙️ Resetea el balance de un usuario (solo admins)')
+      .setDescription('⚙️ Deja en cero la cartera y el banco de alguien (solo admins)')
+      .setDefaultMemberPermissions(PermissionFlagsBits.Administrator)
       .addUserOption(option =>
-        option.setName('usuario').setDescription('Usuario a resetear').setRequired(true)
+        option.setName('usuario').setDescription('A quién reiniciar').setRequired(true)
       ),
-    
+
     async execute(interaction: ChatInputCommandInteraction, bot: DiscordBot) {
-      if (!interaction.memberPermissions?.has('Administrator')) {
-        await interaction.reply({ content: '⛔ Solo administradores pueden usar este comando.', flags: MessageFlags.Ephemeral });
+      if (!isAdmin(interaction)) {
+        await respond(interaction, ADMIN_ONLY, { ephemeral: true });
         return;
       }
-      
-      const usuario = interaction.options.getUser('usuario', true);
+      const target = interaction.options.getUser('usuario', true);
       const guildId = interaction.guildId!;
-      
-      let userEcon = await storage.getUserEconomy(usuario.id, guildId);
-      if (!userEcon) {
-        await interaction.reply({ content: `❌ ${usuario.tag} no tiene una cuenta económica.`, flags: MessageFlags.Ephemeral });
+
+      await interaction.deferReply({ flags: MessageFlags.Ephemeral });
+      const account = await getAccount(guildId, target.id);
+      if (!account) {
+        await respond(interaction, `❌ ${target} todavía no tiene cuenta en la economía.`);
         return;
       }
-      
-      await storage.updateUserEconomy(usuario.id, guildId, {
-        balance: "0",
-        bank: "0"
-      });
-      
-      await interaction.reply({ content: `✅ Balance de ${usuario.tag} reseteado completamente.`, flags: MessageFlags.Ephemeral });
+      await economyTask(guildId, target.id, () => adminResetAccount(guildId, target.id));
+      await respond(interaction, `✅ La cartera y el banco de ${target} quedaron en cero.`);
     }
   },
 
   {
     data: new SlashCommandBuilder()
       .setName('economy-stats')
-      .setDescription('📊 Muestra estadísticas generales de la economía del servidor'),
-    
+      .setDescription('📊 Estadísticas generales de la economía del servidor'),
+
     async execute(interaction: ChatInputCommandInteraction, bot: DiscordBot) {
-      const guildId = interaction.guildId!;
-      
-      try {
-        const allUsers = await storage.getAllUserEconomies(guildId);
-        
-        if (allUsers.length === 0) {
-          await interaction.reply('No hay usuarios con cuentas económicas en este servidor.');
-          return;
-        }
-        
-        let totalCash = 0;
-        let totalBank = 0;
-        
-        for (const user of allUsers) {
-          totalCash += parseFloat(user.balance || "0");
-          totalBank += parseFloat(user.bank || "0");
-        }
-        
-        const embed = new EmbedBuilder()
-          .setColor(0x2ecc71)
-          .setTitle('📊 Estadísticas de la Economía')
-          .addFields(
-            { name: 'Usuarios con saldo', value: allUsers.length.toString(), inline: true },
-            { name: 'Total en efectivo', value: totalCash.toLocaleString(), inline: true },
-            { name: 'Total en banco', value: totalBank.toLocaleString(), inline: true },
-            { name: 'Total global', value: (totalCash + totalBank).toLocaleString(), inline: true }
-          )
-          .setTimestamp();
-        
-        await interaction.reply({ embeds: [embed] });
-      } catch (error) {
-        console.error('Error getting economy stats:', error);
-        await interaction.reply('❌ Error al obtener estadísticas de la economía.');
+      await interaction.deferReply();
+      const stats = await economyStats(interaction.guildId!);
+
+      if (stats.accounts === 0) {
+        await respond(interaction, 'Aún no hay datos: nadie ha usado la economía en este servidor.');
+        return;
       }
+
+      const embed = new EmbedBuilder()
+        .setColor(0x2ECC71)
+        .setTitle('📊 Economía del servidor')
+        .addFields(
+          { name: '👥 Cuentas', value: stats.accounts.toLocaleString('es-MX'), inline: true },
+          { name: '💰 Con monedas', value: stats.withMoney.toLocaleString('es-MX'), inline: true },
+          { name: '​', value: '​', inline: true },
+          { name: '💵 En carteras', value: formatCoins(stats.cash), inline: true },
+          { name: '🏦 En bancos', value: formatCoins(stats.bank), inline: true },
+          { name: '💎 Total', value: formatCoins(stats.cash + stats.bank), inline: true }
+        )
+        .setTimestamp();
+      await respond(interaction, { embeds: [embed] });
     }
   },
 
   {
     data: new SlashCommandBuilder()
       .setName('add-money-role')
-      .setDescription('⚙️ Añade dinero a todos los miembros de un rol (solo admins)')
+      .setDescription('⚙️ Dale monedas a todas las personas con un rol (solo admins)')
+      .setDefaultMemberPermissions(PermissionFlagsBits.Administrator)
       .addRoleOption(option =>
-        option.setName('rol').setDescription('Rol al que añadir dinero').setRequired(true)
+        option.setName('rol').setDescription('Rol que recibe las monedas').setRequired(true)
       )
       .addIntegerOption(option =>
-        option.setName('cantidad').setDescription('Cantidad a añadir').setRequired(true)
+        option.setName('cantidad').setDescription('Cuántas monedas para cada persona').setRequired(true).setMinValue(1).setMaxValue(MAX_COINS)
       ),
-    
+
     async execute(interaction: ChatInputCommandInteraction, bot: DiscordBot) {
-      if (!interaction.memberPermissions?.has('Administrator')) {
-        await interaction.reply({ content: '⛔ Solo administradores pueden usar este comando.', flags: MessageFlags.Ephemeral });
+      if (!isAdmin(interaction)) {
+        await respond(interaction, ADMIN_ONLY, { ephemeral: true });
         return;
       }
-      
-      if (!interaction.guild) {
-        await interaction.reply({ content: 'Este comando solo funciona en servidores.', flags: MessageFlags.Ephemeral });
-        return;
-      }
-      
-      const rol = interaction.options.getRole('rol', true);
-      const cantidad = interaction.options.getInteger('cantidad', true);
+      const role = interaction.options.getRole('rol', true);
+      const amount = interaction.options.getInteger('cantidad', true);
       const guildId = interaction.guildId!;
-      
-      if (cantidad <= 0) {
-        await interaction.reply({ content: 'La cantidad debe ser mayor a 0.', flags: MessageFlags.Ephemeral });
+
+      if (!Number.isSafeInteger(amount) || amount <= 0) {
+        await respond(interaction, '❌ La cantidad debe ser mayor que 0.', { ephemeral: true });
         return;
       }
-      
+
       await interaction.deferReply({ flags: MessageFlags.Ephemeral });
-      
-      const members = await interaction.guild.members.fetch();
-      let count = 0;
-      
-      for (const member of members.values()) {
-        if (member.roles.cache.has(rol.id) && !member.user.bot) {
-          let userEcon = await storage.getUserEconomy(member.id, guildId);
-          if (!userEcon) {
-            userEcon = await storage.createUserEconomy({
-              userId: member.id,
-              guildId: guildId,
-              balance: "0",
-              bank: "0"
-            });
-          }
-          
-          const newBalance = parseFloat(userEcon.balance || "0") + cantidad;
-          await storage.updateUserEconomy(member.id, guildId, {
-            balance: newBalance.toString()
-          });
-          count++;
-        }
+      const guild = await resolveGuild(interaction);
+      const members = await guild.members.fetch();
+      const recipients = [...members.values()].filter(m => !m.user.bot && m.roles.cache.has(role.id));
+
+      if (recipients.length === 0) {
+        await respond(interaction, `Nadie (que no sea bot) tiene el rol ${role.name}.`);
+        return;
       }
-      
-      await interaction.editReply({ content: `✅ Añadido ${cantidad.toLocaleString()} monedas a ${count} miembros con el rol ${rol.name}.` });
+
+      for (const member of recipients) {
+        await ensureAccount(guild, member.user);
+      }
+      await adminAddCoinsToMany(guildId, recipients.map(m => m.id), amount);
+
+      await respond(interaction, `✅ Le diste ${formatCoins(amount)} a ${recipients.length.toLocaleString('es-MX')} ${recipients.length === 1 ? 'persona' : 'personas'} con el rol ${role.name}.`);
     }
   }
 ];
+
