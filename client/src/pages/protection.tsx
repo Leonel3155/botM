@@ -12,19 +12,36 @@ import Layout from '@/components/layout';
 import { useToast } from '@/hooks/use-toast';
 import { apiRequest } from '@/lib/queryClient';
 
+// Respuesta de GET /api/protection/:guildId/settings
+interface ProtectionSettings {
+  lockdownEnabled: boolean;
+  lockdownReason: string;
+  autoRoles: { id: string; name: string; roleId: string; enabled: boolean }[];
+  reactionRoles: {
+    id: string;
+    messageId: string;
+    channelId: string;
+    title: string;
+    description: string;
+    reactions: { emoji: string; roleId: string; roleName: string }[];
+  }[];
+  nsfwChannels: string[];
+  massRoleHistory: unknown[];
+}
+
 export default function ProtectionPage() {
   const { toast } = useToast();
   const queryClient = useQueryClient();
   const guildId = '123456789012345678';
 
-  const { data: settings, isLoading } = useQuery({
+  // El queryFn por defecto une la queryKey: /api/protection/{guildId}/settings
+  const { data: settings, isLoading } = useQuery<ProtectionSettings>({
     queryKey: ['/api/protection', guildId, 'settings'],
-    queryFn: () => fetch(`/api/protection/${guildId}/settings`).then(res => res.json())
   });
 
   const lockdownMutation = useMutation({
-    mutationFn: (data: { enabled: boolean; reason?: string }) => 
-      apiRequest(`/api/protection/${guildId}/lockdown`, { method: 'POST', body: data }),
+    mutationFn: (data: { enabled: boolean; reason?: string }) =>
+      apiRequest('POST', `/api/protection/${guildId}/lockdown`, data),
     onSuccess: () => {
       queryClient.invalidateQueries({ queryKey: ['/api/protection', guildId] });
       toast({ title: 'Lockdown updated successfully' });
@@ -117,7 +134,7 @@ export default function ProtectionPage() {
           </CardHeader>
           <CardContent className="space-y-4">
             <div className="space-y-3">
-              {settings?.autoRoles?.map((role: any) => (
+              {settings?.autoRoles?.map((role) => (
                 <div key={role.id} className="flex items-center justify-between p-3 border rounded-lg">
                   <div className="flex items-center gap-3">
                     <div 
@@ -163,7 +180,7 @@ export default function ProtectionPage() {
           </CardHeader>
           <CardContent className="space-y-4">
             <div className="space-y-4">
-              {settings?.reactionRoles?.map((reactionRole: any) => (
+              {settings?.reactionRoles?.map((reactionRole) => (
                 <div key={reactionRole.id} className="border rounded-lg p-4">
                   <div className="flex items-start justify-between mb-3">
                     <div>
@@ -175,7 +192,7 @@ export default function ProtectionPage() {
                     </Button>
                   </div>
                   <div className="flex flex-wrap items-center gap-2">
-                    {reactionRole.reactions?.map((reaction: any, index: number) => (
+                    {reactionRole.reactions?.map((reaction, index) => (
                       <div key={index} className="flex items-center gap-1">
                         <span className="text-xl">{reaction.emoji}</span>
                         <span className="text-sm">→</span>

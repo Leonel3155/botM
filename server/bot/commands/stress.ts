@@ -21,7 +21,9 @@ export async function execute(interaction: ChatInputCommandInteraction, bot: Dis
   const startTime = Date.now();
   const results: string[] = [];
   
-  // Crear múltiples tareas simultáneas
+  // Crear múltiples tareas simultáneas.
+  // throwOnTimeout: true hace que un timeout rechace la promesa (y caiga en el catch)
+  // en lugar de resolver con undefined, así cada tarea devuelve siempre un string.
   const promises = Array.from({ length: numTasks }, async (_, i) => {
     return globalQueue.add(async () => {
       return queueForGuild(guildId).add(async () => {
@@ -34,8 +36,8 @@ export async function execute(interaction: ChatInputCommandInteraction, bot: Dis
           const amount = Math.floor(Math.random() * 100) + 1;
           return `Task ${i + 1}: +${amount} coins (${Math.round(delay)}ms)`;
         });
-      });
-    }, { timeout: 120_000 }); // override puntual según ChatGPT
+      }, { throwOnTimeout: true });
+    }, { timeout: 120_000, throwOnTimeout: true }); // override puntual según ChatGPT
   });
   
   try {
@@ -62,7 +64,6 @@ export async function execute(interaction: ChatInputCommandInteraction, bot: Dis
       `⚡ **Estadísticas de Colas:**`,
       `• Cola global: ${queueStats.global.pending} pendientes, ${queueStats.global.size} en cola`,
       `• Colas por guild: ${queueStats.guilds}`,
-      `• Colas de música: ${queueStats.music}`,
       `• Colas de economía: ${queueStats.economy}`,
       ``,
       `🔒 **Estadísticas de Locks:**`,

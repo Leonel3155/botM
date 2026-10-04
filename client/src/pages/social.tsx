@@ -21,18 +21,19 @@ import {
   Eye,
   Hash
 } from "lucide-react";
+import type { ContentFeedResponse, NewContentFeed } from "@/lib/api-types";
 
 export default function Social() {
   const queryClient = useQueryClient();
   const { toast } = useToast();
 
-  const { data: contentFeeds, isLoading } = useQuery({
+  const { data: contentFeeds, isLoading } = useQuery<ContentFeedResponse[]>({
     queryKey: ['/api/social/123456789012345678/feeds'],
     staleTime: 60000,
   });
 
   const createFeedMutation = useMutation({
-    mutationFn: async (feedData: any) => {
+    mutationFn: async (feedData: NewContentFeed) => {
       const response = await apiRequest('POST', '/api/social/123456789012345678/feeds', feedData);
       return response.json();
     },
@@ -63,7 +64,7 @@ export default function Social() {
   }
 
   const handleCreateFeed = () => {
-    const feedData = {
+    const feedData: NewContentFeed = {
       channelId: "123456789012345678",
       source: "reddit",
       sourceConfig: {
@@ -85,7 +86,7 @@ export default function Social() {
               <div>
                 <p className="text-discord-muted text-sm font-medium">Active Feeds</p>
                 <p className="text-2xl font-bold text-white mt-1" data-testid="text-active-feeds">
-                  {contentFeeds?.filter((feed: any) => feed.enabled).length || 0}
+                  {contentFeeds?.filter((feed) => feed.enabled).length || 0}
                 </p>
               </div>
               <Share2 className="w-8 h-8 text-discord-primary" />
@@ -250,7 +251,7 @@ export default function Social() {
           </div>
           <div className="p-6">
             <div className="space-y-4">
-              {contentFeeds?.map((feed: any, index: number) => (
+              {contentFeeds && contentFeeds.length > 0 ? contentFeeds.map((feed, index) => (
                 <div 
                   key={feed.id} 
                   className="flex items-center justify-between p-4 bg-discord-grey rounded-lg"
@@ -271,7 +272,7 @@ export default function Social() {
                         </Badge>
                       </div>
                       <p className="text-discord-muted text-sm" data-testid={`text-feed-details-${index}`}>
-                        #{feed.channelId.slice(-4)} • Every {feed.postInterval} minutes
+                        {feed.channelId ? `#${feed.channelId.slice(-4)}` : 'Sin canal'} • Every {feed.postInterval ?? 30} minutes
                       </p>
                     </div>
                   </div>
@@ -284,7 +285,7 @@ export default function Social() {
                     </Button>
                   </div>
                 </div>
-              )) || (
+              )) : (
                 <div className="text-center py-8">
                   <Share2 className="w-12 h-12 text-discord-muted mx-auto mb-4" />
                   <p className="text-discord-muted">No content feeds configured</p>

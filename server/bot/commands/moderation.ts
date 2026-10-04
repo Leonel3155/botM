@@ -246,8 +246,10 @@ export const moderationCommands = [
           reason: 'Rol autogenerado para silenciar usuarios',
         });
 
-        // Configurar permisos en canales
+        // Configurar permisos en canales (los hilos no tienen overwrites propios:
+        // heredan los permisos de su canal padre, así que se omiten)
         for (const channel of Array.from(interaction.guild.channels.cache.values())) {
+          if (channel.isThread()) continue;
           if (channel.isTextBased() || channel.isVoiceBased()) {
             await channel.permissionOverwrites.edit(muteRole, {
               SendMessages: false,
@@ -351,7 +353,7 @@ export const moderationCommands = [
 
       const member = interaction.member as GuildMember;
       const accion = interaction.options.getString('accion', true);
-      const canal = interaction.channel as TextChannel;
+      const canal = interaction.channel;
 
       // Verificar si tiene rol de moderador
       if (!hasModeratorPermissions(member)) {
@@ -363,8 +365,17 @@ export const moderationCommands = [
         return;
       }
 
-      if (!canal || !canal.permissionOverwrites) {
+      if (!canal || canal.isDMBased()) {
         await interaction.reply({ content: '❌ No puedo modificar permisos en este canal.', flags: MessageFlags.Ephemeral });
+        return;
+      }
+
+      // Los hilos no tienen overwrites propios (heredan del canal padre)
+      if (canal.isThread()) {
+        await interaction.reply({
+          content: '❌ Este comando no funciona dentro de hilos. Úsalo en el canal principal o bloquea el hilo desde sus opciones.',
+          flags: MessageFlags.Ephemeral
+        });
         return;
       }
 

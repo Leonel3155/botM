@@ -143,7 +143,7 @@ export class PrefixCommandHandler {
 
     await storage.updateUserEconomy(userId, guildId, {
       balance: newBalance.toString(),
-      lastDaily: now.toISOString(),
+      lastDaily: now,
       dailyStreak: newStreak,
       totalEarned: (parseInt(economy.totalEarned || '0') + reward).toString()
     });

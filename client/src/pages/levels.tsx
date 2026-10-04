@@ -7,14 +7,22 @@ import { Switch } from "@/components/ui/switch";
 import { Slider } from "@/components/ui/slider";
 import { Badge } from "@/components/ui/badge";
 import { BarChart3, Award, Users, Clock } from "lucide-react";
+import type { GuildResponse, UserLevelResponse } from "@/lib/api-types";
+
+const DEFAULT_LEVEL_SETTINGS = {
+  enabled: true,
+  xpPerMessage: [15, 25],
+  voiceMultiplier: 1.5,
+  announcements: true
+};
 
 export default function Levels() {
-  const { data: topUsers, isLoading } = useQuery({
+  const { data: topUsers, isLoading } = useQuery<UserLevelResponse[]>({
     queryKey: ['/api/levels/123456789012345678/top'],
     staleTime: 60000,
   });
 
-  const { data: guildSettings } = useQuery({
+  const { data: guildSettings } = useQuery<GuildResponse>({
     queryKey: ['/api/guilds/123456789012345678'],
     staleTime: 300000,
   });
@@ -29,11 +37,9 @@ export default function Levels() {
     );
   }
 
-  const levelSettings = guildSettings?.settings?.levelSystem || {
-    enabled: true,
-    xpPerMessage: [15, 25],
-    voiceMultiplier: 1.5,
-    announcements: true
+  const levelSettings = {
+    ...DEFAULT_LEVEL_SETTINGS,
+    ...guildSettings?.settings?.levelSystem
   };
 
   return (
@@ -161,7 +167,7 @@ export default function Levels() {
               </div>
               <div className="p-6">
                 <div className="space-y-4">
-                  {topUsers?.map((user: any, index: number) => {
+                  {topUsers && topUsers.length > 0 ? topUsers.map((user, index) => {
                     const rankIcon = index === 0 ? "🥇" : index === 1 ? "🥈" : index === 2 ? "🥉" : `${index + 1}.`;
                     return (
                       <div 
@@ -181,8 +187,8 @@ export default function Levels() {
                               User #{user.userId.slice(-4)}
                             </p>
                             <p className="text-discord-muted text-sm">
-                              {user.voiceTime > 0 && (
-                                <span className="mr-2">🎤 {Math.floor(user.voiceTime / 60)}h</span>
+                              {(user.voiceTime ?? 0) > 0 && (
+                                <span className="mr-2">🎤 {Math.floor((user.voiceTime ?? 0) / 60)}h</span>
                               )}
                               Last active: Recently
                             </p>
@@ -190,15 +196,15 @@ export default function Levels() {
                         </div>
                         <div className="text-right">
                           <Badge variant="secondary" className="mb-1" data-testid={`badge-level-${index}`}>
-                            Level {user.level}
+                            Level {user.level ?? 1}
                           </Badge>
                           <p className="text-discord-muted text-sm" data-testid={`text-total-xp-${index}`}>
-                            {user.totalXp.toLocaleString()} XP
+                            {(user.totalXp ?? 0).toLocaleString()} XP
                           </p>
                         </div>
                       </div>
                     );
-                  }) || (
+                  }) : (
                     <div className="text-center py-8 text-discord-muted">
                       No users have gained XP yet
                     </div>
@@ -227,7 +233,7 @@ export default function Levels() {
                 <div className="flex justify-between">
                   <span className="text-discord-light-grey">Average Level</span>
                   <span className="text-white font-medium" data-testid="text-stat-average-level">
-                    {topUsers?.length ? Math.round(topUsers.reduce((sum: number, user: any) => sum + user.level, 0) / topUsers.length) : 0}
+                    {topUsers?.length ? Math.round(topUsers.reduce((sum, user) => sum + (user.level ?? 1), 0) / topUsers.length) : 0}
                   </span>
                 </div>
                 <div className="flex justify-between">
@@ -239,7 +245,7 @@ export default function Levels() {
                 <div className="flex justify-between">
                   <span className="text-discord-light-grey">Total XP Earned</span>
                   <span className="text-white font-medium" data-testid="text-stat-total-xp">
-                    {topUsers?.reduce((sum: number, user: any) => sum + user.totalXp, 0).toLocaleString() || 0}
+                    {(topUsers?.reduce((sum, user) => sum + (user.totalXp ?? 0), 0) ?? 0).toLocaleString()}
                   </span>
                 </div>
               </div>

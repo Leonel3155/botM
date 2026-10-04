@@ -61,12 +61,8 @@ export default function CustomCommands() {
   });
 
   const createMutation = useMutation({
-    mutationFn: (data: z.infer<typeof commandSchema>) => 
-      fetch(`/api/custom-commands/${selectedGuildId}`, {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify(data)
-      }).then(res => res.json()),
+    mutationFn: (data: z.infer<typeof commandSchema>) =>
+      apiRequest('POST', `/api/custom-commands/${selectedGuildId}`, data).then(res => res.json()),
     onSuccess: () => {
       queryClient.invalidateQueries({ queryKey: ['/api/custom-commands', selectedGuildId] });
       setIsCreateOpen(false);
@@ -86,12 +82,8 @@ export default function CustomCommands() {
   });
 
   const updateMutation = useMutation({
-    mutationFn: ({ id, data }: { id: string; data: z.infer<typeof commandSchema> }) => 
-      fetch(`/api/custom-commands/${selectedGuildId}/${id}`, {
-        method: 'PATCH',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify(data)
-      }).then(res => res.json()),
+    mutationFn: ({ id, data }: { id: string; data: z.infer<typeof commandSchema> }) =>
+      apiRequest('PATCH', `/api/custom-commands/${selectedGuildId}/${id}`, data).then(res => res.json()),
     onSuccess: () => {
       queryClient.invalidateQueries({ queryKey: ['/api/custom-commands', selectedGuildId] });
       setEditingCommand(null);
@@ -104,22 +96,16 @@ export default function CustomCommands() {
   });
 
   const toggleMutation = useMutation({
-    mutationFn: ({ id, enabled }: { id: string; enabled: boolean }) => 
-      fetch(`/api/custom-commands/${selectedGuildId}/${id}/toggle`, {
-        method: 'PATCH',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ enabled })
-      }).then(res => res.json()),
+    mutationFn: ({ id, enabled }: { id: string; enabled: boolean }) =>
+      apiRequest('PATCH', `/api/custom-commands/${selectedGuildId}/${id}/toggle`, { enabled }).then(res => res.json()),
     onSuccess: () => {
       queryClient.invalidateQueries({ queryKey: ['/api/custom-commands', selectedGuildId] });
     }
   });
 
   const deleteMutation = useMutation({
-    mutationFn: (id: string) => 
-      fetch(`/api/custom-commands/${selectedGuildId}/${id}`, {
-        method: 'DELETE'
-      }).then(res => res.json()),
+    mutationFn: (id: string) =>
+      apiRequest('DELETE', `/api/custom-commands/${selectedGuildId}/${id}`).then(res => res.json()),
     onSuccess: () => {
       queryClient.invalidateQueries({ queryKey: ['/api/custom-commands', selectedGuildId] });
       toast({

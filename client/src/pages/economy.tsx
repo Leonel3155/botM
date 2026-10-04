@@ -7,14 +7,19 @@ import { Switch } from "@/components/ui/switch";
 import { Input } from "@/components/ui/input";
 import { Badge } from "@/components/ui/badge";
 import { Coins, TrendingUp, Users, DollarSign, Wallet, CreditCard } from "lucide-react";
+import type { GuildResponse } from "@/lib/api-types";
+
+// Valores por defecto; `currency` no existe en la configuración del servidor
+// (ver PUT /api/guilds/:guildId/settings), así que solo vive aquí.
+const DEFAULT_ECONOMY_SETTINGS = {
+  enabled: true,
+  dailyReward: 500,
+  workCooldown: 4,
+  currency: "coins"
+};
 
 export default function Economy() {
-  const { data: economyStats, isLoading } = useQuery({
-    queryKey: ['/api/economy/123456789012345678/stats'],
-    staleTime: 60000,
-  });
-
-  const { data: guildSettings } = useQuery({
+  const { data: guildSettings, isLoading } = useQuery<GuildResponse>({
     queryKey: ['/api/guilds/123456789012345678'],
     staleTime: 300000,
   });
@@ -29,11 +34,9 @@ export default function Economy() {
     );
   }
 
-  const economySettings = guildSettings?.settings?.economy || {
-    enabled: true,
-    dailyReward: 500,
-    workCooldown: 4,
-    currency: "coins"
+  const economySettings = {
+    ...DEFAULT_ECONOMY_SETTINGS,
+    ...guildSettings?.settings?.economy
   };
 
   return (

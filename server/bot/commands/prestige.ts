@@ -20,8 +20,10 @@ export const prestigeCommands = [
       const confirm = interaction.options.getBoolean('confirm') || false;
 
       const userLevel = await storage.getUserLevel(userId, guildId);
-      
-      if (!userLevel || userLevel.level < 100) {
+      // La columna `level` es nullable en la BD (default 1)
+      const currentLevel = userLevel?.level ?? 1;
+
+      if (currentLevel < 100) {
         await interaction.reply('❌ You need to reach level 100 before you can prestige!');
         return;
       }
@@ -34,7 +36,7 @@ export const prestigeCommands = [
           .addFields(
             { name: '✅ Benefits You Keep', value: '• All economy money\n• All items and inventory\n• Prestige badge and title\n• 2x XP gain permanently', inline: false },
             { name: '❌ What You Lose', value: '• Your current level (back to 1)\n• Current XP progress', inline: false },
-            { name: '🎯 Requirements', value: `Current Level: **${userLevel.level}** ✅\nMinimum Required: **100** ✅`, inline: false }
+            { name: '🎯 Requirements', value: `Current Level: **${currentLevel}** ✅\nMinimum Required: **100** ✅`, inline: false }
           )
           .setFooter({ text: 'Use /prestige confirm:True to proceed' });
 
@@ -48,7 +50,7 @@ export const prestigeCommands = [
           new EmbedBuilder()
             .setColor(0x57F287)
             .setTitle('🌟 Prestige Successful!')
-            .setDescription(`Congratulations! You have prestiged from level **${userLevel.level}**!`)
+            .setDescription(`Congratulations! You have prestiged from level **${currentLevel}**!`)
             .addFields(
               { name: '⭐ New Status', value: 'Level 1 (Prestiged)', inline: true },
               { name: '🚀 XP Multiplier', value: '2.0x permanent', inline: true },

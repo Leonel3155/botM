@@ -17,14 +17,24 @@ import {
   Clock,
   Users
 } from "lucide-react";
+import type { GuildResponse, ModerationActionResponse } from "@/lib/api-types";
+
+// `profanityFilter` no existe en la configuración del servidor
+// (ver PUT /api/guilds/:guildId/settings), así que solo vive aquí.
+const DEFAULT_MODERATION_SETTINGS = {
+  automod: true,
+  spamDetection: true,
+  linkFiltering: false,
+  profanityFilter: true
+};
 
 export default function Moderation() {
-  const { data: moderationActions, isLoading } = useQuery({
+  const { data: moderationActions, isLoading } = useQuery<ModerationActionResponse[]>({
     queryKey: ['/api/moderation/123456789012345678/actions'],
     staleTime: 30000,
   });
 
-  const { data: guildSettings } = useQuery({
+  const { data: guildSettings } = useQuery<GuildResponse>({
     queryKey: ['/api/guilds/123456789012345678'],
     staleTime: 300000,
   });
@@ -39,11 +49,9 @@ export default function Moderation() {
     );
   }
 
-  const moderationSettings = guildSettings?.settings?.moderation || {
-    automod: true,
-    spamDetection: true,
-    linkFiltering: false,
-    profanityFilter: true
+  const moderationSettings = {
+    ...DEFAULT_MODERATION_SETTINGS,
+    ...guildSettings?.settings?.moderation
   };
 
   const getActionIcon = (type: string) => {
@@ -249,7 +257,7 @@ export default function Moderation() {
               <div>
                 <p className="text-discord-muted text-sm font-medium">Warnings</p>
                 <p className="text-2xl font-bold text-white mt-1" data-testid="text-total-warnings">
-                  {moderationActions?.filter((action: any) => action.type === 'warn').length || 0}
+                  {moderationActions?.filter((action) => action.type === 'warn').length || 0}
                 </p>
               </div>
               <AlertTriangle className="w-8 h-8 text-discord-warning" />
@@ -261,7 +269,7 @@ export default function Moderation() {
               <div>
                 <p className="text-discord-muted text-sm font-medium">Bans</p>
                 <p className="text-2xl font-bold text-white mt-1" data-testid="text-total-bans">
-                  {moderationActions?.filter((action: any) => action.type === 'ban').length || 0}
+                  {moderationActions?.filter((action) => action.type === 'ban').length || 0}
                 </p>
               </div>
               <Ban className="w-8 h-8 text-discord-error" />
@@ -273,7 +281,7 @@ export default function Moderation() {
               <div>
                 <p className="text-discord-muted text-sm font-medium">Active Mutes</p>
                 <p className="text-2xl font-bold text-white mt-1" data-testid="text-active-mutes">
-                  {moderationActions?.filter((action: any) => action.type === 'mute' && action.active).length || 0}
+                  {moderationActions?.filter((action) => action.type === 'mute' && action.active).length || 0}
                 </p>
               </div>
               <MessageSquareX className="w-8 h-8 text-discord-muted" />
@@ -296,7 +304,7 @@ export default function Moderation() {
           </div>
           <div className="p-6">
             <div className="space-y-4">
-              {moderationActions?.slice(0, 10).map((action: any, index: number) => (
+              {moderationActions && moderationActions.length > 0 ? moderationActions.slice(0, 10).map((action, index) => (
                 <div 
                   key={action.id} 
                   className="flex items-center justify-between p-4 bg-discord-grey rounded-lg"
@@ -323,11 +331,11 @@ export default function Moderation() {
                       By: Moderator #{action.moderatorId.slice(-4)}
                     </p>
                     <p className="text-discord-muted text-xs" data-testid={`text-action-time-${index}`}>
-                      {new Date(action.createdAt).toLocaleString()}
+                      {action.createdAt ? new Date(action.createdAt).toLocaleString() : '—'}
                     </p>
                   </div>
                 </div>
-              )) || (
+              )) : (
                 <div className="text-center py-8 text-discord-muted">
                   No moderation actions recorded yet
                 </div>

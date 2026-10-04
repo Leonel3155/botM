@@ -40,25 +40,20 @@ export default function ChannelsPage() {
   });
 
   // Fetch current channel configuration
-  const { data: channelConfig, isLoading: configLoading } = useQuery({
+  const { data: channelConfig, isLoading: configLoading } = useQuery<ChannelConfig>({
     queryKey: [`/api/guild/${GUILD_ID}/channels`],
-    select: (data) => data as ChannelConfig
   });
 
   // Fetch available Discord channels (requires authentication)
-  const { data: discordChannels, isLoading: channelsLoading } = useQuery({
+  const { data: discordChannels, isLoading: channelsLoading } = useQuery<Channel[]>({
     queryKey: [`/api/guild/${GUILD_ID}/discord-channels`],
-    select: (data) => data as Channel[],
     retry: false
   });
 
   // Update channel configuration mutation
   const updateChannelsMutation = useMutation({
-    mutationFn: (newConfig: ChannelConfig) => 
-      apiRequest(`/api/guild/${GUILD_ID}/channels`, {
-        method: 'PUT',
-        body: JSON.stringify(newConfig)
-      }),
+    mutationFn: (newConfig: ChannelConfig) =>
+      apiRequest('PUT', `/api/guild/${GUILD_ID}/channels`, newConfig),
     onSuccess: () => {
       toast({
         title: "Configuration Updated",
