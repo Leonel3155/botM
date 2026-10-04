@@ -7,6 +7,7 @@ import { Toaster } from "@/components/ui/toaster";
 import { TooltipProvider } from "@/components/ui/tooltip";
 import { AppShell, PageSkeleton, RequireGuild } from "@/components/app-shell";
 import { ApiErrorState } from "@/components/api-error-state";
+import { ErrorBoundary } from "@/components/error-boundary";
 import { useToast } from "@/hooks/use-toast";
 import { takeReturnTo, useAuthStatus } from "@/lib/auth";
 import { GuildProvider } from "@/lib/guild";
@@ -19,11 +20,11 @@ import NotFound from "@/pages/not-found";
 // El resto de secciones se descargan al abrirlas (el panel carga más rápido en el móvil)
 const Comunidad = lazy(() => import("@/pages/comunidad"));
 const Ajustes = lazy(() => import("@/pages/ajustes"));
+const Seguridad = lazy(() => import("@/pages/seguridad"));
 const Levels = lazy(() => import("@/pages/levels"));
 const Economy = lazy(() => import("@/pages/economy"));
 const Moderation = lazy(() => import("@/pages/moderation"));
 const Social = lazy(() => import("@/pages/social"));
-const AntiRaid = lazy(() => import("@/pages/antiraid"));
 const CustomCommands = lazy(() => import("@/pages/custom-commands"));
 const Channels = lazy(() => import("@/pages/channels"));
 
@@ -34,8 +35,9 @@ const GUILD_ROUTES: { path: string; component: ComponentType }[] = [
   { path: "/niveles", component: Levels },
   { path: "/economia", component: Economy },
   { path: "/moderacion", component: Moderation },
-  // Seguridad: por ahora la página de anti-raid (protection.tsx se integrará al rehacerla)
-  { path: "/seguridad", component: AntiRaid },
+  // Seguridad: "Próximamente" hasta rehacerla. antiraid.tsx y protection.tsx mostraban
+  // números y eventos inventados, así que no se enlazan.
+  { path: "/seguridad", component: Seguridad },
   { path: "/comandos", component: CustomCommands },
   { path: "/canales", component: Channels },
   { path: "/redes", component: Social },
@@ -59,10 +61,14 @@ const LEGACY_REDIRECTS: [from: string, to: string][] = [
 ];
 
 function Router() {
+  const [location] = useLocation();
+  // Si una sección falla (descarga o dibujo), el menú sigue usable y al cambiar de ruta se reintenta
   return (
-    <Suspense fallback={<PageSkeleton />}>
-      <Routes />
-    </Suspense>
+    <ErrorBoundary resetKey={location}>
+      <Suspense fallback={<PageSkeleton />}>
+        <Routes />
+      </Suspense>
+    </ErrorBoundary>
   );
 }
 
@@ -175,7 +181,9 @@ function App() {
     <QueryClientProvider client={queryClient}>
       <TooltipProvider>
         <Toaster />
-        <AuthGate />
+        <ErrorBoundary variant="fullscreen">
+          <AuthGate />
+        </ErrorBoundary>
       </TooltipProvider>
     </QueryClientProvider>
   );

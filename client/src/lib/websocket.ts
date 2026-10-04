@@ -10,14 +10,18 @@ import { toast } from "@/hooks/use-toast";
  * { type: 'error', status, error }. Después avisa de cambios del servidor
  * elegido (settingsUpdated, feedCreated, lockdown_update) y aquí se invalidan
  * las consultas de react-query que correspondan.
+ *
+ * Un "error" con 400/403 es definitivo (id no válido, sin permisos). Un 5xx o un
+ * error sin código (Discord no respondió, limitó las solicitudes o falló algo en
+ * el servidor) es pasajero: se repite el "join" con espera creciente.
  */
 
 export type RealtimeStatus =
   | "idle" // sin conexión (no hay servidor elegido o se cerró sesión)
   | "connecting" // abriendo la conexión o esperando el "joined"
   | "live" // conectado y suscrito al servidor elegido
-  | "reconnecting" // se cayó; reintentando con espera creciente
-  | "denied"; // conectado, pero el servidor rechazó la suscripción (permisos, bot ausente...)
+  | "reconnecting" // se cayó, o la suscripción falló por algo pasajero; reintentando con espera creciente
+  | "denied"; // conectado, pero el servidor rechazó la suscripción de forma definitiva (sin permisos, id no válido)
 
 interface ServerMessage {
   type: string;
@@ -26,6 +30,9 @@ interface ServerMessage {
   error?: string;
   enabled?: boolean;
   reason?: string;
+  forbidden?: boolean;
+  /** Segundos que pide esperar Discord cuando limita las solicitudes */
+  retryAfter?: number | null;
   [key: string]: unknown;
 }
 
@@ -33,6 +40,26 @@ const MAX_BACKOFF_MS = 30_000;
 const BASE_BACKOFF_MS = 1_000;
 /** Código con el que el servidor cierra si la sesión terminó (logout, caducó...) */
 const CLOSE_SESSION_ENDED = 4401;
+/** Tope de espera para repetir el "join" aunque Discord pida más */
+const MAX_JOIN_RETRY_MS = 5 * 60_000;
+
+/** Espera exponencial con algo de azar: intento 1 → 0,5-1 s, 2 → 1-2 s... hasta 15-30 s. */
+function backoffDelay(attempt: number): number {
+  const exponential = Math.min(MAX_BACKOFF_MS, BASE_BACKOFF_MS * 2 ** (attempt - 1));
+  return exponential / 2 + Math.random() * (exponential / 2);
+}
+
+/**
+ * ¿El rechazo del "join" es definitivo? 400 (id no válido) y 403 (sin permisos) sí:
+ * repetir no cambia nada. 5xx (Discord no respondió o limitó), 408/429 o un error
+ * sin código (fallo interno del servidor) son pasajeros.
+ */
+function isPermanentJoinError(message: ServerMessage): boolean {
+  if (message.forbidden === true) return true;
+  const status = message.status;
+  if (typeof status !== "number") return false;
+  return status >= 400 && status < 500 && status !== 408 && status !== 429;
+}
 
 /** Invalida las consultas cuya URL empieza por alguno de los prefijos dados. */
 function invalidatePaths(prefixes: string[]) {
@@ -53,6 +80,9 @@ class RealtimeConnection {
   private joinedGuildId: string | null = null;
   private attempts = 0;
   private reconnectTimer: ReturnType<typeof setTimeout> | null = null;
+  /** Reintentos seguidos del "join" tras errores pasajeros (con la conexión abierta) */
+  private joinAttempts = 0;
+  private joinRetryTimer: ReturnType<typeof setTimeout> | null = null;
   private active = false;
   private status: RealtimeStatus = "idle";
   private listeners = new Set<() => void>();
@@ -81,6 +111,7 @@ class RealtimeConnection {
     if (this.guildId === guildId && this.ws) return;
     this.guildId = guildId;
     this.joinedGuildId = null;
+    this.clearJoinRetry();
 
     if (this.ws?.readyState === WebSocket.OPEN) {
       // Ya conectados: basta con cambiar de servidor
@@ -99,6 +130,7 @@ class RealtimeConnection {
     this.joinedGuildId = null;
     this.attempts = 0;
     this.clearReconnectTimer();
+    this.clearJoinRetry();
     const ws = this.ws;
     this.ws = null;
     if (ws && (ws.readyState === WebSocket.OPEN || ws.readyState === WebSocket.CONNECTING)) {
@@ -117,6 +149,14 @@ class RealtimeConnection {
     if (this.reconnectTimer !== null) {
       clearTimeout(this.reconnectTimer);
       this.reconnectTimer = null;
+    }
+  }
+
+  private clearJoinRetry() {
+    this.joinAttempts = 0;
+    if (this.joinRetryTimer !== null) {
+      clearTimeout(this.joinRetryTimer);
+      this.joinRetryTimer = null;
     }
   }
 
@@ -145,6 +185,7 @@ class RealtimeConnection {
     ws.onopen = () => {
       if (this.ws !== ws) return;
       this.attempts = 0;
+      this.clearJoinRetry();
       this.sendJoin();
     };
 
@@ -163,6 +204,7 @@ class RealtimeConnection {
       if (this.ws !== ws) return; // ya la reemplazamos o la cerramos nosotros
       this.ws = null;
       this.joinedGuildId = null;
+      this.clearJoinRetry(); // al reconectar, onopen vuelve a mandar el "join"
       if (!this.active) return;
 
       if (event.code === CLOSE_SESSION_ENDED) {
@@ -206,11 +248,32 @@ class RealtimeConnection {
       void queryClient.invalidateQueries({ queryKey: AUTH_STATUS_KEY });
     }
 
-    const exponential = Math.min(MAX_BACKOFF_MS, BASE_BACKOFF_MS * 2 ** (this.attempts - 1));
-    const delay = exponential / 2 + Math.random() * (exponential / 2); // con algo de azar
+    const delay = backoffDelay(this.attempts);
     this.reconnectTimer = setTimeout(() => {
       this.reconnectTimer = null;
       this.open();
+    }, delay);
+  }
+
+  /**
+   * La suscripción falló por algo pasajero: la conexión sigue abierta, así que
+   * repetimos el "join" (no hace falta reconectar) con espera creciente.
+   */
+  private scheduleJoinRetry(retryAfterSeconds?: number | null) {
+    if (!this.active || !this.guildId) return;
+    if (this.joinRetryTimer !== null) clearTimeout(this.joinRetryTimer);
+    this.joinAttempts += 1;
+    this.setStatus("reconnecting");
+
+    let delay = backoffDelay(this.joinAttempts);
+    if (typeof retryAfterSeconds === "number" && Number.isFinite(retryAfterSeconds) && retryAfterSeconds > 0) {
+      delay = Math.max(delay, retryAfterSeconds * 1000);
+    }
+    delay = Math.min(delay, MAX_JOIN_RETRY_MS);
+
+    this.joinRetryTimer = setTimeout(() => {
+      this.joinRetryTimer = null;
+      this.sendJoin();
     }, delay);
   }
 
@@ -225,16 +288,24 @@ class RealtimeConnection {
       case "joined":
         if (message.guildId && message.guildId === this.guildId) {
           this.joinedGuildId = message.guildId;
+          this.clearJoinRetry();
           this.setStatus("live");
         }
         return;
 
       case "error":
-        // 403 sin permisos, 404 bot ausente, 400 id inválido...: la conexión sigue
-        // abierta pero sin avisos de este servidor. No reintentamos en bucle.
-        console.warn("[TIEMPO-REAL] El servidor rechazó la suscripción:", message.error ?? message);
         this.joinedGuildId = null;
-        this.setStatus("denied");
+        if (isPermanentJoinError(message)) {
+          // 403 sin permisos, 400 id no válido: la conexión sigue abierta pero sin
+          // avisos de este servidor. Repetir no cambiaría nada.
+          console.warn("[TIEMPO-REAL] El servidor rechazó la suscripción:", message.error ?? message);
+          this.clearJoinRetry();
+          this.setStatus("denied");
+        } else {
+          // Discord no respondió, limitó las solicitudes o falló algo en el servidor
+          console.warn("[TIEMPO-REAL] No se pudo suscribir por ahora; se reintentará:", message.error ?? message);
+          this.scheduleJoinRetry(message.retryAfter);
+        }
         return;
     }
 
