@@ -20,7 +20,7 @@ import { anuncioCommands } from './anuncios';
 import selftest from './selftest';
 import stress from './stress';
 import oauthTest from './oauth-test';
-import { ECONOMY_DISABLED_MESSAGE, isEconomyEnabled } from '../services/guildSettings';
+import { ECONOMY_DISABLED_MESSAGE, isEconomyEnabledQuick } from '../services/guildSettings';
 
 export interface BotCommand {
   data: { name: string; toJSON(): RESTPostAPIChatInputApplicationCommandsJSONBody };
@@ -38,12 +38,14 @@ function devGuildIds(): string[] {
     .filter(id => /^\d{17,20}$/.test(id));
 }
 
-// Si la economía está apagada desde el panel, estos comandos solo avisan
+// Si la economía está apagada desde el panel, estos comandos solo avisan.
+// La comprobación corre antes del deferReply de cada comando, así que tiene un tiempo máximo
+// (isEconomyEnabledQuick) para no agotar los 3 segundos que da Discord para responder.
 function requireEconomy(commands: BotCommand[]): BotCommand[] {
   return commands.map(command => ({
     ...command,
     async execute(interaction: ChatInputCommandInteraction, bot: DiscordBot) {
-      if (interaction.guildId && !(await isEconomyEnabled(interaction.guildId))) {
+      if (interaction.guildId && !(await isEconomyEnabledQuick(interaction.guildId))) {
         await interaction.reply({ content: ECONOMY_DISABLED_MESSAGE, flags: MessageFlags.Ephemeral });
         return;
       }

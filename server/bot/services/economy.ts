@@ -60,14 +60,18 @@ export function parseAmount(raw: string | null | undefined): AmountRequest | nul
 
 export const AMOUNT_HINT = 'Escribe un número entero positivo (por ejemplo `500`) o `todo`.';
 
-// Serializa las operaciones económicas: cola global → cola del servidor → candado del usuario
+// Serializa las operaciones económicas: cola global → cola del servidor → candado del usuario.
+// Sin límite de tiempo a propósito (timeout: undefined anula los 120 s de la cola global): ese límite
+// solo rechaza la promesa, no cancela la transacción, que seguiría en la cola y se aplicaría después de
+// decirle al usuario que hubo un error (o dos veces si alguien reintenta). Así, la promesa termina
+// únicamente cuando la base de datos confirmó o descartó el cambio.
 export function economyTask<T>(guildId: string, userId: string, fn: () => Promise<T>): Promise<T> {
   return globalQueue.add(
     () => economyQueueFor(guildId).add(
       () => lockForUser(`${guildId}:${userId}`).runExclusive(fn),
-      { throwOnTimeout: true }
+      { timeout: undefined, throwOnTimeout: true }
     ),
-    { throwOnTimeout: true }
+    { timeout: undefined, throwOnTimeout: true }
   );
 }
 
@@ -449,21 +453,45 @@ export async function holdBet(guildId: string, userId: string, request: AmountRe
   });
 }
 
+// Falla al pagar una apuesta retenida. safeToRetry = true solo cuando es seguro que no se guardó nada.
+export class SettleError extends Error {
+  constructor(public readonly safeToRetry: boolean, cause: unknown) {
+    super(safeToRetry ? 'settleBet: la transacción no se aplicó' : 'settleBet: no se sabe si la transacción se aplicó', { cause });
+    this.name = 'SettleError';
+  }
+}
+
+// Error que PostgreSQL devolvió al rechazar una orden (no un corte de conexión): trae severidad y SQLSTATE
+function isStatementRejected(error: unknown): boolean {
+  const e = error as { severity?: unknown; code?: unknown } | null;
+  return !!e && e.severity === 'ERROR' && typeof e.code === 'string';
+}
+
 // …y al terminar se paga lo que corresponda (0 si perdió). Devuelve el saldo final.
+// Si falla lanza SettleError, que dice si se puede reintentar sin riesgo de pagar dos veces:
+//  - si el cuerpo de la transacción no terminó, nunca se envió COMMIT (drizzle hace ROLLBACK): no se aplicó;
+//  - si el cuerpo terminó, el fallo vino del COMMIT: solo es seguro si PostgreSQL lo rechazó con un ERROR.
+//    Un corte de conexión en ese momento deja la duda (pudo confirmarse), así que no se reintenta.
 export async function settleBet(guildId: string, userId: string, bet: number, payout: number): Promise<number> {
-  return db.transaction(async (tx) => {
-    const row = await lockAccount(tx, guildId, userId);
-    const wallet = toCoins(row.balance);
-    const paid = Math.min(Math.max(Math.floor(payout), 0), MAX_COINS - wallet);
-    const net = paid - bet;
-    await saveAccount(tx, row, {
-      balance: wallet + paid,
-      earned: net > 0 ? net : 0,
-      lost: net < 0 ? -net : 0,
-      win: net,
+  let bodyDone = false;
+  try {
+    return await db.transaction(async (tx) => {
+      const row = await lockAccount(tx, guildId, userId);
+      const wallet = toCoins(row.balance);
+      const paid = Math.min(Math.max(Math.floor(payout), 0), MAX_COINS - wallet);
+      const net = paid - bet;
+      await saveAccount(tx, row, {
+        balance: wallet + paid,
+        earned: net > 0 ? net : 0,
+        lost: net < 0 ? -net : 0,
+        win: net,
+      });
+      bodyDone = true;
+      return wallet + paid;
     });
-    return wallet + paid;
-  });
+  } catch (error) {
+    throw new SettleError(!bodyDone || isStatementRejected(error), error);
+  }
 }
 
 // ===== Recompensas por actividad (mensajes / subir de nivel) =====

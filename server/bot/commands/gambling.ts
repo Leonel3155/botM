@@ -21,6 +21,7 @@ import {
   holdBet,
   parseAmount,
   playInstantBet,
+  SettleError,
   settleBet,
 } from '../services/economy';
 import { resolveGuild, respond } from '../utils/interactions';
@@ -535,14 +536,20 @@ export const gamblingCommands = [
   }
 ];
 
-// Paga el resultado de una apuesta retenida; reintenta una vez si la base de datos falla
+// Paga el resultado de una apuesta retenida. Reintenta una vez, pero solo si es seguro que el primer
+// intento no guardó nada (SettleError.safeToRetry); ante la duda no reintenta, para no pagar dos veces.
 async function settleWithRetry(guildId: string, userId: string, bet: number, payout: number): Promise<number | null> {
   for (let attempt = 1; attempt <= 2; attempt++) {
     try {
       return await economyTask(guildId, userId, () => settleBet(guildId, userId, bet, payout));
     } catch (error) {
-      console.error(`Blackjack: no se pudo pagar (intento ${attempt}) a ${userId} en ${guildId}: apuesta ${bet}, pago ${payout}`, error);
-      if (attempt < 2) await new Promise(resolve => setTimeout(resolve, 1000));
+      const retry = attempt < 2 && error instanceof SettleError && error.safeToRetry;
+      console.error(
+        `Blackjack: no se pudo pagar (intento ${attempt}${retry ? ', se reintenta' : ', sin reintento'}) a ${userId} en ${guildId}: apuesta ${bet}, pago ${payout}`,
+        error
+      );
+      if (!retry) break;
+      await new Promise(resolve => setTimeout(resolve, 1000));
     }
   }
   return null;

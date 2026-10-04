@@ -1,7 +1,7 @@
 import { DiscordBot } from '../index';
 import { Events, GuildMember, Message, PartialGuildMember } from 'discord.js';
 import { storage } from '../../storage';
-import { getGuildSettings } from '../services/guildSettings';
+import { getGuildSettings, warmGuildSettings } from '../services/guildSettings';
 import { handleMemberAvailable, handleMemberPassedScreening, handleMemberWelcome } from '../services/welcome';
 import { ensureAccount, formatCoins, getPrestigeLevel, grantActivityRewards } from '../services/economy';
 import { MESSAGE_XP_MAX, MESSAGE_XP_MIN, PRESTIGE_MIN_LEVEL, awardXp, levelUpReward, prestigeMultiplier } from '../services/levels';
@@ -25,6 +25,17 @@ function milestoneText(level: number): string {
 }
 
 export function setupEvents(bot: DiscordBot) {
+  // Precarga los ajustes de cada servidor para que el filtro de economía de los comandos de barra
+  // responda desde memoria (corre antes de deferReply, dentro de los 3 s que da Discord)
+  const warmAll = () => {
+    void warmGuildSettings([...bot.client.guilds.cache.keys()]);
+  };
+  if (bot.client.isReady()) warmAll();
+  else bot.client.once(Events.ClientReady, warmAll);
+  bot.client.on(Events.GuildCreate, (guild) => {
+    void warmGuildSettings([guild.id]);
+  });
+
   // XP y monedas por participar
   bot.client.on(Events.MessageCreate, async (message: Message) => {
     if (message.author.bot || !message.guild) return;
