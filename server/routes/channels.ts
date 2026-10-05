@@ -30,10 +30,7 @@ const channelConfigSchema = z.object({
   moderationChannelId: optionalChannelId,
   welcomeChannelId: optionalChannelId,
   redditEnabled: z.boolean(),
-  twitterEnabled: z.boolean(),
-  // La música se eliminó, pero la página de canales actual aún manda este campo: se acepta y se ignora.
-  // Quitarlo cuando la página nueva deje de enviarlo.
-  musicChannelId: z.union([z.string(), z.null()])
+  twitterEnabled: z.boolean()
 }).partial().strict();
 
 // Canales que se muestran en el panel
