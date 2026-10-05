@@ -1,364 +1,297 @@
-import { useState } from "react";
-import { useSelectedGuild } from "@/lib/guild";
-import { useQuery, useMutation } from "@tanstack/react-query";
-import Layout from "@/components/layout";
-import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card";
+import { useMemo, useState } from "react";
+import { useQuery } from "@tanstack/react-query";
+import { Plus, RefreshCw, Search, Terminal, X } from "lucide-react";
+import {
+  CUSTOM_COMMAND_LIMITS,
+  type CustomCommandItem,
+  type CustomCommandsResponse,
+  type DashboardStatsResponse,
+} from "@shared/api";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
-import { Textarea } from "@/components/ui/textarea";
-import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from "@/components/ui/table";
-import { Badge } from "@/components/ui/badge";
-import { Switch } from "@/components/ui/switch";
-import { Dialog, DialogContent, DialogDescription, DialogHeader, DialogTitle, DialogTrigger } from "@/components/ui/dialog";
-import { Form, FormControl, FormDescription, FormField, FormItem, FormLabel, FormMessage } from "@/components/ui/form";
-import { useForm } from "react-hook-form";
-import { zodResolver } from "@hookform/resolvers/zod";
-import { z } from "zod";
-import { Plus, Edit, Trash2, Command, Hash } from "lucide-react";
-import { apiRequest, queryClient } from "@/lib/queryClient";
-import { useToast } from "@/hooks/use-toast";
+import { Skeleton } from "@/components/ui/skeleton";
+import { Tooltip, TooltipContent, TooltipTrigger } from "@/components/ui/tooltip";
+import { ApiErrorState } from "@/components/api-error-state";
+import { EmptyState } from "@/components/empty-state";
+import { PageHeader } from "@/components/page-header";
+import { CommandCard } from "@/components/comandos/command-card";
+import { CommandFormDialog, type CommandDraft } from "@/components/comandos/command-form-dialog";
+import { HowToCard, UsageCard } from "@/components/comandos/command-overview";
+import {
+  DEFAULT_PREFIX,
+  customCommandsKey,
+  previewValues,
+  reservedNameSet,
+} from "@/components/comandos/utils";
+import { useSelectedGuild } from "@/lib/guild";
+import { queryClient } from "@/lib/queryClient";
+import { cn } from "@/lib/utils";
 
-interface CustomCommand {
-  id: string;
-  name: string;
-  description?: string;
-  response: string;
-  enabled: boolean;
-  uses: number;
-  createdAt: string;
+/** Ideas para el primer comando: solo rellenan el nombre y la descripción; la respuesta la escribes tú. */
+const IDEAS: CommandDraft[] = [
+  { name: "reglas", description: "Las normas del servidor" },
+  { name: "redes", description: "Dónde más nos pueden seguir" },
+  { name: "invitacion", description: "Enlace para invitar a más gente" },
+];
+
+/** Miembros del servidor si el resumen ya los trajo (para la vista previa); no se piden aparte. */
+function cachedMemberCount(guildId: string): number | null {
+  const stats = queryClient.getQueryData<DashboardStatsResponse>(["/api/dashboard", guildId, "stats"]);
+  const count = stats?.guild?.memberCount;
+  return typeof count === "number" && Number.isFinite(count) ? count : null;
 }
 
-const commandSchema = z.object({
-  name: z.string()
-    .min(1, "Command name is required")
-    .max(32, "Command name must be 32 characters or less")
-    .regex(/^[a-z0-9_-]+$/, "Only lowercase letters, numbers, hyphens, and underscores allowed"),
-  description: z.string().max(100, "Description must be 100 characters or less").optional(),
-  response: z.string()
-    .min(1, "Response is required")
-    .max(2000, "Response must be 2000 characters or less")
-});
+function matches(command: CustomCommandItem, term: string, prefix: string): boolean {
+  return (
+    `${prefix}${command.name}`.includes(term) ||
+    command.name.includes(term) ||
+    (command.description?.toLowerCase().includes(term) ?? false) ||
+    command.response.toLowerCase().includes(term)
+  );
+}
+
+function LoadingState() {
+  return (
+    <div className="space-y-8" aria-busy="true" aria-label="Cargando comandos">
+      <div className="grid grid-cols-1 gap-6 lg:grid-cols-3">
+        <Skeleton className="h-64 rounded-xl lg:col-span-2" />
+        <Skeleton className="h-40 rounded-xl" />
+      </div>
+      <div className="space-y-4">
+        <Skeleton className="h-7 w-40" />
+        <div className="grid grid-cols-1 gap-4 md:grid-cols-2 xl:grid-cols-3">
+          {[0, 1, 2].map((i) => (
+            <Skeleton key={i} className="h-56 rounded-xl" />
+          ))}
+        </div>
+      </div>
+    </div>
+  );
+}
 
 export default function CustomCommands() {
-  // El servidor se elige en el menú lateral
-  const { guildId: selectedGuildId } = useSelectedGuild();
-  const [isCreateOpen, setIsCreateOpen] = useState(false);
-  const [editingCommand, setEditingCommand] = useState<CustomCommand | null>(null);
-  const { toast } = useToast();
+  const { guildId, guild } = useSelectedGuild();
+  const [dialogOpen, setDialogOpen] = useState(false);
+  const [editing, setEditing] = useState<CustomCommandItem | null>(null);
+  const [draft, setDraft] = useState<CommandDraft | null>(null);
+  const [search, setSearch] = useState("");
 
-  const form = useForm<z.infer<typeof commandSchema>>({
-    resolver: zodResolver(commandSchema),
-    defaultValues: {
-      name: "",
-      description: "",
-      response: ""
-    }
+  // Con la misma clave que invalida el aviso en vivo "customCommandsUpdated"
+  const query = useQuery<CustomCommandsResponse>({
+    queryKey: customCommandsKey(guildId),
+    // Siempre se revisa al entrar: el prefijo se cambia en Ajustes (y ese aviso en vivo no toca esta lista)
+    // y los usos los cuenta el bot, así que al volver a la pestaña también se ponen al día
+    staleTime: 0,
+    refetchOnWindowFocus: true,
   });
 
-  const { data: commands, isLoading } = useQuery<CustomCommand[]>({
-    queryKey: ['/api/custom-commands', selectedGuildId],
-    enabled: !!selectedGuildId,
-    staleTime: 30000,
-  });
+  const data = query.data;
+  const prefix = data?.prefix || DEFAULT_PREFIX;
+  const commands = useMemo(() => data?.commands ?? [], [data?.commands]);
+  const maxCommands = data?.maxCommands ?? CUSTOM_COMMAND_LIMITS.maxPerGuild;
+  const atLimit = commands.length >= maxCommands;
+  const enabledCount = commands.filter((command) => command.enabled).length;
+  const reserved = useMemo(() => reservedNameSet(data?.reservedNames), [data?.reservedNames]);
+  const existingNames = useMemo(() => commands.map((command) => command.name), [commands]);
 
-  const createMutation = useMutation({
-    mutationFn: (data: z.infer<typeof commandSchema>) =>
-      apiRequest('POST', `/api/custom-commands/${selectedGuildId}`, data).then(res => res.json()),
-    onSuccess: () => {
-      queryClient.invalidateQueries({ queryKey: ['/api/custom-commands', selectedGuildId] });
-      setIsCreateOpen(false);
-      form.reset();
-      toast({
-        title: "Command created",
-        description: "Your custom command has been created successfully.",
-      });
-    },
-    onError: () => {
-      toast({
-        title: "Error",
-        description: "Failed to create command. Please try again.",
-        variant: "destructive",
-      });
-    }
-  });
+  const memberCount = cachedMemberCount(guildId);
+  const guildName = guild?.name ?? null;
+  const preview = useMemo(() => previewValues(guildName, memberCount), [guildName, memberCount]);
 
-  const updateMutation = useMutation({
-    mutationFn: ({ id, data }: { id: string; data: z.infer<typeof commandSchema> }) =>
-      apiRequest('PATCH', `/api/custom-commands/${selectedGuildId}/${id}`, data).then(res => res.json()),
-    onSuccess: () => {
-      queryClient.invalidateQueries({ queryKey: ['/api/custom-commands', selectedGuildId] });
-      setEditingCommand(null);
-      form.reset();
-      toast({
-        title: "Command updated",
-        description: "Your custom command has been updated successfully.",
-      });
-    }
-  });
+  const term = search.trim().toLowerCase();
+  const filtered = useMemo(
+    () => (term ? commands.filter((command) => matches(command, term, prefix.toLowerCase())) : commands),
+    [commands, term, prefix],
+  );
 
-  const toggleMutation = useMutation({
-    mutationFn: ({ id, enabled }: { id: string; enabled: boolean }) =>
-      apiRequest('PATCH', `/api/custom-commands/${selectedGuildId}/${id}/toggle`, { enabled }).then(res => res.json()),
-    onSuccess: () => {
-      queryClient.invalidateQueries({ queryKey: ['/api/custom-commands', selectedGuildId] });
-    }
-  });
-
-  const deleteMutation = useMutation({
-    mutationFn: (id: string) =>
-      apiRequest('DELETE', `/api/custom-commands/${selectedGuildId}/${id}`).then(res => res.json()),
-    onSuccess: () => {
-      queryClient.invalidateQueries({ queryKey: ['/api/custom-commands', selectedGuildId] });
-      toast({
-        title: "Command deleted",
-        description: "The custom command has been deleted successfully.",
-      });
-    }
-  });
-
-  const handleSubmit = (data: z.infer<typeof commandSchema>) => {
-    if (editingCommand) {
-      updateMutation.mutate({ id: editingCommand.id, data });
-    } else {
-      createMutation.mutate(data);
-    }
+  const openCreate = (idea: CommandDraft | null = null) => {
+    setEditing(null);
+    setDraft(idea);
+    setDialogOpen(true);
+  };
+  const openEdit = (command: CustomCommandItem) => {
+    setDraft(null);
+    setEditing(command);
+    setDialogOpen(true);
   };
 
-  const handleEdit = (command: CustomCommand) => {
-    setEditingCommand(command);
-    form.reset({
-      name: command.name,
-      description: command.description || "",
-      response: command.response
-    });
-    setIsCreateOpen(true);
-  };
+  const newButton = atLimit ? (
+    <Tooltip>
+      <TooltipTrigger asChild>
+        {/* span: un botón deshabilitado no recibe el hover del tooltip */}
+        <span tabIndex={0} className="inline-flex">
+          <Button disabled data-testid="button-new-command">
+            <Plus />
+            Nuevo comando
+          </Button>
+        </span>
+      </TooltipTrigger>
+      <TooltipContent className="max-w-xs">
+        Ya tienes {maxCommands} comandos, el máximo. Borra uno para crear otro.
+      </TooltipContent>
+    </Tooltip>
+  ) : (
+    <Button onClick={() => openCreate()} data-testid="button-new-command">
+      <Plus />
+      Nuevo comando
+    </Button>
+  );
 
-  const handleCloseDialog = () => {
-    setIsCreateOpen(false);
-    setEditingCommand(null);
-    form.reset();
-  };
+  const header = (
+    <PageHeader
+      title="Comandos personalizados"
+      description="Respuestas listas que el bot da por ti cuando alguien escribe un comando en tu servidor."
+      actions={
+        <>
+          <Button
+            variant="outline"
+            onClick={() => void query.refetch()}
+            disabled={query.isFetching}
+            data-testid="button-refresh-commands"
+          >
+            <RefreshCw className={cn(query.isFetching && "animate-spin")} />
+            Actualizar
+          </Button>
+          {query.isSuccess && newButton}
+        </>
+      }
+    />
+  );
+
+  if (query.isLoading) {
+    return (
+      <div className="space-y-8">
+        {header}
+        <LoadingState />
+      </div>
+    );
+  }
+
+  if (query.isError || !data) {
+    return (
+      <div className="space-y-8">
+        {header}
+        <ApiErrorState error={query.error} onRetry={() => void query.refetch()} />
+      </div>
+    );
+  }
+
+  const exampleName = commands.find((command) => command.enabled)?.name ?? null;
 
   return (
-    <Layout>
-      <div className="space-y-6">
-        <div className="flex items-center justify-between">
-          <div>
-            <h1 className="text-3xl font-bold text-white" data-testid="text-page-title">
-              Custom Commands
-            </h1>
-            <p className="text-discord-muted mt-1">
-              Create and manage custom commands for your server
-            </p>
-          </div>
-          <Dialog open={isCreateOpen} onOpenChange={handleCloseDialog}>
-            <DialogTrigger asChild>
-              <Button className="discord-button" data-testid="button-create-command">
-                <Plus className="w-4 h-4 mr-2" />
-                Create Command
-              </Button>
-            </DialogTrigger>
-            <DialogContent className="bg-discord-darker border-discord-grey">
-              <DialogHeader>
-                <DialogTitle className="text-white">
-                  {editingCommand ? "Edit Command" : "Create New Command"}
-                </DialogTitle>
-                <DialogDescription className="text-discord-muted">
-                  {editingCommand ? "Update your custom command." : "Create a new custom command for your server."}
-                </DialogDescription>
-              </DialogHeader>
-              <Form {...form}>
-                <form onSubmit={form.handleSubmit(handleSubmit)} className="space-y-4">
-                  <FormField
-                    control={form.control}
-                    name="name"
-                    render={({ field }) => (
-                      <FormItem>
-                        <FormLabel className="text-white">Command Name</FormLabel>
-                        <FormControl>
-                          <div className="relative">
-                            <Hash className="absolute left-3 top-1/2 transform -translate-y-1/2 w-4 h-4 text-discord-muted" />
-                            <Input 
-                              {...field} 
-                              className="bg-discord-dark border-discord-grey text-white pl-10"
-                              placeholder="mycommand"
-                              data-testid="input-command-name"
-                            />
-                          </div>
-                        </FormControl>
-                        <FormDescription className="text-discord-muted text-sm">
-                          Lowercase letters, numbers, hyphens, and underscores only
-                        </FormDescription>
-                        <FormMessage />
-                      </FormItem>
-                    )}
-                  />
-                  <FormField
-                    control={form.control}
-                    name="description"
-                    render={({ field }) => (
-                      <FormItem>
-                        <FormLabel className="text-white">Description (Optional)</FormLabel>
-                        <FormControl>
-                          <Input 
-                            {...field} 
-                            className="bg-discord-dark border-discord-grey text-white"
-                            placeholder="What does this command do?"
-                            data-testid="input-command-description"
-                          />
-                        </FormControl>
-                        <FormMessage />
-                      </FormItem>
-                    )}
-                  />
-                  <FormField
-                    control={form.control}
-                    name="response"
-                    render={({ field }) => (
-                      <FormItem>
-                        <FormLabel className="text-white">Response</FormLabel>
-                        <FormControl>
-                          <Textarea 
-                            {...field} 
-                            className="bg-discord-dark border-discord-grey text-white resize-none"
-                            rows={4}
-                            placeholder="The message the bot will send when this command is used"
-                            data-testid="textarea-command-response"
-                          />
-                        </FormControl>
-                        <FormDescription className="text-discord-muted text-sm">
-                          You can use {"{user}"} to mention the command user
-                        </FormDescription>
-                        <FormMessage />
-                      </FormItem>
-                    )}
-                  />
-                  <div className="flex justify-end space-x-3 pt-4">
-                    <Button 
-                      type="button" 
-                      variant="secondary" 
-                      onClick={handleCloseDialog}
-                      data-testid="button-cancel"
-                    >
-                      Cancel
-                    </Button>
-                    <Button 
-                      type="submit" 
-                      className="discord-button"
-                      disabled={createMutation.isPending || updateMutation.isPending}
-                      data-testid="button-submit"
-                    >
-                      {editingCommand ? "Update Command" : "Create Command"}
-                    </Button>
-                  </div>
-                </form>
-              </Form>
-            </DialogContent>
-          </Dialog>
+    <div className="space-y-8">
+      {header}
+
+      <div className="grid grid-cols-1 gap-6 lg:grid-cols-3">
+        <HowToCard prefix={prefix} exampleName={exampleName} className="lg:col-span-2" />
+        <UsageCard used={commands.length} max={maxCommands} enabled={enabledCount} className="self-start" />
+      </div>
+
+      <section className="space-y-4" aria-labelledby="heading-commands">
+        <div className="flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between">
+          <h2 id="heading-commands" className="text-lg font-semibold text-foreground">
+            Tus comandos
+            {term && commands.length > 0 && (
+              <span className="ml-2 font-mono text-sm font-normal text-muted-foreground">
+                {filtered.length} de {commands.length}
+              </span>
+            )}
+          </h2>
+          {commands.length > 0 && (
+            <div className="relative w-full sm:w-72">
+              <Search
+                className="pointer-events-none absolute left-3 top-1/2 h-4 w-4 -translate-y-1/2 text-muted-foreground"
+                aria-hidden="true"
+              />
+              <Input
+                type="search"
+                value={search}
+                onChange={(event) => setSearch(event.target.value)}
+                placeholder="Buscar por nombre o texto"
+                aria-label="Buscar comandos"
+                className="pl-9"
+                data-testid="input-search-commands"
+              />
+            </div>
+          )}
         </div>
 
-        <Card className="discord-card">
-          <CardHeader>
-            <CardTitle className="text-white flex items-center">
-              <Command className="w-5 h-5 mr-2" />
-              Server Commands
-            </CardTitle>
-            <CardDescription className="text-discord-muted">
-              Manage custom commands for your server. Users can trigger these with the prefix !
-            </CardDescription>
-          </CardHeader>
-          <CardContent>
-            {isLoading ? (
-              <div className="flex items-center justify-center h-32">
-                <div className="text-discord-muted">Loading commands...</div>
-              </div>
-            ) : !commands || commands.length === 0 ? (
-              <div className="text-center py-12">
-                <Command className="w-12 h-12 text-discord-muted mx-auto mb-4" />
-                <h3 className="text-lg font-medium text-white mb-2">No custom commands</h3>
-                <p className="text-discord-muted mb-4">
-                  Create your first custom command to get started
+        {commands.length === 0 ? (
+          <EmptyState
+            icon={Terminal}
+            title="Aún no tienes comandos personalizados"
+            description={
+              <>
+                <p>
+                  Deja respuestas listas para lo que más te preguntan y el bot contestará por ti, aunque no estés
+                  conectado. Elige una idea para empezar o crea el tuyo desde cero:
                 </p>
-              </div>
-            ) : (
-              <div className="overflow-x-auto">
-                <Table>
-                  <TableHeader>
-                    <TableRow className="border-discord-grey hover:bg-discord-darker">
-                      <TableHead className="text-discord-light-grey">Command</TableHead>
-                      <TableHead className="text-discord-light-grey">Description</TableHead>
-                      <TableHead className="text-discord-light-grey">Uses</TableHead>
-                      <TableHead className="text-discord-light-grey">Status</TableHead>
-                      <TableHead className="text-discord-light-grey">Actions</TableHead>
-                    </TableRow>
-                  </TableHeader>
-                  <TableBody>
-                    {commands.map((command) => (
-                      <TableRow key={command.id} className="border-discord-grey hover:bg-discord-darker/50">
-                        <TableCell>
-                          <div className="flex items-center space-x-2">
-                            <span className="text-discord-muted font-mono">!</span>
-                            <span className="text-white font-medium" data-testid={`text-command-${command.id}`}>
-                              {command.name}
-                            </span>
-                          </div>
-                        </TableCell>
-                        <TableCell>
-                          <span className="text-discord-light-grey text-sm" data-testid={`text-description-${command.id}`}>
-                            {command.description || "No description"}
-                          </span>
-                        </TableCell>
-                        <TableCell>
-                          <Badge variant="secondary" className="bg-discord-grey text-discord-light-grey">
-                            {command.uses}
-                          </Badge>
-                        </TableCell>
-                        <TableCell>
-                          <div className="flex items-center space-x-2">
-                            <Switch
-                              checked={command.enabled}
-                              onCheckedChange={(checked) => 
-                                toggleMutation.mutate({ id: command.id, enabled: checked })
-                              }
-                              data-testid={`switch-enabled-${command.id}`}
-                            />
-                            <span className={`text-sm ${command.enabled ? 'text-discord-success' : 'text-discord-muted'}`}>
-                              {command.enabled ? 'Active' : 'Disabled'}
-                            </span>
-                          </div>
-                        </TableCell>
-                        <TableCell>
-                          <div className="flex items-center space-x-2">
-                            <Button
-                              variant="ghost"
-                              size="icon"
-                              onClick={() => handleEdit(command)}
-                              className="text-discord-light-grey hover:text-white hover:bg-discord-grey"
-                              data-testid={`button-edit-${command.id}`}
-                            >
-                              <Edit className="w-4 h-4" />
-                            </Button>
-                            <Button
-                              variant="ghost"
-                              size="icon"
-                              onClick={() => deleteMutation.mutate(command.id)}
-                              className="text-discord-error hover:text-white hover:bg-discord-error/20"
-                              data-testid={`button-delete-${command.id}`}
-                            >
-                              <Trash2 className="w-4 h-4" />
-                            </Button>
-                          </div>
-                        </TableCell>
-                      </TableRow>
-                    ))}
-                  </TableBody>
-                </Table>
-              </div>
-            )}
-          </CardContent>
-        </Card>
-      </div>
-    </Layout>
+                <div className="mt-4 flex flex-wrap justify-center gap-2">
+                  {IDEAS.map((idea) => (
+                    <Button
+                      key={idea.name}
+                      variant="outline"
+                      size="sm"
+                      onClick={() => openCreate(idea)}
+                      aria-label={`Crear ${prefix}${idea.name}: ${idea.description}`}
+                      data-testid={`button-idea-${idea.name}`}
+                    >
+                      <span className="font-mono text-primary">
+                        {prefix}
+                        {idea.name}
+                      </span>
+                    </Button>
+                  ))}
+                </div>
+              </>
+            }
+            action={
+              <Button onClick={() => openCreate()} data-testid="button-create-first-command">
+                <Plus />
+                Crear mi primer comando
+              </Button>
+            }
+            testId="state-no-commands"
+          />
+        ) : filtered.length === 0 ? (
+          <EmptyState
+            icon={Search}
+            title="Ningún comando coincide"
+            description={
+              <>
+                No encontramos nada con “<span className="break-all text-foreground">{search.trim()}</span>” en el
+                nombre, la descripción ni la respuesta.
+              </>
+            }
+            action={
+              <Button variant="outline" onClick={() => setSearch("")}>
+                <X />
+                Limpiar búsqueda
+              </Button>
+            }
+            testId="state-no-search-results"
+          />
+        ) : (
+          <div className="grid grid-cols-1 gap-4 md:grid-cols-2 xl:grid-cols-3" data-testid="list-commands">
+            {filtered.map((command) => (
+              <CommandCard key={command.id} command={command} guildId={guildId} prefix={prefix} onEdit={openEdit} />
+            ))}
+          </div>
+        )}
+      </section>
+
+      <CommandFormDialog
+        open={dialogOpen}
+        onOpenChange={setDialogOpen}
+        guildId={guildId}
+        prefix={prefix}
+        botInGuild={guild?.botInGuild ?? true}
+        reservedNames={reserved}
+        existingNames={existingNames}
+        command={editing}
+        draft={draft}
+        previewValues={preview}
+      />
+    </div>
   );
 }
