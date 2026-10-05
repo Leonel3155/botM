@@ -311,6 +311,13 @@ export function describeMoment(date: Date, timeZone: string, now: Date = new Dat
   return `el ${calendarLabel(target.year, target.month, target.day, today.year)} ${at}`;
 }
 
+/** ¿El día "YYYY-MM-DD" es hoy en esa zona? (la misma comparación que hace el bot con la última pregunta) */
+export function isLocalToday(value: string | null | undefined, timeZone: string, now: Date = new Date()): boolean {
+  if (!value) return false;
+  const today = getZonedParts(now, timeZone);
+  return today !== null && value === dateKey(today);
+}
+
 /** Día "YYYY-MM-DD" (en la zona del servidor) → "hoy", "ayer" o "el sábado 4 de octubre". */
 export function describeLocalDay(value: string, timeZone: string, now: Date = new Date()): string | null {
   const match = /^(\d{4})-(\d{2})-(\d{2})$/.exec(value);

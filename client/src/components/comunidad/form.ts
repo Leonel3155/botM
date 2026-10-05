@@ -82,6 +82,27 @@ export function normalizeWelcomeMessage(message: string | null | undefined): str
   return trimmed ? trimmed : null;
 }
 
+/**
+ * Mensaje que hay que guardar: null si está vacío o es igual al predeterminado del bot
+ * (así, si el bot cambia su mensaje predeterminado, el servidor lo recibe solo).
+ */
+export function effectiveWelcomeMessage(
+  message: string | null | undefined,
+  defaultMessage: string | null | undefined,
+): string | null {
+  const normalized = normalizeWelcomeMessage(message);
+  return normalized !== null && normalized === normalizeWelcomeMessage(defaultMessage) ? null : normalized;
+}
+
+/** ¿Los dos mensajes hacen lo mismo? (vacío y el texto predeterminado cuentan como iguales) */
+export function sameWelcomeMessage(
+  a: string | null | undefined,
+  b: string | null | undefined,
+  defaultMessage: string | null | undefined,
+): boolean {
+  return effectiveWelcomeMessage(a, defaultMessage) === effectiveWelcomeMessage(b, defaultMessage);
+}
+
 export interface EngagementChanges {
   body: EngagementUpdateRequest;
   welcomeChanged: boolean;
@@ -96,8 +117,10 @@ export function buildEngagementUpdate(
   const welcome: Partial<WelcomeSettings> = {};
   if (values.welcome.enabled !== saved.welcome.enabled) welcome.enabled = values.welcome.enabled;
   if ((values.welcome.channelId || null) !== saved.welcome.channelId) welcome.channelId = values.welcome.channelId || null;
-  const message = normalizeWelcomeMessage(values.welcome.message);
-  if (message !== normalizeWelcomeMessage(saved.welcome.message)) welcome.message = message;
+  const defaultMessage = saved.welcome.defaultMessage;
+  if (!sameWelcomeMessage(values.welcome.message, saved.welcome.message, defaultMessage)) {
+    welcome.message = effectiveWelcomeMessage(values.welcome.message, defaultMessage);
+  }
   if ((values.welcome.roleId || null) !== saved.welcome.roleId) welcome.roleId = values.welcome.roleId || null;
 
   const question: Partial<DailyQuestionSettings> = {};
@@ -130,8 +153,9 @@ function mergeSection<T extends object>(
 ): T {
   const merged = { ...current };
   for (const key of Object.keys(next) as (keyof T)[]) {
-    // Campo que la persona no tocó (sigue como estaba) → toma el valor nuevo del servidor
-    if (same(key, current[key], base[key])) merged[key] = next[key];
+    // Campo que la persona no tocó (sigue como estaba) → toma el valor nuevo del servidor,
+    // salvo que el nuevo signifique lo mismo (así no se vacía el texto predeterminado que está editando)
+    if (same(key, current[key], base[key]) && !same(key, current[key], next[key])) merged[key] = next[key];
   }
   return merged;
 }
@@ -139,14 +163,20 @@ function mergeSection<T extends object>(
 /**
  * Llegó una versión nueva del servidor (se guardó, o alguien cambió algo desde Discord):
  * los campos que la persona no tocó se actualizan y sus cambios sin guardar se respetan.
+ * `defaultMessage` es el mensaje predeterminado del bot (vacío y ese texto cuentan como iguales).
  */
 export function mergeFormValues(
   current: EngagementFormValues,
   base: EngagementFormValues,
   next: EngagementFormValues,
+  defaultMessage: string | null,
 ): EngagementFormValues {
   return {
-    welcome: mergeSection(current.welcome, base.welcome, next.welcome, (_key, a, b) => Object.is(a, b)),
+    welcome: mergeSection(current.welcome, base.welcome, next.welcome, (key, a, b) =>
+      key === "message"
+        ? sameWelcomeMessage(a as string | null, b as string | null, defaultMessage)
+        : Object.is(a, b),
+    ),
     dailyQuestion: mergeSection(current.dailyQuestion, base.dailyQuestion, next.dailyQuestion, (key, a, b) =>
       key === "timezone" ? sameTimezone(a as string, b as string) : Object.is(a, b),
     ),

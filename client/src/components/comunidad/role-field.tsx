@@ -39,10 +39,12 @@ interface RoleFieldProps {
   rolesQuery: UseQueryResult<DiscordRolesResponse>;
   savedRoleId: string | null;
   savedProblem: string | null;
+  /** Interruptor de bienvenida (sin guardar incluido): el rol se sigue dando aunque esté apagada */
+  welcomeEnabled: boolean;
 }
 
 /** Rol automático de bienvenida (opcional). Los roles que no se pueden dar salen en gris con el motivo. */
-export function RoleField({ control, rolesQuery, savedRoleId, savedProblem }: RoleFieldProps) {
+export function RoleField({ control, rolesQuery, savedRoleId, savedProblem, welcomeEnabled }: RoleFieldProps) {
   const roles = rolesQuery.data ?? [];
   const blocked = roles.filter((role) => !role.assignable);
   // Si ningún rol se puede usar por el mismo motivo (p. ej. te falta Gestionar roles), lo decimos una vez
@@ -115,6 +117,12 @@ export function RoleField({ control, rolesQuery, savedRoleId, savedProblem }: Ro
             <FormDescription>
               Se lo doy a cada persona nueva (si tu servidor pide aceptar las reglas, se lo doy al aceptarlas).
             </FormDescription>
+            {value && !welcomeEnabled && (
+              <p className="text-xs text-muted-foreground" data-testid="text-role-while-off">
+                Ojo: aunque la bienvenida esté apagada, sigo dando este rol a quien entra. Si no lo quieres, elige «Sin rol
+                automático».
+              </p>
+            )}
             {rolesQuery.isSuccess && roles.length === 0 && (
               <p className="text-xs text-muted-foreground">Este servidor todavía no tiene roles (aparte de @everyone).</p>
             )}

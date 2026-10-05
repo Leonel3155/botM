@@ -40,6 +40,7 @@ import {
   findTimezoneOption,
   formatHour12,
   hourHint,
+  isLocalToday,
   timezoneShortLabel,
 } from "./time";
 
@@ -108,23 +109,40 @@ export function DailyQuestionCard({ guildId, saved, dirty, botInGuild, channelsQ
       now,
     );
   }
+  // Si algo impide publicar, no prometemos una hora (el bot no publicaría y la hora "ya pasó" se repetiría cada minuto)
+  const effectiveChannelId = dirty ? (draft?.channelId ?? null) : saved.channelId;
+  const effectiveChannel = effectiveChannelId
+    ? channelsQuery.data?.find((channel) => channel.id === effectiveChannelId)
+    : undefined;
+  let scheduleBlocked: string | null = null;
+  if (nextPost) {
+    if (!botInGuild) {
+      scheduleBlocked = "No saldrá mientras el bot no esté conectado al servidor.";
+    } else if ((effectiveChannelId === saved.channelId && saved.channelProblem) || effectiveChannel?.botCanPost === false) {
+      scheduleBlocked = "No saldrá hasta que se arregle el problema con el canal: ahora no puedo publicar en él.";
+    }
+  }
   const scheduleTimezone = dirty && draft?.timezone ? draft.timezone : saved.timezone;
   const imminent = nextPost !== null && nextPost.getTime() - now.getTime() <= 60_000;
   const nextText = nextPost && !imminent ? describeMoment(nextPost, scheduleTimezone, now) : null;
   const nextViewerText = nextPost && !imminent ? describeInViewerZone(nextPost, scheduleTimezone, now) : null;
   const lastPostedText = saved.lastPosted ? describeLocalDay(saved.lastPosted, saved.timezone, now) : null;
+  // "Publicar ahora" publica aunque hoy ya haya salido una: entonces es una pregunta extra
+  const postedToday = isLocalToday(saved.lastPosted, saved.timezone, now);
 
   // ---- Publicar una ahora ----
   const postNow = useMutation({
-    mutationFn: async () => {
+    mutationFn: async (_variables: { extra: boolean }) => {
       const res = await apiRequest("POST", `/api/guilds/${guildId}/engagement/post-question-now`);
       return (await res.json()) as PostQuestionNowResponse;
     },
-    onSuccess: (data) => {
+    onSuccess: (data, { extra }) => {
       const where = channelLabel(channelsQuery.data, data.channelId) ?? "el canal de la pregunta";
       toast({
         title: `¡Publiqué la pregunta #${numberFormat.format(data.questionNumber)}!`,
-        description: `Ya está en ${where}. Cuenta como la pregunta de hoy.`,
+        description: extra
+          ? `Ya está en ${where}. Fue una pregunta extra de hoy.`
+          : `Ya está en ${where}. Cuenta como la pregunta de hoy.`,
         action: discordLinkAction(data.messageUrl),
       });
       // Cambian "última pregunta", el contador y la próxima publicación
@@ -145,7 +163,21 @@ export function DailyQuestionCard({ guildId, saved, dirty, botInGuild, channelsQ
   let postBlocked: string | null = null;
   if (!botInGuild) postBlocked = "El bot tiene que estar en el servidor y conectado para publicar.";
   else if (!saved.channelId) postBlocked = "Primero elige el canal de la pregunta y guarda.";
+  else if (saved.channelProblem) postBlocked = `No puedo publicar en el canal guardado: ${saved.channelProblem}`;
   else if (dirty) postBlocked = "Guarda tus cambios primero: se publica con lo que está guardado.";
+
+  const postWhere = savedChannelName ?? "el canal guardado";
+  const tomorrowText = saved.enabled ? ` Mañana sigo ${atHour12(saved.hour)}, como siempre.` : "";
+  const postNowText = postedToday
+    ? `Hoy ya salió una pregunta, así que esta sería una extra en ${postWhere}.${tomorrowText}`
+    : `Publico una pregunta ahora en ${postWhere}. Cuenta como la pregunta de hoy, así que hoy ya no saldrá otra.`;
+  const confirmText = postedToday
+    ? `La publico en ${postWhere} en este momento. Hoy ya salió una pregunta, así que esta sería una extra.${tomorrowText}`
+    : `La publico en ${postWhere} en este momento. Cuenta como la pregunta de hoy: ${
+        saved.enabled
+          ? `la automática de hoy ya no saldrá y mañana sigo ${atHour12(saved.hour)}.`
+          : "si activas la pregunta diaria, la siguiente saldrá mañana."
+      }`;
 
   return (
     <Card data-testid="card-daily-question">
@@ -323,7 +355,9 @@ export function DailyQuestionCard({ guildId, saved, dirty, botInGuild, channelsQ
               <dl className="divide-y divide-border" data-testid="info-daily-question">
                 {nextPost && (
                   <InfoRow label={dirty ? "Próxima pregunta (al guardar)" : "Próxima pregunta"}>
-                    {imminent ? (
+                    {scheduleBlocked ? (
+                      <InlineWarning>{scheduleBlocked}</InlineWarning>
+                    ) : imminent ? (
                       <span className="text-primary">
                         {dirty
                           ? "En cuanto guardes: ya pasó esa hora hoy y aún no hay pregunta de hoy."
@@ -360,10 +394,7 @@ export function DailyQuestionCard({ guildId, saved, dirty, botInGuild, channelsQ
             <div className="space-y-3 rounded-lg border border-border bg-background/40 p-4">
               <div className="space-y-1">
                 <p className="text-sm font-medium text-foreground">¿Quieres animar el chat ya?</p>
-                <p className="text-sm text-muted-foreground">
-                  {postBlocked ??
-                    `Publico una pregunta ahora en ${savedChannelName ?? "el canal guardado"}. Cuenta como la pregunta de hoy, así que hoy ya no saldrá otra.`}
-                </p>
+                <p className="text-sm text-muted-foreground">{postBlocked ?? postNowText}</p>
               </div>
               <AlertDialog open={confirmOpen} onOpenChange={setConfirmOpen}>
                 <AlertDialogTrigger asChild>
@@ -383,17 +414,17 @@ export function DailyQuestionCard({ guildId, saved, dirty, botInGuild, channelsQ
                 </AlertDialogTrigger>
                 <AlertDialogContent>
                   <AlertDialogHeader>
-                    <AlertDialogTitle>¿Publico una pregunta ahora?</AlertDialogTitle>
-                    <AlertDialogDescription>
-                      La publico en {savedChannelName ?? "el canal guardado"} en este momento. Cuenta como la pregunta
-                      de hoy: {saved.enabled
-                        ? `la automática de hoy ya no saldrá y mañana sigo ${atHour12(saved.hour)}.`
-                        : "si activas la pregunta diaria, la siguiente saldrá mañana."}
-                    </AlertDialogDescription>
+                    <AlertDialogTitle>
+                      {postedToday ? "¿Publico una pregunta extra?" : "¿Publico una pregunta ahora?"}
+                    </AlertDialogTitle>
+                    <AlertDialogDescription>{confirmText}</AlertDialogDescription>
                   </AlertDialogHeader>
                   <AlertDialogFooter>
                     <AlertDialogCancel>Cancelar</AlertDialogCancel>
-                    <AlertDialogAction onClick={() => postNow.mutate()} data-testid="button-confirm-post-question">
+                    <AlertDialogAction
+                      onClick={() => postNow.mutate({ extra: postedToday })}
+                      data-testid="button-confirm-post-question"
+                    >
                       Publicar ahora
                     </AlertDialogAction>
                   </AlertDialogFooter>

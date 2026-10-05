@@ -15,16 +15,17 @@ import { Card, CardContent } from "@/components/ui/card";
 import { FormControl, FormField, FormItem, FormLabel, FormMessage } from "@/components/ui/form";
 import { Switch } from "@/components/ui/switch";
 import { Textarea } from "@/components/ui/textarea";
+import { ToastAction } from "@/components/ui/toast";
 import { useToast } from "@/hooks/use-toast";
 import type { SessionUser } from "@/lib/auth";
 import type { UserGuild } from "@/lib/guild";
 import { apiRequest } from "@/lib/queryClient";
 import { cn } from "@/lib/utils";
 import { ChannelField, channelLabel } from "./channel-field";
-import type { EngagementFormValues } from "./form";
+import { sameWelcomeMessage, type EngagementFormValues } from "./form";
 import { discordLinkAction, retryAfterSecondsFrom, useCooldown } from "./hooks";
 import { RoleField, roleLabel } from "./role-field";
-import { InlineWarning, SectionHeader, type SectionStatus } from "./section-parts";
+import { SectionHeader, type SectionStatus } from "./section-parts";
 import { WelcomePreview } from "./welcome-preview";
 
 const MESSAGE_FIELD = "welcome.message" as const;
@@ -49,7 +50,16 @@ function welcomeStatus(
   channelName: string | null,
   roleName: string | null,
 ): SectionStatus {
+  // El rol automático funciona aparte del saludo (igual que en el bot): se da aunque la bienvenida esté apagada
+  const givesRole = !!saved.roleId && !saved.roleProblem;
+  const roleText = roleName ? `el rol ${roleName}` : "el rol automático";
   if (!saved.enabled) {
+    if (givesRole) {
+      return {
+        kind: "warning",
+        text: `Apagada: no saludo a nadie, pero sigo dando ${roleText} a quien entra (quítalo abajo si no lo quieres).`,
+      };
+    }
     return { kind: "offline", text: "Apagada: por ahora nadie recibe un saludo al entrar." };
   }
   if (!saved.channelId) {
@@ -59,7 +69,13 @@ function welcomeStatus(
     return { kind: "warning", text: `Activada, pero hay un problema: ${saved.channelProblem}` };
   }
   const where = channelName ? ` en ${channelName}` : "";
-  const role = roleName ? ` y le doy el rol ${roleName}` : "";
+  if (saved.roleId && saved.roleProblem) {
+    return {
+      kind: "warning",
+      text: `Activada: saludo a cada persona nueva${where}, pero no puedo dar ${roleText}. ${saved.roleProblem}`,
+    };
+  }
+  const role = givesRole && roleName ? ` y le doy el rol ${roleName}` : "";
   return { kind: "online", text: `Activada: saludo a cada persona nueva${where}${role}.` };
 }
 
@@ -80,6 +96,7 @@ export function WelcomeCard({
   const form = useFormContext<EngagementFormValues>();
   const message = useWatch({ control: form.control, name: MESSAGE_FIELD }) ?? "";
   const channelId = useWatch({ control: form.control, name: "welcome.channelId" });
+  const enabledDraft = useWatch({ control: form.control, name: "welcome.enabled" });
   const textareaRef = useRef<HTMLTextAreaElement | null>(null);
   // Última posición del cursor en el mensaje (null = nunca lo tocó: los marcadores van al final)
   const selectionRef = useRef<{ start: number; end: number } | null>(null);
@@ -94,6 +111,28 @@ export function WelcomeCard({
 
   const setMessage = (next: string) => {
     form.setValue(MESSAGE_FIELD, next, { shouldDirty: true, shouldValidate: form.formState.isSubmitted });
+  };
+
+  // Volver al predeterminado borra lo escrito: se puede deshacer desde el aviso
+  const resetToDefault = () => {
+    const previous = form.getValues(MESSAGE_FIELD) ?? "";
+    setMessage("");
+    selectionRef.current = null;
+    // Si lo que había ya era el predeterminado, no se pierde nada
+    if (sameWelcomeMessage(previous, null, saved.defaultMessage)) return;
+    toast({
+      title: "Volví al mensaje predeterminado",
+      description: "Si fue sin querer, recupera lo que habías escrito.",
+      action: (
+        <ToastAction
+          altText="Deshacer y recuperar el mensaje que habías escrito"
+          onClick={() => setMessage(previous)}
+          data-testid="button-welcome-undo-default"
+        >
+          Deshacer
+        </ToastAction>
+      ),
+    });
   };
 
   const insertPlaceholder = (key: string) => {
@@ -146,8 +185,13 @@ export function WelcomeCard({
 
   // Por qué no se puede probar ahora (null = se puede)
   let testBlocked: string | null = null;
-  if (!botInGuild) testBlocked = "El bot tiene que estar en el servidor y conectado para probarla.";
+  if (devMode) {
+    // La sesión de desarrollo no es una cuenta de Discord: el servidor siempre rechaza la prueba
+    testBlocked =
+      "Con el acceso de desarrollo no puedo probarla: la prueba te saluda a ti y esta sesión no es una cuenta real de Discord. Inicia sesión con Discord para probarla.";
+  } else if (!botInGuild) testBlocked = "El bot tiene que estar en el servidor y conectado para probarla.";
   else if (!saved.channelId) testBlocked = "Primero elige el canal de bienvenida y guarda.";
+  else if (saved.channelProblem) testBlocked = `No puedo publicar en el canal guardado: ${saved.channelProblem}`;
   else if (dirty) testBlocked = "Guarda tus cambios primero: la prueba usa lo que está guardado.";
 
   return (
@@ -265,7 +309,7 @@ export function WelcomeCard({
               </div>
               <div className="flex flex-wrap gap-2 pt-1">
                 {message.trim() ? (
-                  <Button type="button" variant="ghost" size="sm" onClick={() => setMessage("")} data-testid="button-welcome-default">
+                  <Button type="button" variant="ghost" size="sm" onClick={resetToDefault} data-testid="button-welcome-default">
                     <RotateCcw />
                     Volver al mensaje predeterminado
                   </Button>
@@ -289,6 +333,7 @@ export function WelcomeCard({
               rolesQuery={rolesQuery}
               savedRoleId={saved.roleId}
               savedProblem={saved.roleProblem}
+              welcomeEnabled={enabledDraft}
             />
           </div>
 
@@ -314,11 +359,6 @@ export function WelcomeCard({
               {testBlocked ??
                 `Publico una bienvenida de prueba contigo en ${savedChannelName ?? "el canal guardado"}, con el mensaje guardado. Funciona aunque esté apagada.`}
             </p>
-            {devMode && !testBlocked && (
-              <InlineWarning className="text-xs">
-                Entraste con el acceso de desarrollo: la prueba solo funciona si tu cuenta es miembro de este servidor.
-              </InlineWarning>
-            )}
           </div>
           <Button
             type="button"

@@ -45,7 +45,15 @@ function engagementKey(guildId: string) {
 }
 
 function ComunidadHeader({ actions }: { actions?: ReactNode }) {
-  return <PageHeader title={PAGE_TITLE} description={PAGE_DESCRIPTION} actions={actions} />;
+  // El título es largo: en celulares (360 px) no cabe en una línea, así que lo dejamos saltar de línea
+  // en lugar de cortarlo con "…" (PageHeader trunca por defecto).
+  return (
+    <PageHeader
+      title={<span className="block whitespace-normal break-words">{PAGE_TITLE}</span>}
+      description={PAGE_DESCRIPTION}
+      actions={actions}
+    />
+  );
 }
 
 function ComunidadSkeleton() {
@@ -163,10 +171,13 @@ function EngagementEditor({ guildId, saved, refreshing, onRefresh }: EngagementE
     const previous = baselineRef.current;
     if (previous === saved) return;
     baselineRef.current = saved;
-    form.reset(mergeFormValues(form.getValues(), toFormValues(previous), toFormValues(saved)), {
-      keepErrors: true,
-      keepIsSubmitted: true,
-    });
+    const merged = mergeFormValues(
+      form.getValues(),
+      toFormValues(previous),
+      toFormValues(saved),
+      saved.welcome.defaultMessage,
+    );
+    form.reset(merged, { keepErrors: true, keepIsSubmitted: true });
   }, [saved, form]);
 
   const values = form.watch();
@@ -193,7 +204,7 @@ function EngagementEditor({ guildId, saved, refreshing, onRefresh }: EngagementE
       const { warnings: returnedWarnings, ...settings } = data;
       baselineRef.current = settings;
       // Lo que cambiaste mientras se guardaba se respeta; el resto queda como lo guardó el servidor
-      form.reset(mergeFormValues(form.getValues(), submitted, toFormValues(settings)));
+      form.reset(mergeFormValues(form.getValues(), submitted, toFormValues(settings), settings.welcome.defaultMessage));
       queryClient.setQueryData<EngagementSettingsResponse>(engagementKey(guildId), settings);
       // El resumen muestra si están activadas y la próxima pregunta
       void queryClient.invalidateQueries({ queryKey: ["/api/guilds", guildId], exact: true });
