@@ -18,6 +18,7 @@ import Servidores from "@/pages/servidores";
 import NotFound from "@/pages/not-found";
 
 // El resto de secciones se descargan al abrirlas (el panel carga más rápido en el móvil)
+const Estadisticas = lazy(() => import("@/pages/estadisticas"));
 const Comunidad = lazy(() => import("@/pages/comunidad"));
 const Ajustes = lazy(() => import("@/pages/ajustes"));
 const Seguridad = lazy(() => import("@/pages/seguridad"));
@@ -31,6 +32,7 @@ const Channels = lazy(() => import("@/pages/channels"));
 // Páginas de un servidor: solo se muestran con un servidor elegido
 const GUILD_ROUTES: { path: string; component: ComponentType }[] = [
   { path: "/", component: Resumen },
+  { path: "/estadisticas", component: Estadisticas },
   { path: "/comunidad", component: Comunidad },
   { path: "/niveles", component: Levels },
   { path: "/economia", component: Economy },
