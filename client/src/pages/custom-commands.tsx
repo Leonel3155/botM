@@ -17,6 +17,7 @@ import { PageHeader } from "@/components/page-header";
 import { CommandCard } from "@/components/comandos/command-card";
 import { CommandFormDialog, type CommandDraft } from "@/components/comandos/command-form-dialog";
 import { HowToCard, UsageCard } from "@/components/comandos/command-overview";
+import { RefreshErrorAlert } from "@/components/comandos/refresh-error-alert";
 import {
   DEFAULT_PREFIX,
   customCommandsKey,
@@ -76,10 +77,11 @@ export default function CustomCommands() {
   const [draft, setDraft] = useState<CommandDraft | null>(null);
   const [search, setSearch] = useState("");
 
-  // Con la misma clave que invalida el aviso en vivo "customCommandsUpdated"
+  // Clave que shared/api.ts indica para el aviso en vivo "customCommandsUpdated" (lib/websocket.ts aún no lo
+  // atiende, ver customCommandsKey): mientras tanto, lo que mantiene la lista al día es lo de abajo
   const query = useQuery<CustomCommandsResponse>({
     queryKey: customCommandsKey(guildId),
-    // Siempre se revisa al entrar: el prefijo se cambia en Ajustes (y ese aviso en vivo no toca esta lista)
+    // Siempre se revisa al entrar: el prefijo se cambia en Ajustes (y el aviso en vivo de Ajustes no toca esta lista)
     // y los usos los cuenta el bot, así que al volver a la pestaña también se ponen al día
     staleTime: 0,
     refetchOnWindowFocus: true,
@@ -152,7 +154,7 @@ export default function CustomCommands() {
             <RefreshCw className={cn(query.isFetching && "animate-spin")} />
             Actualizar
           </Button>
-          {query.isSuccess && newButton}
+          {data && newButton}
         </>
       }
     />
@@ -167,7 +169,9 @@ export default function CustomCommands() {
     );
   }
 
-  if (query.isError || !data) {
+  // El error ocupa toda la página solo si no hay nada que mostrar. Si falla una actualización (al volver a la
+  // pestaña o tras un cambio) seguimos con la lista que ya teníamos y con el diálogo abierto, sin perder lo escrito
+  if (!data) {
     return (
       <div className="space-y-8">
         {header}
@@ -181,6 +185,15 @@ export default function CustomCommands() {
   return (
     <div className="space-y-8">
       {header}
+
+      {query.isError && (
+        <RefreshErrorAlert
+          error={query.error}
+          guildId={guildId}
+          onRetry={() => void query.refetch()}
+          retrying={query.isFetching}
+        />
+      )}
 
       <div className="grid grid-cols-1 gap-6 lg:grid-cols-3">
         <HowToCard prefix={prefix} exampleName={exampleName} className="lg:col-span-2" />

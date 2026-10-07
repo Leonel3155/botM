@@ -10,8 +10,10 @@ import { isApiError, queryClient } from "@/lib/queryClient";
 export const DEFAULT_PREFIX = "&";
 
 /**
- * Clave de react-query de GET /api/custom-commands/:guildId. El aviso en tiempo real
- * "customCommandsUpdated" invalida la ruta /api/custom-commands/<guildId>, que es esta.
+ * Clave de react-query de GET /api/custom-commands/:guildId (la URL sale de la clave:
+ * /api/custom-commands/<guildId>). Es la que shared/api.ts indica para el aviso en vivo
+ * "customCommandsUpdated", pero lib/websocket.ts todavía no atiende ese aviso: por ahora la
+ * lista se pone al día al volver a la pestaña, con "Actualizar" o tras cada cambio desde aquí.
  */
 export function customCommandsKey(guildId: string) {
   return ["/api/custom-commands", guildId] as const;
@@ -66,7 +68,14 @@ export function formatUses(uses: number): string {
 export type PlaceholderKey = (typeof CUSTOM_COMMAND_PLACEHOLDERS)[number]["key"];
 
 export interface PreviewValue {
+  /** Lo que se ve en la vista previa. */
   text: string;
+  /**
+   * Caracteres que ocupa en el mensaje que de verdad manda el bot (para avisar si se pasa del
+   * límite). No siempre es text.length: las menciones viajan en crudo (<@id>, <#id>) y los
+   * valores de ejemplo cuentan con lo más largo que pueden llegar a ser.
+   */
+  wireLength: number;
   /** Se ve como mención de Discord (@persona, #canal). */
   mention: boolean;
   /** Dato real del servidor (no de ejemplo). */
@@ -87,56 +96,71 @@ const PLACEHOLDER_REGEX = new RegExp(
   "gi",
 );
 
+// Lo que ocupa cada variable en el mensaje real, tal como la reemplaza el bot (server/bot/customCommands.ts):
+// - {usuario} → <@id> y {canal} → <#id>: los ids de Discord de hoy tienen hasta 19 dígitos (2 + 19 + 1)
+const MENTION_WIRE_LENGTH = 22;
+// - {nombre} → apodo o nombre visible: Discord deja hasta 32 caracteres
+const DISPLAY_NAME_MAX_LENGTH = 32;
+// - {servidor} → nombre del servidor: Discord deja hasta 100 caracteres (si no conocemos el real)
+const GUILD_NAME_MAX_LENGTH = 100;
+// - {miembros} → número con separadores (si no conocemos el real, uno grande: "1,000,000")
+const MEMBER_COUNT_WIRE_LENGTH = (1_000_000).toLocaleString("es-MX").length;
+
 /**
  * Valores para la vista previa. Los de la persona y el canal son de ejemplo (dependen de
  * quién use el comando); el nombre del servidor y los miembros son reales si los conocemos.
  */
 export function previewValues(guildName: string | null, memberCount: number | null): Record<PlaceholderKey, PreviewValue> {
+  const members = typeof memberCount === "number" ? memberCount.toLocaleString("es-MX") : null;
   return {
-    "{usuario}": { text: "@Alguien", mention: true, real: false },
-    "{nombre}": { text: "Alguien", mention: false, real: false },
+    "{usuario}": { text: "@Alguien", wireLength: MENTION_WIRE_LENGTH, mention: true, real: false },
+    "{nombre}": { text: "Alguien", wireLength: DISPLAY_NAME_MAX_LENGTH, mention: false, real: false },
     "{servidor}": guildName
-      ? { text: guildName, mention: false, real: true }
-      : { text: "tu servidor", mention: false, real: false },
-    "{canal}": { text: "#este-canal", mention: true, real: false },
-    "{miembros}": typeof memberCount === "number"
-      ? { text: memberCount.toLocaleString("es-MX"), mention: false, real: true }
-      : { text: "100", mention: false, real: false },
+      ? { text: guildName, wireLength: guildName.length, mention: false, real: true }
+      : { text: "tu servidor", wireLength: GUILD_NAME_MAX_LENGTH, mention: false, real: false },
+    "{canal}": { text: "#este-canal", wireLength: MENTION_WIRE_LENGTH, mention: true, real: false },
+    "{miembros}": members
+      ? { text: members, wireLength: members.length, mention: false, real: true }
+      : { text: "100", wireLength: MEMBER_COUNT_WIRE_LENGTH, mention: false, real: false },
   };
 }
 
-/** Parte el texto en trozos fijos y variables ya resueltas (como lo haría el bot). */
+/**
+ * Parte el texto en trozos fijos y variables ya resueltas (como lo haría el bot).
+ * `discordLength` es lo que mediría el mensaje enviado (con las menciones en crudo y, en los
+ * valores de ejemplo, lo más largo que pueden ser), no lo que se ve en la vista previa.
+ */
 export function buildPreview(template: string, values: Record<PlaceholderKey, PreviewValue>): {
   segments: PreviewSegment[];
-  length: number;
+  discordLength: number;
 } {
   const text = template.trim();
   const segments: PreviewSegment[] = [];
-  let length = 0;
+  let discordLength = 0;
   let last = 0;
   for (const match of text.matchAll(PLACEHOLDER_REGEX)) {
     const index = match.index ?? 0;
     if (index > last) {
       const chunk = text.slice(last, index);
       segments.push({ kind: "text", text: chunk });
-      length += chunk.length;
+      discordLength += chunk.length;
     }
     const key = match[0].toLowerCase() as PlaceholderKey;
     const value = values[key];
     if (value) {
       segments.push({ kind: "value", placeholder: key, value });
-      length += value.text.length;
+      discordLength += value.wireLength;
     } else {
       segments.push({ kind: "text", text: match[0] });
-      length += match[0].length;
+      discordLength += match[0].length;
     }
     last = index + match[0].length;
   }
   if (last < text.length) {
     segments.push({ kind: "text", text: text.slice(last) });
-    length += text.length - last;
+    discordLength += text.length - last;
   }
-  return { segments, length };
+  return { segments, discordLength };
 }
 
 /** El bot nunca notifica a @everyone, @here ni a roles desde un comando personalizado. */

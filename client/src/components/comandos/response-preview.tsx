@@ -19,7 +19,8 @@ export function ResponsePreview({ trigger, response, values }: ResponsePreviewPr
   const preview = useMemo(() => buildPreview(response, values), [response, values]);
   const empty = preview.segments.length === 0;
   const usesSamples = preview.segments.some((segment) => segment.kind === "value" && !segment.value.real);
-  const tooLong = preview.length > CUSTOM_COMMAND_LIMITS.responseMaxLength;
+  // Con lo que mide el mensaje real (las menciones viajan como <@id>), no con lo que se ve aquí
+  const tooLong = preview.discordLength > CUSTOM_COMMAND_LIMITS.responseMaxLength;
 
   return (
     <section
