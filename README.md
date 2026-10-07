@@ -279,7 +279,7 @@ En la consola deberías ver, entre otras, estas líneas (el orden puede variar u
 
 ```text
 🗄️ Base de datos: controlador PostgreSQL estándar (node-postgres)
-… [express] serving on port 5000
+… [express] serving on 127.0.0.1:5000
 🖥️ Panel web listo en http://localhost:5000
 ✅ Conectado a la base de datos
 ✅ … comandos de barra registrados …
