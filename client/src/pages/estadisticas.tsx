@@ -21,7 +21,8 @@ import {
   topEarnersSummary,
 } from "@/components/ajustes-resumen/analytics-charts";
 import { ChartCard } from "@/components/ajustes-resumen/chart-card";
-import { formatNumber, plural, relativeTime } from "@/components/ajustes-resumen/format";
+import { formatStatNumber, plural, relativeTime } from "@/components/ajustes-resumen/format";
+import { StatNumber } from "@/components/ajustes-resumen/stat-number";
 import { useSelectedGuild } from "@/lib/guild";
 import { getApiErrorInfo } from "@/lib/queryClient";
 import { cn } from "@/lib/utils";
@@ -87,6 +88,14 @@ export default function Estadisticas() {
   }
 
   const totals = data?.totals;
+  const coins = formatStatNumber(totals?.coinsInCirculation);
+  const walletsText = totals
+    ? totals.usersWithEconomy > 0
+      ? `${plural(totals.usersWithEconomy, "persona tiene", "personas tienen")} cartera`
+      : "Nadie tiene cartera todavía"
+    : undefined;
+  // Si el número se abrevia ("1.2 M"), el exacto va aquí para verlo también en el celular
+  const coinsSubtitle = walletsText && coins.full ? `Exactamente ${coins.full}. ${walletsText}` : walletsText;
   const hasLevels = (data?.levelDistribution ?? []).some((bucket) => bucket.users > 0);
   const hasEarners = (data?.topEarners.length ?? 0) > 0;
   const moderationTotal = data?.moderationPerDay.reduce((sum, day) => sum + day.total, 0) ?? 0;
@@ -101,12 +110,13 @@ export default function Estadisticas() {
         </p>
       )}
 
-      <div className="grid grid-cols-1 gap-6 sm:grid-cols-2 lg:grid-cols-4">
+      {/* 4 columnas solo desde xl: con la barra lateral, en lg cada tarjeta mide ~150 px y "12,345" ya no cabe */}
+      <div className="grid grid-cols-1 gap-6 sm:grid-cols-2 xl:grid-cols-4">
         <StatCard
           title="Personas con nivel"
           icon={Trophy}
           loading={loading}
-          value={formatNumber(totals?.usersWithLevels)}
+          value={<StatNumber value={totals?.usersWithLevels} />}
           subtitle="Ya escribieron al menos un mensaje"
           testId="stat-analytics-levels"
         />
@@ -114,21 +124,15 @@ export default function Estadisticas() {
           title="Monedas en circulación"
           icon={Coins}
           loading={loading}
-          value={formatNumber(totals?.coinsInCirculation)}
-          subtitle={
-            totals
-              ? totals.usersWithEconomy > 0
-                ? `${plural(totals.usersWithEconomy, "persona tiene", "personas tienen")} cartera`
-                : "Nadie tiene cartera todavía"
-              : undefined
-          }
+          value={<StatNumber value={totals?.coinsInCirculation} />}
+          subtitle={coinsSubtitle}
           testId="stat-analytics-coins"
         />
         <StatCard
           title="Moderación · 30 días"
           icon={Gavel}
           loading={loading}
-          value={formatNumber(totals?.moderationActions30d)}
+          value={<StatNumber value={totals?.moderationActions30d} />}
           subtitle="Acciones del staff con el bot"
           testId="stat-analytics-moderation"
         />
@@ -136,7 +140,7 @@ export default function Estadisticas() {
           title="Alertas de raid · 30 días"
           icon={ShieldAlert}
           loading={loading}
-          value={formatNumber(totals?.raidEvents30d)}
+          value={<StatNumber value={totals?.raidEvents30d} />}
           subtitle="Entradas masivas detectadas"
           testId="stat-analytics-raids"
         />

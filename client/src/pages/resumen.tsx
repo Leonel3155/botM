@@ -35,12 +35,14 @@ import {
   formatDay,
   formatHour,
   formatNumber,
+  formatStatNumber,
   parseIso,
   plural,
   relativeTime,
   userName,
 } from "@/components/ajustes-resumen/format";
 import { ModerationList } from "@/components/ajustes-resumen/moderation-list";
+import { StatNumber } from "@/components/ajustes-resumen/stat-number";
 import { UserAvatar } from "@/components/ajustes-resumen/user-avatar";
 import { useSelectedGuild } from "@/lib/guild";
 import { NAV_ITEMS } from "@/lib/navigation";
@@ -59,6 +61,36 @@ const realtimeText: Record<RealtimeStatus, { status: StatusKind; label: string }
 /** "America/Mexico_City" → "America/Mexico City" (más fácil de leer). */
 function prettyTimezone(timezone: string): string {
   return timezone.replace(/_/g, " ");
+}
+
+/**
+ * Cómo está el canal de una función, según la lista de canales del bot.
+ * Si el canal falta o el bot no puede escribir ahí, el bot no publica nada (solo deja un aviso en su registro).
+ */
+type ChannelCheck =
+  | { state: "none" } // no hay canal elegido
+  | { state: "unknown" } // aún no lo sabemos (cargando, error o bot fuera del servidor)
+  | { state: "gone" } // el canal ya no existe (o el bot no lo ve)
+  | { state: "blocked"; name: string } // existe, pero al bot le faltan permisos
+  | { state: "ok"; name: string };
+
+/** Aviso para la tarjeta de una función cuando su canal no sirve (null si está bien o no lo sabemos). */
+function channelWarning(check: ChannelCheck, what: string): string | null {
+  switch (check.state) {
+    case "none":
+      return `Falta elegir el canal ${what}.`;
+    case "gone":
+      return `El canal ${what} ya no existe: elige otro en Comunidad.`;
+    case "blocked":
+      return `No puedo publicar en ${check.name} (me faltan permisos).`;
+    default:
+      return null;
+  }
+}
+
+/** El canal no sirve: el bot no publicará hasta que se arregle. */
+function channelBroken(check: ChannelCheck): boolean {
+  return check.state === "none" || check.state === "gone" || check.state === "blocked";
 }
 
 // =============================================
@@ -154,11 +186,11 @@ function FeatureTile({
 function FeaturesCard({
   stats,
   loading,
-  channelName,
+  checkChannel,
 }: {
   stats: DashboardStatsResponse | undefined;
   loading: boolean;
-  channelName: (channelId: string | null) => string | null;
+  checkChannel: (channelId: string | null) => ChannelCheck;
 }) {
   const welcome = stats?.features.welcome;
   const question = stats?.features.dailyQuestion;
@@ -167,18 +199,20 @@ function FeaturesCard({
 
   // Bienvenida
   const welcomeOn = welcome?.enabled === true;
-  const welcomeChannel = channelName(welcome?.channelId ?? null);
+  const welcomeChannel = checkChannel(welcome?.channelId ?? null);
 
   // Pregunta del día
   const questionOn = question?.enabled === true;
-  const questionChannel = channelName(question?.channelId ?? null);
+  const questionChannel = checkChannel(question?.channelId ?? null);
   const questionHour = formatHour(question?.hour);
   const nextPost = parseIso(question?.nextPostAt);
-  const nextPostText = nextPost
-    ? nextPost.getTime() <= Date.now()
-      ? "La próxima sale en cualquier momento."
-      : `La próxima sale ${relativeTime(nextPost)}.`
-    : null;
+  // Con el canal roto no sale ninguna pregunta: no prometemos la próxima
+  const nextPostText =
+    nextPost && !channelBroken(questionChannel)
+      ? nextPost.getTime() <= Date.now()
+        ? "La próxima sale en cualquier momento."
+        : `La próxima sale ${relativeTime(nextPost)}.`
+      : null;
 
   // Anti-raid
   const antiRaidOn = antiRaid?.enabled === true;
@@ -207,16 +241,20 @@ function FeaturesCard({
             enabled={welcomeOn}
             onLabel="Activada"
             offLabel="Desactivada"
-            warning={welcomeOn && !welcome?.channelId ? "Falta elegir el canal de bienvenida." : null}
+            warning={welcomeOn ? channelWarning(welcomeChannel, "de bienvenida") : null}
             href="/comunidad"
             linkLabel="Configurar bienvenida"
             testId="feature-welcome"
           >
             {welcomeOn ? (
               <p>
-                {welcomeChannel
-                  ? <>Saluda a cada persona nueva en <span className="text-foreground">{welcomeChannel}</span>.</>
-                  : "Saluda a cada persona nueva que entra."}
+                {welcomeChannel.state === "ok" ? (
+                  <>Saluda a cada persona nueva en <span className="text-foreground">{welcomeChannel.name}</span>.</>
+                ) : channelBroken(welcomeChannel) ? (
+                  "Está activada, pero por ahora nadie recibe el saludo."
+                ) : (
+                  "Saluda a cada persona nueva que entra."
+                )}
               </p>
             ) : (
               <p>Nadie recibe un saludo al entrar todavía. Actívala para que los nuevos se sientan en casa.</p>
@@ -230,7 +268,7 @@ function FeaturesCard({
             enabled={questionOn}
             onLabel="Activada"
             offLabel="Desactivada"
-            warning={questionOn && !question?.channelId ? "Falta elegir el canal de la pregunta." : null}
+            warning={questionOn ? channelWarning(questionChannel, "de la pregunta") : null}
             href="/comunidad"
             linkLabel="Configurar pregunta"
             testId="feature-question"
@@ -240,9 +278,19 @@ function FeaturesCard({
                 <p>
                   Todos los días{questionHour ? <> a las <span className="font-mono text-foreground">{questionHour}</span></> : null}{" "}
                   ({prettyTimezone(question.timezone)})
-                  {questionChannel ? <> en <span className="text-foreground">{questionChannel}</span></> : null}.
+                  {questionChannel.state === "ok" ? (
+                    <> en <span className="text-foreground">{questionChannel.name}</span></>
+                  ) : null}
+                  .
                 </p>
                 {nextPostText && <p>{nextPostText}</p>}
+                {channelBroken(questionChannel) && (
+                  <p>
+                    {questionChannel.state === "none"
+                      ? "No saldrá ninguna pregunta hasta que elijas un canal."
+                      : "No saldrá ninguna pregunta hasta que se arregle el canal."}
+                  </p>
+                )}
                 {question.lastPosted && <p className="text-xs">Última pregunta: {formatDay(question.lastPosted, "long")}.</p>}
               </>
             ) : (
@@ -410,10 +458,14 @@ export default function Resumen() {
     enabled: botReady,
     staleTime: 5 * 60_000,
   });
-  const channelName = (channelId: string | null): string | null => {
-    if (!channelId) return null;
-    const channel = channelsQuery.data?.find((c) => c.id === channelId);
-    return channel ? `#${channel.name}` : null;
+  const checkChannel = (channelId: string | null): ChannelCheck => {
+    if (!channelId) return { state: "none" };
+    const channels = botReady ? channelsQuery.data : undefined;
+    if (!channels) return { state: "unknown" };
+    const channel = channels.find((c) => c.id === channelId);
+    if (!channel) return { state: "gone" };
+    const name = `#${channel.name}`;
+    return channel.botCanPost ? { state: "ok", name } : { state: "blocked", name };
   };
 
   const refreshAll = () => {
@@ -428,6 +480,7 @@ export default function Resumen() {
   const counts = stats?.counts;
   const memberCount = stats?.guild.memberCount ?? null;
   const onlineCount = stats?.guild.onlineCount ?? null;
+  const coins = formatStatNumber(counts?.coinsInCirculation);
 
   const title = guild?.name ?? stats?.guild.name ?? "Resumen";
   const quickLinks = NAV_ITEMS.filter((item) => item.href !== "/");
@@ -557,7 +610,7 @@ export default function Resumen() {
           title="Miembros"
           icon={Users}
           loading={loading}
-          value={formatNumber(memberCount)}
+          value={<StatNumber value={memberCount} />}
           subtitle={
             loading
               ? undefined
@@ -571,13 +624,14 @@ export default function Resumen() {
         />
       </div>
 
-      {/* Números reales de la base de datos */}
-      <div className="grid grid-cols-1 gap-6 sm:grid-cols-2 lg:grid-cols-4">
+      {/* Números reales de la base de datos. 4 columnas solo desde xl: con la barra lateral, en lg
+          cada tarjeta mide ~150 px y "12,345" ya no cabe */}
+      <div className="grid grid-cols-1 gap-6 sm:grid-cols-2 xl:grid-cols-4">
         <StatCard
           title="Personas con nivel"
           icon={Trophy}
           loading={loading}
-          value={formatNumber(counts?.usersWithLevels)}
+          value={<StatNumber value={counts?.usersWithLevels} />}
           subtitle="Ya escribieron al menos un mensaje"
           testId="stat-users-levels"
         />
@@ -585,15 +639,15 @@ export default function Resumen() {
           title="Monedas en circulación"
           icon={Coins}
           loading={loading}
-          value={formatNumber(counts?.coinsInCirculation)}
-          subtitle="Sumando carteras y bancos"
+          value={<StatNumber value={counts?.coinsInCirculation} />}
+          subtitle={coins.full ? `Exactamente ${coins.full}, sumando carteras y bancos` : "Sumando carteras y bancos"}
           testId="stat-coins"
         />
         <StatCard
           title="Moderación · 7 días"
           icon={Gavel}
           loading={loading}
-          value={formatNumber(counts?.moderationActions7d)}
+          value={<StatNumber value={counts?.moderationActions7d} />}
           subtitle={counts ? `${formatNumber(counts.moderationActions30d)} en los últimos 30 días` : undefined}
           testId="stat-moderation-7d"
         />
@@ -601,13 +655,13 @@ export default function Resumen() {
           title="Advertencias · 30 días"
           icon={ShieldAlert}
           loading={loading}
-          value={formatNumber(counts?.warnings30d)}
+          value={<StatNumber value={counts?.warnings30d} />}
           subtitle={counts ? `${formatNumber(counts.warningsTotal)} en total` : undefined}
           testId="stat-warnings-30d"
         />
       </div>
 
-      <FeaturesCard stats={stats} loading={loading} channelName={channelName} />
+      <FeaturesCard stats={stats} loading={loading} checkChannel={checkChannel} />
 
       <div className="grid grid-cols-1 gap-6 lg:grid-cols-2">
         <TopLevelsCard stats={stats} loading={loading} />

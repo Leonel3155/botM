@@ -17,6 +17,23 @@ export function formatCompact(value: number): string {
   return Number.isFinite(value) ? compactFormat.format(value) : "";
 }
 
+/**
+ * El número grande de StatCard va en monoespaciada de 30 px (unos 18 px por carácter).
+ * Con las filas de tarjetas en 2 columnas hasta xl, le quedan al menos ~150 px en
+ * cualquier ancho: caben 8 caracteres ("123,456" sí; "1,234,567" ya no).
+ */
+const STAT_VALUE_MAX_CHARS = 8;
+
+/**
+ * Número para una StatCard: completo si cabe ("12,345"); si no, abreviado ("1.2 M")
+ * y `full` con el número exacto para mostrarlo aparte. null / undefined → "—".
+ */
+export function formatStatNumber(value: number | null | undefined): { text: string; full: string | null } {
+  const full = formatNumber(value);
+  if (typeof value !== "number" || full.length <= STAT_VALUE_MAX_CHARS) return { text: full, full: null };
+  return { text: formatCompact(value), full };
+}
+
 /** "1 persona" / "3 personas". */
 export function plural(count: number, one: string, many: string): string {
   return `${formatNumber(count)} ${count === 1 ? one : many}`;

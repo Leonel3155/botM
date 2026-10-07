@@ -1,4 +1,4 @@
-import { useMemo } from "react";
+import { useEffect, useMemo, useState } from "react";
 import { useForm } from "react-hook-form";
 import { zodResolver } from "@hookform/resolvers/zod";
 import { z } from "zod";
@@ -13,8 +13,9 @@ import { Input } from "@/components/ui/input";
 import { Skeleton } from "@/components/ui/skeleton";
 import { ApiErrorState } from "@/components/api-error-state";
 import { useToast } from "@/hooks/use-toast";
-import { apiRequest, isApiError } from "@/lib/queryClient";
+import { apiRequest, getApiErrorInfo, isApiError } from "@/lib/queryClient";
 import { cn } from "@/lib/utils";
+import type { BotPresence } from "./bot-status";
 
 /**
  * Límites del prefijo: los mismos que guildConfigSchema en server/routes.ts
@@ -62,17 +63,65 @@ function prefixTip(prefix: string): string | null {
   return null;
 }
 
+/** Segundos que pide esperar el servidor (503 de Discord limitando), o null si no dijo. */
+function retryAfterSeconds(error: unknown): number | null {
+  if (!isApiError(error) || error.status !== 503) return null;
+  const retryAfter = error.body?.retryAfter;
+  return typeof retryAfter === "number" && Number.isFinite(retryAfter) && retryAfter > 0 ? Math.ceil(retryAfter) : null;
+}
+
+/**
+ * Texto del aviso cuando no se pudo guardar: el del servidor, que dice la causa real
+ * (p. ej. "Discord está limitando las solicitudes…"), y si no hay, el texto amable de siempre.
+ */
+function saveErrorDescription(error: unknown): string {
+  if (!isApiError(error)) return "Intenta de nuevo en un momento.";
+  const serverText = typeof error.body?.error === "string" ? error.body.error.trim() : "";
+  const info = getApiErrorInfo(error);
+  const text = serverText || `${info.title}. ${info.description}`;
+  const wait = retryAfterSeconds(error);
+  return wait ? `${text} Podrás volver a guardar en ${wait} s.` : text;
+}
+
+/** Cuenta atrás hasta poder reintentar (0 = ya se puede). */
+function useRetryCountdown() {
+  const [retryUntil, setRetryUntil] = useState<number | null>(null);
+  const [now, setNow] = useState(() => Date.now());
+
+  useEffect(() => {
+    if (retryUntil === null) return;
+    const id = window.setInterval(() => {
+      const current = Date.now();
+      setNow(current);
+      if (current >= retryUntil) setRetryUntil(null);
+    }, 500);
+    return () => window.clearInterval(id);
+  }, [retryUntil]);
+
+  const start = (seconds: number) => {
+    const current = Date.now();
+    setNow(current);
+    setRetryUntil(current + seconds * 1000);
+  };
+  const secondsLeft = retryUntil === null ? 0 : Math.max(0, Math.ceil((retryUntil - now) / 1000));
+  return { secondsLeft, start };
+}
+
 interface PrefixCardProps {
   guildId: string;
-  /** Sin el bot en el servidor no se puede guardar (el servidor responde 404). */
-  botInGuild: boolean;
+  /**
+   * Si el bot puede recibir cambios ahora: guardar necesita al bot conectado (si no, 503)
+   * y dentro del servidor (si no, 404). Ver getBotPresence.
+   */
+  botPresence: BotPresence;
 }
 
 /** Tarjeta para ver y cambiar el prefijo de los comandos rápidos y personalizados. */
-export function PrefixCard({ guildId, botInGuild }: PrefixCardProps) {
+export function PrefixCard({ guildId, botPresence }: PrefixCardProps) {
   const { toast } = useToast();
   const queryClient = useQueryClient();
   const configKey = guildConfigKey(guildId);
+  const retry = useRetryCountdown();
 
   const configQuery = useQuery<GuildConfigResponse>({
     queryKey: configKey,
@@ -110,10 +159,12 @@ export function PrefixCard({ guildId, botInGuild }: PrefixCardProps) {
     onError: (error) => {
       const detail = isApiError(error) ? error.body?.details?.find((d) => d.field === "prefix") : undefined;
       if (detail) form.setError("prefix", { message: detail.message });
+      const wait = retryAfterSeconds(error);
+      if (wait) retry.start(wait);
       toast({
         variant: "destructive",
         title: "No se pudo guardar el prefijo",
-        description: error instanceof Error ? error.message : "Intenta de nuevo en un momento.",
+        description: detail ? detail.message : saveErrorDescription(error),
       });
     },
   });
@@ -132,7 +183,9 @@ export function PrefixCard({ guildId, botInGuild }: PrefixCardProps) {
   const tip = previewValid ? prefixTip(preview) : null;
   const isDirty = form.formState.isDirty && preview !== savedPrefix;
   const saving = mutation.isPending;
-  const canSave = botInGuild && isDirty && previewValid && !saving;
+  const botReady = botPresence === "ready";
+  const waiting = retry.secondsLeft > 0;
+  const canSave = botReady && isDirty && previewValid && !saving && !waiting;
 
   const pickPrefix = (prefix: string) => {
     form.setValue("prefix", prefix, { shouldDirty: true, shouldValidate: true });
@@ -254,10 +307,12 @@ export function PrefixCard({ guildId, botInGuild }: PrefixCardProps) {
                 )}
               </div>
 
-              {!botInGuild && (
+              {(botPresence === "missing" || botPresence === "offline") && (
                 <p className="flex items-start gap-2 text-sm text-status-warning" role="status">
                   <Info className="mt-0.5 h-4 w-4 shrink-0" aria-hidden="true" />
-                  Invita al bot a este servidor para poder guardar cambios.
+                  {botPresence === "offline"
+                    ? "El bot está desconectado de Discord ahora mismo; podrás guardar cuando vuelva."
+                    : "Invita al bot a este servidor para poder guardar cambios."}
                 </p>
               )}
 
@@ -282,7 +337,7 @@ export function PrefixCard({ guildId, botInGuild }: PrefixCardProps) {
                       type="button"
                       variant="outline"
                       onClick={() => mutation.mutate({ prefix: DEFAULT_PREFIX })}
-                      disabled={!botInGuild || saving}
+                      disabled={!botReady || saving || waiting}
                       data-testid="button-prefix-reset"
                     >
                       <RotateCcw />
@@ -291,7 +346,7 @@ export function PrefixCard({ guildId, botInGuild }: PrefixCardProps) {
                   )}
                   <Button type="submit" disabled={!canSave} data-testid="button-prefix-save">
                     {saving ? <Loader2 className="animate-spin" /> : <Save />}
-                    {saving ? "Guardando…" : "Guardar prefijo"}
+                    {saving ? "Guardando…" : waiting ? `Espera ${retry.secondsLeft} s` : "Guardar prefijo"}
                   </Button>
                 </div>
               </div>
