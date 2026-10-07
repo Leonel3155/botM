@@ -1,5 +1,6 @@
-import { useEffect, useMemo, type ReactNode } from "react";
+import { useEffect, useMemo, useState, type ReactNode } from "react";
 import { Controller, useForm } from "react-hook-form";
+import { useLocation } from "wouter";
 import { zodResolver } from "@hookform/resolvers/zod";
 import { z } from "zod";
 import { useMutation, useQuery } from "@tanstack/react-query";
@@ -10,6 +11,15 @@ import type {
   ChannelConfigUpdateRequest,
   EngagementSettingsResponse,
 } from "@shared/api";
+import {
+  AlertDialog,
+  AlertDialogCancel,
+  AlertDialogContent,
+  AlertDialogDescription,
+  AlertDialogFooter,
+  AlertDialogHeader,
+  AlertDialogTitle,
+} from "@/components/ui/alert-dialog";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { Card, CardContent } from "@/components/ui/card";
@@ -26,7 +36,7 @@ import {
   useChannelConfig,
   useDiscordChannels,
 } from "@/components/canales-redes/api";
-import { channelLabel, getChannelIssue } from "@/components/canales-redes/channel-picker";
+import { channelLabel, findChannel, getChannelIssue } from "@/components/canales-redes/channel-picker";
 import { ChannelRoleCard } from "@/components/canales-redes/channel-role-card";
 import { useToast } from "@/hooks/use-toast";
 import { useSelectedGuild } from "@/lib/guild";
@@ -122,9 +132,20 @@ function ChannelsSkeleton() {
   );
 }
 
+/** Respaldo del anti-raid cuando no tiene un canal donde escribir (igual que el bot). */
+const ALERT_FALLBACK = "el bot buscará un canal privado del staff y, si no hay, le escribirá al dueño por mensaje directo";
+
 export default function ChannelsPage() {
   const { guildId } = useSelectedGuild();
+  // Al cambiar de servidor se empieza de cero: los cambios sin guardar no pasan de un servidor a otro
+  return <ChannelsEditor key={guildId} guildId={guildId} />;
+}
+
+function ChannelsEditor({ guildId }: { guildId: string }) {
   const { toast } = useToast();
+  const [, navigate] = useLocation();
+  /** Ruta a la que se quería ir con cambios sin guardar (abre el aviso). */
+  const [leaveTo, setLeaveTo] = useState<string | null>(null);
 
   const configQuery = useChannelConfig(guildId);
   const channelsQuery = useDiscordChannels(guildId);
@@ -172,6 +193,27 @@ export default function ChannelsPage() {
     return () => window.removeEventListener("beforeunload", handler);
   }, [hasChanges]);
 
+  // Y antes de ir a otra página del panel (menú lateral o los enlaces de cada tarjeta)
+  useEffect(() => {
+    if (!hasChanges) return;
+    const handler = (event: MouseEvent) => {
+      if (event.defaultPrevented || event.button !== 0 || event.metaKey || event.ctrlKey || event.shiftKey || event.altKey) {
+        return;
+      }
+      const anchor = event.target instanceof Element ? event.target.closest("a[href]") : null;
+      if (!(anchor instanceof HTMLAnchorElement)) return;
+      if ((anchor.target && anchor.target !== "_self") || anchor.hasAttribute("download")) return;
+      const url = new URL(anchor.href, window.location.href);
+      if (url.origin !== window.location.origin || url.pathname.startsWith("/api/")) return;
+      if (url.pathname === window.location.pathname) return;
+      // Con preventDefault, wouter no navega (el resto del clic sigue, p. ej. cerrar el menú en el móvil)
+      event.preventDefault();
+      setLeaveTo(`${url.pathname}${url.search}${url.hash}`);
+    };
+    document.addEventListener("click", handler, true);
+    return () => document.removeEventListener("click", handler, true);
+  }, [hasChanges]);
+
   const saveMutation = useMutation({
     mutationFn: async (body: ChannelConfigUpdateRequest) => {
       await apiRequest("PUT", `/api/guild/${guildId}/channels`, body);
@@ -208,20 +250,52 @@ export default function ChannelsPage() {
     },
   });
 
-  const onSubmit = (values: ChannelFormValues) => {
-    if (!serverValues) return;
-    // Solo se manda lo que cambió
+  /** Solo se manda lo que cambió (null si no hay nada que guardar). */
+  const buildBody = (values: ChannelFormValues): ChannelConfigUpdateRequest | null => {
+    if (!serverValues) return null;
     const body: ChannelConfigUpdateRequest = {};
     for (const field of changedFields) {
       body[field] = values[field] ?? null;
     }
-    if (Object.keys(body).length === 0) return;
-    saveMutation.mutate(body);
+    return Object.keys(body).length > 0 ? body : null;
+  };
+
+  const onSubmit = (values: ChannelFormValues) => {
+    const body = buildBody(values);
+    if (body) saveMutation.mutate(body);
   };
 
   const discard = () => {
     if (serverValues) form.reset(serverValues);
   };
+
+  const leaveWithoutSaving = () => {
+    const target = leaveTo;
+    setLeaveTo(null);
+    discard();
+    if (target) navigate(target);
+  };
+
+  const saveAndLeave = form.handleSubmit(
+    (values) => {
+      const target = leaveTo;
+      const body = buildBody(values);
+      if (!body) {
+        setLeaveTo(null);
+        if (target) navigate(target);
+        return;
+      }
+      saveMutation.mutate(body, {
+        onSuccess: () => {
+          setLeaveTo(null);
+          if (target) navigate(target);
+        },
+        // El error ya sale en un aviso y junto a cada canal: te quedas para corregirlo
+        onError: () => setLeaveTo(null),
+      });
+    },
+    () => setLeaveTo(null),
+  );
 
   const refreshAll = () => {
     void configQuery.refetch();
@@ -248,11 +322,40 @@ export default function ChannelsPage() {
     />
   );
 
+  // Aviso al salir con cambios sin guardar (también si la página quedó en un estado de error)
+  const saving = saveMutation.isPending;
+  const leaveDialog = (
+    <AlertDialog open={leaveTo !== null} onOpenChange={(open) => !open && !saving && setLeaveTo(null)}>
+      <AlertDialogContent className="w-[calc(100%-2rem)] rounded-lg sm:w-full">
+        <AlertDialogHeader>
+          <AlertDialogTitle>Tienes cambios sin guardar</AlertDialogTitle>
+          <AlertDialogDescription>
+            Si sales ahora, se pierden los canales que cambiaste aquí. ¿Quieres guardarlos antes de salir?
+          </AlertDialogDescription>
+        </AlertDialogHeader>
+        <AlertDialogFooter className="gap-2 sm:space-x-0">
+          <AlertDialogCancel className="mt-0" disabled={saving} data-testid="button-leave-stay">
+            Quedarme aquí
+          </AlertDialogCancel>
+          <Button variant="outline" onClick={leaveWithoutSaving} disabled={saving} data-testid="button-leave-discard">
+            <Undo2 aria-hidden="true" />
+            Salir sin guardar
+          </Button>
+          <Button onClick={() => void saveAndLeave()} disabled={saving} data-testid="button-leave-save">
+            {saving ? <Loader2 className="animate-spin" aria-hidden="true" /> : <Save aria-hidden="true" />}
+            {saving ? "Guardando…" : "Guardar y salir"}
+          </Button>
+        </AlertDialogFooter>
+      </AlertDialogContent>
+    </AlertDialog>
+  );
+
   if (configQuery.isLoading || channelsQuery.isLoading) {
     return (
       <div className="space-y-6">
         {header}
         <ChannelsSkeleton />
+        {leaveDialog}
       </div>
     );
   }
@@ -262,6 +365,7 @@ export default function ChannelsPage() {
       <div className="space-y-6">
         {header}
         <ApiErrorState error={configQuery.error} onRetry={() => void configQuery.refetch()} />
+        {leaveDialog}
       </div>
     );
   }
@@ -271,11 +375,12 @@ export default function ChannelsPage() {
       <div className="space-y-6">
         {header}
         <ApiErrorState error={channelsQuery.error} onRetry={() => void channelsQuery.refetch()} />
+        {leaveDialog}
       </div>
     );
   }
 
-  const pending = saveMutation.isPending;
+  const pending = saving;
   const errors = form.formState.errors;
 
   // ----- Contexto: bienvenida -----
@@ -291,26 +396,36 @@ export default function ChannelsPage() {
     ) : null;
 
   // ----- Contexto: anti-raid -----
+  // El bot avisa en: canal de alertas de Seguridad → este canal → canal privado del staff → MD al dueño,
+  // saltándose los canales donde no puede escribir.
   const antiRaid = antiRaidQuery.data?.config;
-  const alertChannel = antiRaid?.logChannelId ? channelLabel(channels, antiRaid.logChannelId) ?? "otro canal" : null;
+  const logChannel = findChannel(channels, antiRaid?.logChannelId);
+  const moderationUsable = !!current.moderationChannelId && getChannelIssue(channels, current.moderationChannelId) === null;
   const moderationStatus = antiRaid ? (
     <StatusBadge on={antiRaid.enabled} onText="Anti-raid activado" offText="Anti-raid desactivado" />
   ) : null;
-  const moderationNotes = antiRaid ? (
-    antiRaid.logChannelId ? (
+  let moderationNotes: ReactNode = null;
+  if (antiRaid && !antiRaid.enabled) {
+    moderationNotes = <Note tone="muted">El anti-raid está apagado, así que por ahora no llegan alertas.</Note>;
+  } else if (antiRaid?.logChannelId && logChannel?.botCanPost) {
+    moderationNotes = (
       <Note tone="muted">
-        Ahora mismo Seguridad manda las alertas a {alertChannel}. Este canal solo se usa si el bot no puede escribir
-        allí.
+        Ahora mismo Seguridad manda las alertas a #{logChannel.name}. Este canal solo se usa si el bot deja de poder
+        escribir allí.
       </Note>
-    ) : !antiRaid.enabled ? (
-      <Note tone="muted">El anti-raid está apagado, así que por ahora no llegan alertas.</Note>
-    ) : !current.moderationChannelId ? (
-      <Note tone="muted">
-        Sin canal aquí, el bot buscará un canal privado del staff y, si no hay, le escribirá al dueño por mensaje
-        directo.
-      </Note>
-    ) : null
-  ) : null;
+    );
+  } else if (antiRaid?.logChannelId) {
+    const brokenLog = logChannel
+      ? `El bot no puede escribir en #${logChannel.name}, el canal de alertas que elegiste en Seguridad`
+      : "El canal de alertas que elegiste en Seguridad ya no existe o el bot no lo ve";
+    moderationNotes = (
+      <Note>{`${brokenLog}, así que ${moderationUsable ? "las alertas van a este canal." : `${ALERT_FALLBACK}.`}`}</Note>
+    );
+  } else if (antiRaid && !current.moderationChannelId) {
+    moderationNotes = <Note tone="muted">Sin canal aquí, {ALERT_FALLBACK}.</Note>;
+  } else if (antiRaid && !moderationUsable) {
+    moderationNotes = <Note tone="muted">Mientras el bot no pueda escribir aquí, {ALERT_FALLBACK}.</Note>;
+  }
 
   return (
     <div className="space-y-6">
@@ -432,6 +547,7 @@ export default function ChannelsPage() {
           </Card>
         </div>
       </form>
+      {leaveDialog}
     </div>
   );
 }

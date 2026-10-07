@@ -183,8 +183,12 @@ export default function Social() {
             </li>
             <li>Solo comparte posts con imagen y nunca contenido para adultos (NSFW).</li>
             <li>
-              Solo publica mientras el bot está conectado. «Último intento» se marca cada vez que pasa por el feed,
-              aunque esa vez no haya publicado nada.
+              Solo publica mientras el bot está conectado. «Último intento» se marca cada vez que le toca al feed,
+              aunque Reddit no haya devuelto nada esa vez.
+            </li>
+            <li>
+              Si el canal ya no existe o el bot no puede escribir ahí, no publica nada y «Último intento» puede
+              quedarse sin cambiar: el bot lo reintenta cada minuto hasta que arregles el canal.
             </li>
           </ul>
           <p>
@@ -281,6 +285,7 @@ export default function Social() {
                 feed={feed}
                 channels={channels}
                 canEdit={canEdit}
+                botMissing={botMissing}
                 now={now}
                 onEdit={() => setDialog({ kind: "edit", feed })}
               />
