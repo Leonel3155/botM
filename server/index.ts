@@ -7,8 +7,9 @@ import createMemoryStore from "memorystore";
 import { registerRoutes } from "./routes";
 import { SESSION_COOKIE_NAME } from "./routes/middleware";
 import { setupVite, serveStatic, log } from "./vite";
-import { bot } from "./bot/index";
+import { bot, explainBotStartError } from "./bot/index";
 import { ContentScheduler } from "./bot/scheduler";
+import { checkDatabaseConnection } from "./db";
 
 // Sin SESSION_SECRET las sesiones del panel serían inseguras: mejor no arrancar
 const sessionSecret = process.env.SESSION_SECRET;
@@ -144,29 +145,37 @@ app.use((req, res, next) => {
     serveStatic(app);
   }
 
-  // Start Discord bot
-  try {
-    await bot.start();
-    
-    // Start content scheduler
-    const scheduler = new ContentScheduler(bot);
-    await scheduler.startScheduler();
-    
-    console.log('🚀 Discord bot and content scheduler started successfully');
-  } catch (error) {
-    console.error('❌ Failed to start Discord bot:', error);
-  }
-
   // ALWAYS serve the app on the port specified in the environment variable PORT
   // Other ports are firewalled. Default to 5000 if not specified.
   // this serves both the API and the client.
   // It is the only port that is not firewalled.
   const port = parseInt(process.env.PORT || '5000', 10);
+
+  // Errores al abrir el puerto (p. ej. otra copia de BotM ya lo usa): mensaje claro y salir
+  const onListenError = (error: NodeJS.ErrnoException) => {
+    if (error.code === 'EADDRINUSE') {
+      console.error(`❌ El puerto ${port} ya está en uso (EADDRINUSE). ¿Dejaste otra ventana con BotM abierta? Ciérrala, o cambia PORT (y también APP_URL, FRONTEND_URL y el redirect de Discord).`);
+    } else if (error.code === 'EACCES') {
+      // En Windows pasa con puertos que reserva el sistema (Hyper-V/WSL), aunque nadie los use
+      console.error(`❌ No hay permiso para usar el puerto ${port} (EACCES); Windows a veces reserva algunos puertos. Prueba con otro PORT (por ejemplo 3000 u 8080) y cambia también APP_URL, FRONTEND_URL y el redirect de Discord.`);
+    } else {
+      console.error('❌ El servidor web no pudo arrancar:', error);
+    }
+    process.exit(1);
+  };
+  server.once('error', onListenError);
+
+  // El panel se abre primero y no espera al bot: si el token falta o está mal, o Discord no
+  // responde, el panel sigue funcionando y lo dice (el bot aparece desconectado).
   server.listen({
     port,
     host: "0.0.0.0",
   }, () => {
+    server.off('error', onListenError);
     log(`serving on port ${port}`);
+    console.log(`🖥️ Panel web listo en ${appUrl}`);
+    void checkDatabaseConnection();
+    void startDiscordBot();
   });
 
   // Graceful shutdown
@@ -181,4 +190,30 @@ app.use((req, res, next) => {
     await bot.stop();
     process.exit(0);
   });
-})();
+})().catch((error) => {
+  // Sin esto el proceso se quedaría vivo sin servir nada (la promesa rechazada solo se anota)
+  console.error('❌ BotM no pudo arrancar el servidor web:', error);
+  process.exit(1);
+});
+
+// Conecta el bot de Discord y, si lo logra, el programador (pregunta del día y feeds de Reddit).
+// Nunca lanza: cualquier fallo se explica en la consola y el panel sigue funcionando.
+async function startDiscordBot() {
+  try {
+    await bot.start();
+  } catch (error) {
+    const { reason, details } = explainBotStartError(error);
+    console.error(`❌ El bot de Discord no se pudo conectar. ${reason}`);
+    if (details) console.error(error);
+    console.error(`   El panel web sigue funcionando en ${appUrl}, pero el bot aparece desconectado. Corrige el .env y reinicia BotM (Ctrl + C y vuelve a arrancarlo).`);
+    return;
+  }
+
+  try {
+    const scheduler = new ContentScheduler(bot);
+    await scheduler.startScheduler();
+    console.log('🚀 Bot de Discord y programador de contenido en marcha');
+  } catch (error) {
+    console.error('❌ No se pudo iniciar el programador (pregunta del día y feeds de Reddit):', error);
+  }
+}

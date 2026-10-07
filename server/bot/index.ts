@@ -1,12 +1,19 @@
-import { Client, GatewayIntentBits, Collection, MessageFlags, Events } from 'discord.js';
+import { Client, GatewayIntentBits, Collection, MessageFlags, Events, DiscordAPIError, HTTPError } from 'discord.js';
 import { setupCommands } from './commands';
 import { setupEvents } from './events';
 import { setupAntiRaid } from './middleware/antiRaid';
 import { setupCustomCommands } from './customCommands';
-import { installProcessErrorHandlers } from './utils/processErrors';
+import { installProcessErrorHandlers, isTransientError } from './utils/processErrors';
 
 // Un error suelto (p. ej. Discord caído un momento) no debe tumbar el bot ni el panel
 installProcessErrorHandlers();
+
+class MissingDiscordTokenError extends Error {
+  constructor() {
+    super('Falta la variable de entorno DISCORD_TOKEN');
+    this.name = 'MissingDiscordTokenError';
+  }
+}
 
 export class DiscordBot {
   public client: Client;
@@ -96,9 +103,9 @@ export class DiscordBot {
   }
 
   public async start() {
-    const token = process.env.DISCORD_TOKEN;
+    const token = process.env.DISCORD_TOKEN?.trim();
     if (!token) {
-      throw new Error('Falta la variable de entorno DISCORD_TOKEN');
+      throw new MissingDiscordTokenError();
     }
 
     await this.client.login(token);
@@ -107,6 +114,48 @@ export class DiscordBot {
   public async stop() {
     await this.client.destroy();
   }
+}
+
+/**
+ * Explica en español por qué no se pudo conectar el bot, con el texto original del error entre
+ * comillas para poder buscarlo. `details` es true cuando conviene mostrar también el error completo
+ * (los casos conocidos se explican solos y la traza solo confunde).
+ */
+export function explainBotStartError(error: unknown): { reason: string; details: boolean } {
+  const err = (error && typeof error === 'object' ? error : {}) as { code?: unknown; message?: unknown; status?: unknown };
+  const message = typeof err.message === 'string' ? err.message : String(error);
+
+  if (error instanceof MissingDiscordTokenError) {
+    return {
+      reason: 'Falta DISCORD_TOKEN en el archivo .env. Cópialo de Discord Developer Portal → tu aplicación → Bot → Reset Token.',
+      details: false,
+    };
+  }
+  if (err.code === 'TokenInvalid') {
+    return {
+      reason: `DISCORD_TOKEN no es válido ("${message}"). Genera otro en Developer Portal → Bot → Reset Token y pégalo en el .env.`,
+      details: false,
+    };
+  }
+  if (err.code === 'DisallowedIntents' || /disallowed intents/i.test(message)) {
+    return {
+      reason: `Faltan los Privileged Gateway Intents ("${message}"). En Developer Portal → Bot activa Server Members Intent y Message Content Intent y pulsa Save Changes.`,
+      details: false,
+    };
+  }
+  if (error instanceof DiscordAPIError || error instanceof HTTPError) {
+    return {
+      reason: `Discord rechazó la conexión (error ${error.status}: "${message}"). Si sigue pasando, revisa tu conexión a internet, un firewall o proxy, o el estado de Discord.`,
+      details: false,
+    };
+  }
+  if (isTransientError(error)) {
+    return {
+      reason: `No se pudo llegar a Discord ("${message}"). Revisa tu conexión a internet; también puede ser un firewall, un antivirus o que Discord esté caído.`,
+      details: false,
+    };
+  }
+  return { reason: `Error inesperado ("${message}").`, details: true };
 }
 
 // Export singleton instance

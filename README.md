@@ -89,8 +89,7 @@ Inicias sesión con Discord y solo ves los servidores donde eres dueño o tienes
 - **Windows 10 u 11** (también funciona en Mac y Linux, pero esta guía usa Windows).
 - **Node.js 20.11 o más nuevo.** Lo más fácil es instalar la versión **LTS** que te ofrezca nodejs.org.
 - **Git**, para descargar y actualizar el proyecto (si prefieres, puedes bajar el ZIP desde GitHub).
-- **Una base de datos PostgreSQL en [Neon](https://neon.tech)** (el plan gratis alcanza).
-  > ⚠️ BotM se conecta con el controlador de Neon (`@neondatabase/serverless`), que habla con la base por WebSocket. Por eso necesita una base **de Neon**: un PostgreSQL instalado en tu computadora u otro proveedor no se conecta tal cual.
+- **Una base de datos PostgreSQL.** Sirve cualquiera: [Neon](https://neon.tech) en la nube (el plan gratis alcanza y es lo más fácil), un PostgreSQL instalado en tu computadora, o un proveedor como Supabase o Railway. En el [paso 3](#3-crea-la-base-de-datos) están las opciones.
 - **Una cuenta de Discord** y un servidor donde seas dueño o administrador.
 
 Necesitas unos 30 minutos. No hace falta pagar nada.
@@ -131,7 +130,15 @@ cd botM
 
 Si el repositorio es privado, Git abrirá una ventana para que inicies sesión en GitHub. A partir de aquí, **todos los comandos se ejecutan dentro de la carpeta `botM`**. Un truco: en el Explorador de archivos, abre la carpeta, haz clic derecho en un espacio vacío y elige **Abrir en Terminal** (en Windows 10: Shift + clic derecho → **Abrir la ventana de PowerShell aquí**).
 
-### 3. Crea la base de datos en Neon
+### 3. Crea la base de datos
+
+BotM guarda los niveles, las monedas y los ajustes en una base PostgreSQL. Elige **una** de estas opciones; al final de cualquiera tendrás una dirección (la *connection string*) que va en `DATABASE_URL`. Es secreta: tiene la contraseña de tu base.
+
+BotM decide solo cómo conectarse: si la dirección es de Neon (termina en `.neon.tech`) usa el controlador de Neon, y con cualquier otra usa el controlador normal de PostgreSQL. No tienes que configurar nada más.
+
+> ¿Ya tenías BotM corriendo con otra base y quieres conservar niveles, monedas y ajustes? Usa la connection string de **esa** base en lugar de crear una nueva, y lee con calma el paso 6.
+
+#### Opción A: Neon (en la nube, gratis; la más fácil)
 
 1. Crea una cuenta en [neon.tech](https://neon.tech) (puedes entrar con Google o GitHub).
 2. Crea un proyecto (por ejemplo `botm`) y elige la región más cercana a donde vaya a correr el bot.
@@ -141,9 +148,40 @@ Si el repositorio es privado, Git abrirá una ventana para que inicies sesión e
    postgresql://usuario:contrasena@ep-algo-123456.us-east-2.aws.neon.tech/neondb?sslmode=require
    ```
 
-   Guárdala: es tu `DATABASE_URL`. Es secreta (tiene la contraseña de tu base).
+   Guárdala: es tu `DATABASE_URL`.
 
-> ¿Ya tenías BotM corriendo con otra base de Neon y quieres conservar niveles, monedas y ajustes? Usa la connection string de **esa** base en lugar de crear una nueva, y lee con calma el paso 6.
+#### Opción B: PostgreSQL instalado en tu computadora (Windows)
+
+1. Entra a [postgresql.org/download/windows](https://www.postgresql.org/download/windows/), pulsa **Download the installer** (el de EDB) y descarga la versión más nueva.
+2. Instálalo con las opciones por defecto. Te pedirá una **contraseña para el usuario `postgres`**: invéntala y apúntala. Deja el puerto en **5432**. Al terminar puedes cerrar *Stack Builder* sin instalar nada.
+3. Abre **SQL Shell (psql)** desde el menú Inicio. Pulsa Enter en cada pregunta (`Server`, `Database`, `Port`, `Username`) y escribe tu contraseña cuando la pida (no se ve mientras escribes). Si sale un aviso sobre *code page*, ignóralo. Crea la base con:
+
+   ```sql
+   CREATE DATABASE botm;
+   ```
+
+   Debe responder `CREATE DATABASE`. Escribe `\q` y Enter para salir.
+4. Tu `DATABASE_URL` queda así (cambia `TU_CONTRASENA` por la del paso 2):
+
+   ```text
+   postgresql://postgres:TU_CONTRASENA@localhost:5432/botm
+   ```
+
+   Sin `?sslmode=require` al final: un PostgreSQL en tu computadora no lo necesita.
+
+PostgreSQL queda como un servicio de Windows que arranca solo con la computadora. Si alguna vez BotM dice que nadie responde en la base, búscalo en **Servicios** (se llama `postgresql-x64-…`) e inícialo.
+
+#### Opción C: Supabase, Railway, Docker u otro proveedor
+
+Copia la connection string (URI) que te da el proveedor:
+
+- **Supabase**: botón **Connect** → la de **Session pooler** (la *Direct connection* solo funciona si tu internet tiene IPv6). Cambia `[YOUR-PASSWORD]` por la contraseña de tu base.
+- **Railway**: en el servicio de PostgreSQL, pestaña **Variables**, la `DATABASE_PUBLIC_URL` (la `DATABASE_URL` de Railway solo funciona para programas que corren dentro de Railway).
+- **Docker**: `docker run --name botm-db -e POSTGRES_PASSWORD=TU_CONTRASENA -e POSTGRES_DB=botm -p 5432:5432 -d postgres:16` y usa `postgresql://postgres:TU_CONTRASENA@localhost:5432/botm`.
+
+Si al conectar sale `self-signed certificate in certificate chain`, cambia `sslmode=require` por `sslmode=no-verify` al final de la dirección (la conexión sigue cifrada, solo no se comprueba el certificado del proveedor).
+
+> **Contraseñas con símbolos:** si tu contraseña tiene `@`, `:`, `/`, `#`, `?` o `%`, en la dirección hay que escribirlos codificados (`@` → `%40`, `:` → `%3A`, `/` → `%2F`, `#` → `%23`, `?` → `%3F`, `%` → `%25`). Lo más fácil es usar una contraseña de solo letras y números.
 
 ### 4. Crea la aplicación en Discord Developer Portal
 
@@ -180,7 +218,7 @@ Llena el `.env` (el de la carpeta principal) con lo que copiaste, sin comillas n
 DISCORD_TOKEN=el_token_del_bot
 DISCORD_CLIENT_ID=tu_application_id
 DISCORD_CLIENT_SECRET=el_client_secret
-DATABASE_URL=la_connection_string_de_neon
+DATABASE_URL=la_connection_string_del_paso_3
 SESSION_SECRET=una_clave_aleatoria_larga
 APP_URL=http://localhost:5000
 FRONTEND_URL=http://localhost:5000
@@ -219,7 +257,7 @@ npm run db:push
 ```
 
 - `npm install` descarga todo lo que necesita el proyecto (crea la carpeta `node_modules`). Tarda unos minutos y es normal que muestre avisos amarillos (`warn` / `deprecated`).
-- `npm run db:push` crea o actualiza las tablas en tu base de Neon. Con una base **nueva** no pregunta nada y termina con `[✓] Changes applied`.
+- `npm run db:push` crea o actualiza las tablas en tu base de datos (lee `DATABASE_URL` del `.env`). Con una base **nueva** no pregunta nada y termina con `[✓] Changes applied`. Si lo vuelves a correr y no hay nada que cambiar, dice `[i] No changes detected`: también está bien.
 
 **Si usas una base que ya tenía datos de una versión anterior de BotM**, puede hacerte preguntas en inglés. Te mueves con las flechas ↑ ↓ y eliges con Enter:
 
@@ -236,13 +274,20 @@ npm run db:push
 npm run dev
 ```
 
-En la consola deberías ver, entre otras, estas líneas:
+En la consola deberías ver, entre otras, estas líneas (el orden puede variar un poco):
 
 ```text
+🗄️ Base de datos: controlador PostgreSQL estándar (node-postgres)
+… [express] serving on port 5000
+🖥️ Panel web listo en http://localhost:5000
+✅ Conectado a la base de datos
 ✅ … comandos de barra registrados …
 🤖 Bot de Discord listo como BotM#1234
-… [express] serving on port 5000
 ```
+
+Con Neon la primera línea dice `controlador de Neon (WebSocket)`. Si alguna línea sale con ❌, mira [Problemas comunes](#problemas-comunes): el mensaje dice qué falta. El panel se abre aunque el bot o la base de datos fallen, para que veas el error con calma.
+
+Si Windows pregunta si permites que Node.js use la red, basta con **Redes privadas** (para usar el panel en tu computadora ni siquiera hace falta).
 
 **Deja esa ventana de PowerShell abierta**: si la cierras (o pulsas Ctrl + C), el bot y el panel se apagan.
 
@@ -277,13 +322,18 @@ Los ejemplos con todos los valores y comentarios están en [`.env.example`](.env
 | `DISCORD_TOKEN` | Sí | Token del bot (Developer Portal → Bot → Reset Token). Secreto. |
 | `DISCORD_CLIENT_ID` | Sí | Application ID (Developer Portal → General Information). Se usa para registrar los comandos y para el login del panel. |
 | `DISCORD_CLIENT_SECRET` | Sí | Client Secret (Developer Portal → OAuth2). Lo usa el login del panel. Secreto. |
-| `DATABASE_URL` | Sí | Connection string de Neon. Sin ella el programa no arranca. Secreta. |
+| `DATABASE_URL` | Sí | Connection string de tu base PostgreSQL (Neon, una instalada en tu computadora, Supabase, Railway…; ver el [paso 3](#3-crea-la-base-de-datos)). Sin ella el programa no arranca. Secreta. |
 | `SESSION_SECRET` | Sí | Clave aleatoria para firmar las sesiones del panel. Sin ella el programa no arranca; usa al menos 32 caracteres. |
 | `APP_URL` | Recomendada | Dirección pública del servidor, sin `/` al final. Por defecto `http://localhost:` + `PORT`. Discord vuelve del login a `APP_URL/auth/discord/callback`. |
 | `FRONTEND_URL` | Recomendada | Dirección del panel. Pon lo mismo que en `APP_URL` (el panel y el servidor van juntos). Por defecto, igual que `APP_URL`. |
 | `PORT` | No | Puerto donde escucha el servidor. Por defecto `5000`. |
 | `DISCORD_DEV_GUILD_ID` | No | ID de tu servidor de pruebas (o varios separados por comas). Con `npm run dev` los comandos se registran ahí al instante. Con `npm start`, si sigue puesto, el bot registra los comandos globales y borra las copias de prueba de esos servidores. |
 | `DEV_BYPASS_AUTH` | No | Solo para desarrollo: con `1` aparece `/auth/dev-login`, que entra al panel **sin Discord** y deja ver todos los servidores del bot. Solo funciona con `npm run dev`. Nunca lo actives en un servidor público. |
+| `DATABASE_DRIVER` | No | Fuerza el controlador de la base: `neon` o `pg`. Sin ella se elige solo: `neon` si `DATABASE_URL` es de Neon (`….neon.tech`) y `pg` (PostgreSQL normal) con cualquier otra. `pg` también funciona con Neon. Casi nunca hace falta. |
+| `DB_POOL_MAX` | No | Conexiones a la base abiertas a la vez (por defecto `10`). Déjalo así. |
+| `DB_CONNECTION_TIMEOUT_MS` | No | Cuánto esperar al abrir una conexión antes de dar error, en milisegundos (por defecto `10000`). |
+| `DB_IDLE_TIMEOUT_MS` | No | Cierra las conexiones que llevan este tiempo sin usarse, en milisegundos (por defecto `30000`). |
+| `DB_STATEMENT_TIMEOUT_MS` | No | Tiempo máximo de cada consulta, en milisegundos (por defecto `30000`; `0` = sin límite). |
 | `GLOBAL_CONCURRENCY` | No | Cuántas tareas del bot pueden correr a la vez (por defecto `50`). Déjalo así. |
 | `GLOBAL_TIMEOUT_MS` | No | Tiempo máximo de cada tarea del bot en milisegundos (por defecto `120000`). Déjalo así. |
 | `TWITTER_BEARER_TOKEN` / `X_BEARER_TOKEN` | No | No se usan: Twitter/X está desactivado. |
@@ -431,16 +481,35 @@ Cierra y vuelve a abrir PowerShell. Otra opción es escribir `npm.cmd` en lugar 
 ### El programa se cierra al arrancar
 
 - `❌ Falta SESSION_SECRET en el archivo .env` o `SESSION_SECRET todavía tiene el texto de ejemplo`: genera una clave con el comando del paso 5 y pégala en el `.env`.
-- `DATABASE_URL must be set to connect to PostgreSQL`: falta `DATABASE_URL`, o el `.env` no está en la carpeta principal del proyecto (revisa que no se llame `.env.txt`: en el Explorador activa **Vista → Extensiones de nombre de archivo**).
-- `EADDRINUSE`: otro programa ya usa el puerto 5000 (¿dejaste otra ventana con BotM abierta?). Ciérralo, o cambia `PORT`, `APP_URL`, `FRONTEND_URL` y el redirect de Discord al nuevo puerto.
+- `❌ Falta DATABASE_URL en el archivo .env`: falta `DATABASE_URL`, o el `.env` no está en la carpeta principal del proyecto (revisa que no se llame `.env.txt`: en el Explorador activa **Vista → Extensiones de nombre de archivo**).
+- `❌ El puerto 5000 ya está en uso (EADDRINUSE)`: otro programa ya usa el puerto 5000 (¿dejaste otra ventana con BotM abierta?). Ciérralo, o cambia `PORT`, `APP_URL`, `FRONTEND_URL` y el redirect de Discord al nuevo puerto.
+- `❌ No hay permiso para usar el puerto 5000 (EACCES)`: Windows a veces reserva ese puerto para sí mismo (pasa con Hyper-V o WSL). Usa otro, por ejemplo `PORT=3000`, y cambia también `APP_URL`, `FRONTEND_URL` y el redirect de Discord.
+- `❌ BotM no pudo arrancar el servidor web`: copia el error completo que sale debajo y pide ayuda. Si usas `npm start`, primero ejecuta `npm run build`.
+
+### La base de datos no conecta
+
+Al arrancar, BotM prueba la base y escribe `✅ Conectado a la base de datos` o una línea `❌ No se pudo usar la base de datos (…)` que termina con qué hacer. Las más comunes:
+
+- `password authentication failed` (`28P01`): el usuario o la contraseña de `DATABASE_URL` están mal. Si la contraseña tiene símbolos, mira la nota de [contraseñas con símbolos](#opción-c-supabase-railway-docker-u-otro-proveedor).
+- `relation "guilds" does not exist` (`42P01`): la base está vacía. Ejecuta `npm run db:push` y reinicia BotM.
+- `database "botm" does not exist` (`3D000`): falta crear la base (paso 3, opción B).
+- `ECONNREFUSED`: PostgreSQL no está encendido, o el host o el puerto de `DATABASE_URL` están mal. En Windows búscalo en **Servicios** (`postgresql-x64-…`) e inícialo.
+- `self-signed certificate`: cambia `sslmode=require` por `sslmode=no-verify` en `DATABASE_URL`.
+- `The server does not support SSL connections`: tu PostgreSQL no usa SSL; quita `?sslmode=require` del final de `DATABASE_URL`.
+
+Mientras la base no conecte, el panel abre pero sus secciones muestran errores. Corrige el `.env` y reinicia BotM.
 
 ### El bot aparece desconectado (offline)
 
-El panel puede abrir aunque el bot no se haya conectado. Busca en la consola un mensaje `❌ Failed to start Discord bot:` y mira qué dice:
+El panel abre aunque el bot no se haya conectado. Busca en la consola la línea `❌ El bot de Discord no se pudo conectar.`: dice qué pasó (con el mensaje original de Discord entre comillas) y qué hacer:
 
-- `An invalid token was provided` / `TokenInvalid`: el `DISCORD_TOKEN` está mal copiado. Genera otro en **Bot → Reset Token**.
-- `Used disallowed intents` (o `Privileged intent provided is not enabled or whitelisted`): faltan **Server Members Intent** o **Message Content Intent** (Developer Portal → Bot → Privileged Gateway Intents → Save Changes). BotM necesita los dos: sin el primero no se entera de quién entra (bienvenida y anti-raid) y sin el segundo no lee los comandos con prefijo.
+- `Falta DISCORD_TOKEN en el archivo .env`: pega el token del bot en `DISCORD_TOKEN` (paso 4).
+- `DISCORD_TOKEN no es válido ("An invalid token was provided.")`: el `DISCORD_TOKEN` está mal copiado. Genera otro en **Bot → Reset Token**.
+- `Faltan los Privileged Gateway Intents ("Used disallowed intents")`: faltan **Server Members Intent** o **Message Content Intent** (Developer Portal → Bot → Privileged Gateway Intents → Save Changes). BotM necesita los dos: sin el primero no se entera de quién entra (bienvenida y anti-raid) y sin el segundo no lee los comandos con prefijo.
+- `No se pudo llegar a Discord` o `Discord rechazó la conexión`: no hay internet, o un firewall, antivirus o proxy bloquea a Discord (o Discord está caído). Cuando se arregle, reinicia BotM.
 - No hay ningún error: recuerda que el bot vive dentro de `npm run dev`. Si cerraste PowerShell o la computadora se durmió, el bot se apaga.
+
+Después de corregir el `.env`, reinicia BotM (Ctrl + C y otra vez `npm run dev`): el bot solo intenta conectarse al arrancar.
 
 ### Los comandos `/` no aparecen
 
@@ -480,16 +549,18 @@ El panel guarda una cookie al pulsar "Iniciar sesión" y la revisa cuando Discor
 ### `npm run db:push` falla
 
 - `DATABASE_URL, ensure the database is provisioned`: falta `DATABASE_URL` en el `.env` (o el `.env` no está en la carpeta principal).
-- Errores de conexión o contraseña (`password authentication failed`, `ENOTFOUND`…): vuelve a copiar la connection string desde Neon (**Connect**).
+- Errores de conexión o contraseña (`password authentication failed`, `ENOTFOUND`, `ECONNREFUSED`…): vuelve a copiar la connection string (en Neon, desde **Connect**) y revisa que tu PostgreSQL esté encendido. Son los mismos casos de [La base de datos no conecta](#la-base-de-datos-no-conecta).
+- `self-signed certificate in certificate chain` (o `DEPTH_ZERO_SELF_SIGNED_CERT`): cambia `sslmode=require` por `sslmode=no-verify` en `DATABASE_URL`.
+- `The server does not support SSL connections`: quita `?sslmode=require` del final de `DATABASE_URL`.
 - Las preguntas en inglés no se ven bien o no responden a las flechas: ejecútalo desde PowerShell o el Símbolo del sistema (no desde Git Bash).
-- Con una base vieja, si sale un error que dice que la columna `enabled` o `post_interval` de `content_feeds` *contains null values*, abre el **SQL Editor** de Neon, ejecuta esto y vuelve a correr `npm run db:push`:
+- Con una base vieja, si sale un error que dice que la columna `enabled` o `post_interval` de `content_feeds` *contains null values*, abre el **SQL Editor** de Neon (con PostgreSQL en tu computadora, **SQL Shell (psql)** conectado a tu base: en `Database` escribe `botm`), ejecuta esto y vuelve a correr `npm run db:push`:
 
   ```sql
   UPDATE content_feeds SET enabled = true WHERE enabled IS NULL;
   UPDATE content_feeds SET post_interval = 30 WHERE post_interval IS NULL;
   ```
 
-- Si sale un error de que no se pudo crear `custom_commands_guild_name_unique` porque una clave está *duplicated*, es que tienes dos comandos personalizados con el mismo nombre en un servidor. En el **SQL Editor** de Neon puedes dejar solo uno de cada nombre con esto y luego repetir `npm run db:push`:
+- Si sale un error de que no se pudo crear `custom_commands_guild_name_unique` porque una clave está *duplicated*, es que tienes dos comandos personalizados con el mismo nombre en un servidor. En el **SQL Editor** de Neon (o en SQL Shell) puedes dejar solo uno de cada nombre con esto y luego repetir `npm run db:push`:
 
   ```sql
   DELETE FROM custom_commands a
@@ -519,7 +590,7 @@ npm run dev
 Para tenerlo encendido todo el tiempo en un servidor o hosting:
 
 1. Instala las dependencias **completas** con `npm install` (no uses `--omit=dev` ni `--production`: el servidor compilado todavía necesita algunas, como Vite).
-2. Pon en el `.env` tu dominio con HTTPS, por ejemplo `APP_URL=https://botm.tudominio.com` y `FRONTEND_URL=https://botm.tudominio.com`, y agrega `https://botm.tudominio.com/auth/discord/callback` en **OAuth2 → Redirects** de Discord.
+2. Pon en el `.env` tu dominio con HTTPS, por ejemplo `APP_URL=https://botm.tudominio.com` y `FRONTEND_URL=https://botm.tudominio.com`, y agrega `https://botm.tudominio.com/auth/discord/callback` en **OAuth2 → Redirects** de Discord. En `DATABASE_URL` puede ir la misma base que usabas o la que te dé tu hosting (si el hosting te da una dirección interna para su PostgreSQL, como Railway, úsala ahí).
 3. Pon `VITE_DISCORD_CLIENT_ID` en `client/.env` (o como variable de entorno) **antes** de compilar: queda dentro del panel compilado.
 4. Compila y arranca:
 
@@ -558,6 +629,7 @@ botM/
 │   └── src/pages/           Una página por sección del panel
 ├── server/
 │   ├── index.ts             Arranca todo: servidor web, panel y bot
+│   ├── db.ts                Conexión a la base de datos (Neon o cualquier PostgreSQL)
 │   ├── routes.ts, routes/   API del panel (login, ajustes, estadísticas…)
 │   ├── services/reddit.ts   Lee las publicaciones de Reddit
 │   └── bot/
