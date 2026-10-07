@@ -7,6 +7,9 @@ import { QueryClient, type QueryFunction, type QueryKey } from "@tanstack/react-
 /** Clave de react-query del estado de sesión (GET /api/auth/status). */
 export const AUTH_STATUS_KEY = ["/api/auth/status"] as const;
 
+/** Clave de react-query de los servidores que la persona administra (GET /api/user/guilds). */
+export const USER_GUILDS_KEY = ["/api/user/guilds"] as const;
+
 /** Cuerpo JSON de error que devuelve el servidor (todas las rutas usan { error, ... }). */
 export interface ApiErrorBody {
   error?: string;
@@ -18,7 +21,10 @@ export interface ApiErrorBody {
   botMissing?: boolean;
   /** 400: errores de validación por campo */
   details?: { field: string; message: string }[];
+  /** 503: Discord está limitando las solicitudes (segundos que sugiere Discord) */
   retryAfter?: number | null;
+  /** 429: segundos que faltan para poder repetir la acción */
+  retryAfterSeconds?: number;
   [key: string]: unknown;
 }
 
@@ -44,6 +50,21 @@ export const API_ERROR_TITLES: Record<ApiErrorKind, string> = {
   network: "No pudimos conectar con el panel",
 };
 
+/**
+ * ¿El texto del servidor es el aviso genérico de "el bot no está conectado"? En ese caso
+ * preferimos nuestro texto fijo; cualquier otro (p. ej. "Discord está limitando las
+ * solicitudes…") explica mejor qué pasó y se muestra tal cual.
+ */
+function isBotUnavailableText(text: string): boolean {
+  return /^el bot no est[aá]/i.test(text);
+}
+
+/** Segundos de espera que manda el servidor: retryAfterSeconds (429) o retryAfter (503 de Discord). */
+function retryAfterFrom(body: ApiErrorBody | null): number | null {
+  const raw = typeof body?.retryAfterSeconds === "number" ? body.retryAfterSeconds : body?.retryAfter;
+  return typeof raw === "number" && Number.isFinite(raw) && raw > 0 ? Math.ceil(raw) : null;
+}
+
 function kindFor(status: number, body: ApiErrorBody | null): ApiErrorKind {
   if (status === 0) return "network";
   if (status === 401) return "unauthorized";
@@ -63,19 +84,42 @@ export class ApiError extends Error {
   readonly status: number;
   readonly kind: ApiErrorKind;
   readonly body: ApiErrorBody | null;
+  /**
+   * Segundos que pide esperar el servidor antes de reintentar (429 de las acciones del
+   * panel o 503 porque Discord está limitando las solicitudes). null si no dijo nada.
+   */
+  readonly retryAfterSeconds: number | null;
 
   constructor(status: number, body: ApiErrorBody | null) {
     const kind = kindFor(status, body);
     const serverText = typeof body?.error === "string" && body.error.trim() ? body.error.trim() : null;
-    // Para estos casos el texto es siempre el mismo; para el resto, el del servidor (ya viene en español)
-    const fixed = kind === "unauthorized" || kind === "forbidden" || kind === "botMissing"
-      || kind === "unavailable" || kind === "network";
-    super(fixed || !serverText ? `${API_ERROR_TITLES[kind]}.` : serverText);
+    // Para estos casos el texto es siempre el mismo; para el resto, el del servidor (ya viene en español).
+    // En un 503 solo usamos el fijo si el servidor no explicó nada mejor que "el bot no está conectado".
+    const fixed = kind === "unauthorized" || kind === "forbidden" || kind === "botMissing" || kind === "network"
+      || (kind === "unavailable" && (!serverText || isBotUnavailableText(serverText)));
+    super(
+      !fixed && serverText ? serverText
+      : status === 429 ? "Espera un momento e intenta de nuevo."
+      : `${API_ERROR_TITLES[kind]}.`,
+    );
     this.name = "ApiError";
     this.status = status;
     this.kind = kind;
     this.body = body;
+    this.retryAfterSeconds = retryAfterFrom(body);
   }
+}
+
+/**
+ * ¿Es una espera por límite de solicitudes? 429 de las acciones del panel, o 503 porque
+ * Discord está limitando (el servidor manda retryAfter, aunque sea null).
+ */
+export function isRateLimitError(error: unknown): error is ApiError {
+  if (!isApiError(error)) return false;
+  if (error.status === 429) return true;
+  if (error.status !== 503 || !error.body) return false;
+  const serverText = typeof error.body.error === "string" ? error.body.error.trim() : "";
+  return "retryAfter" in error.body || /^discord est[aá] limitando/i.test(serverText);
 }
 
 export function isApiError(error: unknown): error is ApiError {
@@ -105,11 +149,22 @@ export function markSessionExpired() {
   });
 }
 
+/**
+ * La lista de servidores quedó vieja: 403 (ya no administra ese servidor) o 404 con
+ * botMissing (sacaron al bot). Se vuelve a pedir para que el selector deje de ofrecerlo
+ * o muestre "Sin bot". cancelRefetch: false → varios errores seguidos piden la lista una sola vez.
+ */
+function refreshUserGuilds() {
+  void queryClient.invalidateQueries({ queryKey: USER_GUILDS_KEY, exact: true }, { cancelRefetch: false });
+}
+
 async function throwIfResNotOk(res: Response) {
   if (res.ok) return;
   const error = new ApiError(res.status, await readErrorBody(res));
   if (error.kind === "unauthorized") {
     markSessionExpired();
+  } else if (error.kind === "forbidden" || error.kind === "botMissing") {
+    refreshUserGuilds();
   }
   throw error;
 }
@@ -211,7 +266,7 @@ export function getApiErrorInfo(error: unknown): ApiErrorInfo {
       break;
     case "unavailable":
       // El texto del servidor solo si aporta algo (p. ej. "Discord está limitando las solicitudes")
-      description = serverText && !serverText.startsWith("El bot no est")
+      description = serverText && !isBotUnavailableText(serverText)
         ? serverText
         : "Puede que se esté reiniciando o que Discord esté tardando en responder.";
       break;
@@ -222,5 +277,12 @@ export function getApiErrorInfo(error: unknown): ApiErrorInfo {
       description = serverText || "Intenta de nuevo en un momento.";
   }
 
-  return { kind: error.kind, status: error.status, title: API_ERROR_TITLES[error.kind], description };
+  // Límite de solicitudes: el título dice que basta con esperar (el kind no cambia)
+  let title: string = API_ERROR_TITLES[error.kind];
+  if (isRateLimitError(error)) {
+    title = error.status === 429 ? "Espera un momento" : "Discord nos pidió esperar un momento";
+    if (!serverText) description = "Intenta de nuevo en unos segundos.";
+  }
+
+  return { kind: error.kind, status: error.status, title, description };
 }

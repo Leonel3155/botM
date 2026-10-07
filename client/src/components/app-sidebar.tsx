@@ -1,3 +1,4 @@
+import { useEffect } from "react";
 import { Bot, Loader2, LogOut } from "lucide-react";
 import { Link, useLocation } from "wouter";
 import {
@@ -33,10 +34,16 @@ export function AppSidebar() {
   const avatarUrl = userAvatarUrl(user);
   const activeHref = findNavItem(location)?.href;
 
-  // En móvil el menú es un panel deslizable: se cierra al navegar
+  // En móvil el menú es un panel deslizable: se cierra al navegar (también al tocar la
+  // página en la que ya está, que no cambia la ruta)
   const closeOnMobile = () => {
     if (isMobile) setOpenMobile(false);
   };
+
+  // ...y con cualquier otro cambio de ruta: botón "Atrás" del móvil, enlaces de las páginas
+  useEffect(() => {
+    setOpenMobile(false);
+  }, [location, setOpenMobile]);
 
   const handleLogout = () => {
     logout.mutate(undefined, {
