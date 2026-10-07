@@ -105,6 +105,24 @@ function BotMissingBanner({ guildId, guildName }: { guildId: string; guildName: 
   );
 }
 
+function BotOfflineBanner() {
+  return (
+    <div
+      className="mb-6 flex items-start gap-3 rounded-lg border border-status-warning/40 bg-status-warning/10 p-4"
+      role="status"
+      data-testid="banner-bot-offline"
+    >
+      <Bot className="mt-0.5 h-5 w-5 shrink-0 text-status-warning" aria-hidden="true" />
+      <div>
+        <p className="text-sm font-medium text-foreground">El bot está desconectado de Discord</p>
+        <p className="text-sm text-muted-foreground">
+          Lo intenta de nuevo solo. Si sigue así, revisa la consola donde corre el bot. Hasta que vuelva no podrás guardar cambios.
+        </p>
+      </div>
+    </div>
+  );
+}
+
 export function PageSkeleton() {
   return (
     <div className="space-y-6" aria-busy="true" aria-label="Cargando">
@@ -151,7 +169,11 @@ export function RequireGuild({ children }: { children: ReactNode }) {
 
   return (
     <Fragment key={selectedGuild.id}>
-      {!selectedGuild.botInGuild && <BotMissingBanner guildId={selectedGuild.id} guildName={selectedGuild.name} />}
+      {!selectedGuild.botOnline ? (
+        <BotOfflineBanner />
+      ) : (
+        !selectedGuild.botInGuild && <BotMissingBanner guildId={selectedGuild.id} guildName={selectedGuild.name} />
+      )}
       {children}
     </Fragment>
   );

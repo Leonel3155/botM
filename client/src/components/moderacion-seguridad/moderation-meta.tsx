@@ -89,32 +89,19 @@ export function ActionBadge({ type, duration, className }: { type: string; durat
 
 /**
  * Estado de un silencio: vigente (con cuándo termina) o terminado.
- * Si ya pasó la hora y sigue vigente, el bot pudo reiniciarse a mitad: se avisa.
+ * El silencio es un aislamiento de Discord: Discord lo quita solo al pasar su duración.
  */
 export function MuteStatus({ action, now }: { action: ModerationActionItem; now: Date }) {
   if (action.type !== "mute") return null;
 
-  if (!action.active) {
+  const start = parseDate(action.createdAt);
+  const end = start && action.duration ? new Date(start.getTime() + action.duration * 60_000) : null;
+
+  if (!action.active || (end && end.getTime() <= now.getTime())) {
     return (
       <span className="inline-flex items-center gap-1.5 text-xs text-muted-foreground">
         <span className="h-1.5 w-1.5 rounded-full bg-status-offline" aria-hidden="true" />
         Terminado
-      </span>
-    );
-  }
-
-  const start = parseDate(action.createdAt);
-  const end = start && action.duration ? new Date(start.getTime() + action.duration * 60_000) : null;
-
-  // El bot quita el silencio con un temporizador: si se reinició a mitad, puede seguir puesto
-  if (end && end.getTime() <= now.getTime()) {
-    return (
-      <span className="flex flex-col gap-0.5 text-xs text-status-warning">
-        <span className="inline-flex items-center gap-1.5">
-          <span className="h-1.5 w-1.5 rounded-full bg-status-warning" aria-hidden="true" />
-          Debía terminar {formatRelative(end, now)}
-        </span>
-        <span className="text-muted-foreground">Si sigue silenciado en Discord, usa /unmute.</span>
       </span>
     );
   }

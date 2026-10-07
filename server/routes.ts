@@ -26,7 +26,7 @@ import { setupEngagementRoutes } from "./routes/engagement";
 import { setupSecurityRoutes } from "./routes/security";
 import { setupModerationRoutes } from "./routes/moderation";
 import { setupCustomCommandRoutes } from "./routes/customCommands";
-import { asJson, isRowId } from "./routes/helpers";
+import { asJson, checkPanelUserCanUseChannel, isRowId } from "./routes/helpers";
 import {
   type AppSession,
   requireAuth,
@@ -43,6 +43,7 @@ import {
   isAllowedOrigin,
   isBotInGuild,
   isDevSession,
+  isRequestAuthenticated,
   isSessionAuthenticated,
   isSnowflake,
   onSessionEnded,
@@ -166,9 +167,6 @@ export async function registerRoutes(app: Express, { sessionParser }: RegisterRo
     return requireAuth(req, res, next);
   });
 
-  // Setup channel configuration routes
-  setupChannelRoutes(app);
-
   // =============================================
   // WebSocket (tiempo real): solo sesiones válidas y solo servidores que administras
   // =============================================
@@ -208,7 +206,7 @@ export async function registerRoutes(app: Express, { sessionParser }: RegisterRo
     try {
       sessionParser(req as unknown as Request, {} as Response, () => {
         try {
-          if (!isSessionAuthenticated(req.session)) {
+          if (!isRequestAuthenticated(req)) {
             return rejectUpgrade(socket, 401, 'Unauthorized');
           }
           wss.handleUpgrade(req, socket, head, (ws) => {
@@ -386,7 +384,8 @@ export async function registerRoutes(app: Express, { sessionParser }: RegisterRo
             icon: guild.icon,
             owner: true,
             permissions: '8',
-            botInGuild: true
+            botInGuild: true,
+            botOnline: true
           }))
         : [];
       return res.json(guilds);
@@ -395,6 +394,8 @@ export async function registerRoutes(app: Express, { sessionParser }: RegisterRo
     try {
       const guilds = await getUserGuilds(req.session);
 
+      // Si el bot no está conectado a Discord no sabemos dónde está: se avisa con botOnline
+      const botOnline = bot.client.isReady();
       // Solo servidores donde es dueño o tiene Administrador / Gestionar servidor
       const adminGuilds: UserGuildsResponse = guilds
         .filter(canManageGuild)
@@ -404,7 +405,8 @@ export async function registerRoutes(app: Express, { sessionParser }: RegisterRo
           icon: guild.icon,
           owner: guild.owner,
           permissions: guild.permissions,
-          botInGuild: isBotInGuild(guild.id)
+          botInGuild: isBotInGuild(guild.id),
+          botOnline
         }));
 
       return res.json(adminGuilds);
@@ -582,6 +584,10 @@ export async function registerRoutes(app: Express, { sessionParser }: RegisterRo
       if (!findGuildTextChannel(botGuild, feedData.channelId)) {
         return res.status(400).json({ error: 'Ese canal no existe en este servidor o no es un canal de texto.' });
       }
+      const userProblem = await checkPanelUserCanUseChannel(req, botGuild, feedData.channelId);
+      if (userProblem) {
+        return res.status(403).json({ error: userProblem });
+      }
 
       await ensureGuildRow(botGuild);
       const feed = await storage.createContentFeed({
@@ -625,6 +631,12 @@ export async function registerRoutes(app: Express, { sessionParser }: RegisterRo
       if (body.channelId && !findGuildTextChannel(getBotGuild(res), body.channelId)) {
         return res.status(400).json({ error: 'Ese canal no existe en este servidor o no es un canal de texto.' });
       }
+      if (body.channelId && body.channelId !== existing.channelId) {
+        const userProblem = await checkPanelUserCanUseChannel(req, getBotGuild(res), body.channelId);
+        if (userProblem) {
+          return res.status(403).json({ error: userProblem });
+        }
+      }
 
       const updates: ContentFeedUpdate = {};
       if (body.channelId !== undefined) updates.channelId = body.channelId;
@@ -666,6 +678,8 @@ export async function registerRoutes(app: Express, { sessionParser }: RegisterRo
     }
   });
 
+  // Canales del servidor (configuración y lista de canales de Discord)
+  setupChannelRoutes(app, { broadcast });
   // Resumen, rankings y analíticas
   setupDashboardRoutes(app);
   // Bienvenida, pregunta del día y roles de Discord

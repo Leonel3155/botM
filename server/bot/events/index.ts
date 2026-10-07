@@ -127,6 +127,18 @@ export function setupEvents(bot: DiscordBot) {
     }
   });
 
+  // Le quitaron el aislamiento antes de tiempo desde Discord (sin /unmute): su mute ya no está vigente.
+  // (Cuando termina solo, Discord no avisa; el panel lo da por terminado al pasar su duración.)
+  bot.client.on(Events.GuildMemberUpdate, async (oldMember: GuildMember | PartialGuildMember, newMember: GuildMember) => {
+    const wasTimedOut = (oldMember.communicationDisabledUntilTimestamp ?? 0) > Date.now();
+    if (!wasTimedOut || newMember.isCommunicationDisabled()) return;
+    try {
+      await storage.deactivateModerationActions(newMember.guild.id, newMember.id, 'mute');
+    } catch (error) {
+      console.error('No se pudo marcar el mute como terminado:', error);
+    }
+  });
+
   // Si el servidor pide aceptar las reglas, el rol automático se da al aceptarlas
   bot.client.on(Events.GuildMemberUpdate, async (oldMember: GuildMember | PartialGuildMember, newMember: GuildMember) => {
     if (!oldMember.pending || newMember.pending) return;

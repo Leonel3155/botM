@@ -80,7 +80,7 @@ export function ServerSwitcher({ onNavigate }: ServerSwitcherProps) {
           <div className="min-w-0 flex-1">
             <p className="truncate text-sm font-medium text-sidebar-foreground">{selectedGuild.name}</p>
             <p className={cn("text-xs", selectedGuild.botInGuild ? "text-muted-foreground" : "text-status-warning")}>
-              {selectedGuild.botInGuild ? "Servidor actual" : "El bot no está aquí"}
+              {selectedGuild.botInGuild ? "Servidor actual" : selectedGuild.botOnline ? "El bot no está aquí" : "Bot desconectado"}
             </p>
           </div>
           <ChevronsUpDown className="h-4 w-4 shrink-0 text-muted-foreground" />
@@ -103,7 +103,7 @@ export function ServerSwitcher({ onNavigate }: ServerSwitcherProps) {
             >
               <GuildAvatar guild={guild} size="xs" />
               <span className="min-w-0 flex-1 truncate">{guild.name}</span>
-              {!guild.botInGuild && (
+              {!guild.botInGuild && guild.botOnline && (
                 <span className="shrink-0 text-[10px] font-medium uppercase tracking-wide text-muted-foreground">
                   Sin bot
                 </span>

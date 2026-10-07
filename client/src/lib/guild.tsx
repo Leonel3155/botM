@@ -10,6 +10,8 @@ export interface UserGuild {
   owner: boolean;
   permissions: string;
   botInGuild: boolean;
+  /** false: el bot no está conectado a Discord y botInGuild no se sabe (no hay que pedir invitarlo). */
+  botOnline: boolean;
 }
 
 // La clave vive en queryClient.ts: ahí se vuelve a pedir la lista tras un 403 o un "bot ausente"
@@ -63,6 +65,7 @@ function normalizeGuilds(data: unknown): UserGuild[] {
       owner: g.owner === true,
       permissions: typeof g.permissions === "string" ? g.permissions : "",
       botInGuild: g.botInGuild === true,
+      botOnline: g.botOnline !== false,
     }));
 }
 
@@ -80,6 +83,11 @@ export function GuildProvider({ children }: { children: ReactNode }) {
     // Si la persona invita al bot en otra pestaña, al volver se actualiza "botInGuild"
     staleTime: 30_000,
     refetchOnWindowFocus: true,
+    // Con el bot desconectado se vuelve a preguntar cada poco: el bot se reconecta solo
+    refetchInterval: (q) =>
+      Array.isArray(q.state.data) && q.state.data.some((g) => (g as { botOnline?: unknown } | null)?.botOnline === false)
+        ? 15_000
+        : false,
   });
 
   const guilds = useMemo(() => sortGuilds(normalizeGuilds(query.data)), [query.data]);

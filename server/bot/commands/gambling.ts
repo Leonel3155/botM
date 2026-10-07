@@ -289,7 +289,7 @@ export const gamblingCommands = [
         if (timedOut) result = `⏰ Se acabó el tiempo y te plantaste automáticamente.\n${result}`;
 
         settled = true;
-        const balance = await settleWithRetry(guildId, userId, bet, payout);
+        const balance = await settleWithRetry(guildId, userId, bet, payout, hold.holdId);
         const net = payout - bet;
 
         const finalEmbed = new EmbedBuilder()
@@ -314,7 +314,7 @@ export const gamblingCommands = [
       } finally {
         // Si algo falló antes de pagar (p. ej. Discord no respondió), devolvemos la apuesta
         if (!settled) {
-          await settleWithRetry(guildId, userId, bet, bet);
+          await settleWithRetry(guildId, userId, bet, bet, hold.holdId);
         }
       }
     }
@@ -538,10 +538,10 @@ export const gamblingCommands = [
 
 // Paga el resultado de una apuesta retenida. Reintenta una vez, pero solo si es seguro que el primer
 // intento no guardó nada (SettleError.safeToRetry); ante la duda no reintenta, para no pagar dos veces.
-async function settleWithRetry(guildId: string, userId: string, bet: number, payout: number): Promise<number | null> {
+async function settleWithRetry(guildId: string, userId: string, bet: number, payout: number, holdId: string): Promise<number | null> {
   for (let attempt = 1; attempt <= 2; attempt++) {
     try {
-      return await economyTask(guildId, userId, () => settleBet(guildId, userId, bet, payout));
+      return await economyTask(guildId, userId, () => settleBet(guildId, userId, bet, payout, holdId));
     } catch (error) {
       const retry = attempt < 2 && error instanceof SettleError && error.safeToRetry;
       console.error(

@@ -144,29 +144,27 @@ app.use((req, res, next) => {
     serveStatic(app);
   }
 
-  // Start Discord bot
-  try {
-    await bot.start();
-    
-    // Start content scheduler
-    const scheduler = new ContentScheduler(bot);
-    await scheduler.startScheduler();
-    
-    console.log('🚀 Discord bot and content scheduler started successfully');
-  } catch (error) {
-    console.error('❌ Failed to start Discord bot:', error);
-  }
+  // Bot de Discord y tareas programadas, sin frenar el panel: si Discord no responde al arrancar,
+  // el bot lo reintenta solo. Las tareas (feeds, pregunta del día) esperan a que el bot esté listo.
+  const scheduler = new ContentScheduler(bot);
+  scheduler.startScheduler().catch((error) => {
+    console.error('❌ No se pudo iniciar el programador de contenido:', error);
+  });
+  void bot.startWithRetry();
 
   // ALWAYS serve the app on the port specified in the environment variable PORT
   // Other ports are firewalled. Default to 5000 if not specified.
   // this serves both the API and the client.
   // It is the only port that is not firewalled.
   const port = parseInt(process.env.PORT || '5000', 10);
+  // En desarrollo solo se escucha en este equipo (127.0.0.1): el modo de desarrollo (Vite,
+  // DEV_BYPASS_AUTH) no queda abierto a la red local. HOST=0.0.0.0 lo abre (p. ej. para el móvil).
+  const host = process.env.HOST?.trim() || (app.get("env") === "development" ? "127.0.0.1" : "0.0.0.0");
   server.listen({
     port,
-    host: "0.0.0.0",
+    host,
   }, () => {
-    log(`serving on port ${port}`);
+    log(`serving on ${host}:${port}`);
   });
 
   // Graceful shutdown

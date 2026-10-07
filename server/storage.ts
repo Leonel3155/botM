@@ -3,7 +3,7 @@ import { CONTENT_FEED_LIMITS, CUSTOM_COMMAND_LIMITS, type RaidEventStatusFilter 
 import { db } from './db';
 import {
   users, guilds, userLevels, userEconomy, economyTransactions,
-  moderationActions, raidEvents, contentFeeds, postedContent, customCommands,
+  moderationActions, raidEvents, contentFeeds, postedContent, customCommands, channelLockdowns,
   antiRaidConfigSchema, defaultAntiRaidConfig,
   type User, type Guild, type UserLevel, type UserEconomy,
   type InsertUser, type InsertGuild, type InsertUserLevel, type InsertUserEconomy,
@@ -11,7 +11,7 @@ import {
   type ContentFeed, type InsertContentFeed, type AntiRaidConfig, type AntiRaidSettings,
   type CustomCommand, type InsertCustomCommand
 } from '@shared/schema';
-import { eq, and, desc, sql, gte, ne, type SQL } from 'drizzle-orm';
+import { eq, and, desc, sql, gte, lt, ne, inArray, type SQL } from 'drizzle-orm';
 import { alias, type PgColumn } from 'drizzle-orm/pg-core';
 
 // Datos mínimos para registrar una acción de moderación (encaja con User/Guild de discord.js)
@@ -26,6 +26,22 @@ export interface ModerationLogEntry {
 }
 
 export type ContentFeedUpdate = Partial<Omit<ContentFeed, 'id' | 'guildId'>>;
+
+/** Cómo estaban los permisos de @everyone en un canal antes de /lockdown (true = permitido, false = negado, null = sin definir). */
+export interface ChannelLockdownSnapshot {
+  permissions: Record<string, boolean | null>;
+  /** Si @everyone ya tenía permisos propios en el canal (si no, al desbloquear se puede quitar del todo). */
+  hadOverwrite: boolean;
+}
+
+/** Publicación de un feed que ya salió en Discord (para no repetirla). */
+export interface PostedContentEntry {
+  feedId: string;
+  sourceId: string;
+  messageId: string | null;
+  title: string | null;
+  url: string | null;
+}
 
 export const MAX_CONTENT_FEEDS_PER_GUILD = CONTENT_FEED_LIMITS.maxPerGuild;
 
@@ -178,6 +194,12 @@ export interface IStorage {
   getModerationActions(guildId: string, limit?: number): Promise<ModerationAction[]>;
   getUserModerationActions(guildId: string, userId: string, type?: string, limit?: number): Promise<ModerationAction[]>;
   deactivateModerationActions(guildId: string, userId: string, type: string): Promise<number>;
+  getActiveModerationActionsByType(type: string): Promise<ModerationAction[]>;
+
+  // /lockdown: permisos previos de @everyone por canal
+  saveChannelLockdown(guildId: string, channelId: string, snapshot: ChannelLockdownSnapshot): Promise<void>;
+  getChannelLockdown(guildId: string, channelId: string): Promise<ChannelLockdownSnapshot | undefined>;
+  deleteChannelLockdown(guildId: string, channelId: string): Promise<void>;
 
   // Anti-raid methods
   createRaidEvent(data: InsertRaidEvent): Promise<RaidEvent>;
@@ -218,6 +240,8 @@ export interface IStorage {
   deleteContentFeed(id: string, guildId: string): Promise<boolean>;
   getContentFeeds(guildId: string): Promise<any[]>;
   createContentFeed(feedData: any): Promise<any>;
+  getPostedSourceIds(feedId: string, sourceIds: string[]): Promise<Set<string>>;
+  recordPostedContent(entry: PostedContentEntry): Promise<void>;
   updateGuildSettings(guildId: string, settings: any): Promise<void>;
 }
 
@@ -602,6 +626,43 @@ export class DatabaseStorage implements IStorage {
       ))
       .returning({ id: moderationActions.id });
     return updated.length;
+  }
+
+  // Acciones aún vigentes de un tipo en todos los servidores, de la más nueva a la más vieja
+  // (p. ej. mutes, al arrancar el bot)
+  async getActiveModerationActionsByType(type: string): Promise<ModerationAction[]> {
+    return await db
+      .select()
+      .from(moderationActions)
+      .where(and(eq(moderationActions.type, type), eq(moderationActions.active, true)))
+      .orderBy(desc(moderationActions.createdAt))
+      .limit(1000);
+  }
+
+  // ===== LOCKDOWN DE CANALES =====
+  // Guarda (o reemplaza) cómo estaban los permisos antes de bloquear el canal
+  async saveChannelLockdown(guildId: string, channelId: string, snapshot: ChannelLockdownSnapshot): Promise<void> {
+    await db
+      .insert(channelLockdowns)
+      .values({ guildId, channelId, previous: snapshot })
+      .onConflictDoUpdate({
+        target: [channelLockdowns.guildId, channelLockdowns.channelId],
+        set: { previous: snapshot, createdAt: sql`now()` },
+      });
+  }
+
+  async getChannelLockdown(guildId: string, channelId: string): Promise<ChannelLockdownSnapshot | undefined> {
+    const [row] = await db
+      .select({ previous: channelLockdowns.previous })
+      .from(channelLockdowns)
+      .where(and(eq(channelLockdowns.guildId, guildId), eq(channelLockdowns.channelId, channelId)));
+    return row ? normalizeLockdownSnapshot(row.previous) : undefined;
+  }
+
+  async deleteChannelLockdown(guildId: string, channelId: string): Promise<void> {
+    await db
+      .delete(channelLockdowns)
+      .where(and(eq(channelLockdowns.guildId, guildId), eq(channelLockdowns.channelId, channelId)));
   }
 
   // ===== ANTI-RAID METHODS =====
@@ -1072,6 +1133,24 @@ export class DatabaseStorage implements IStorage {
     });
   }
 
+  // De esas publicaciones (IDs de Reddit), cuáles ya publicó el feed
+  async getPostedSourceIds(feedId: string, sourceIds: string[]): Promise<Set<string>> {
+    if (sourceIds.length === 0) return new Set();
+    const rows = await db
+      .select({ sourceId: postedContent.sourceId })
+      .from(postedContent)
+      .where(and(eq(postedContent.feedId, feedId), inArray(postedContent.sourceId, sourceIds)));
+    return new Set(rows.map((row) => row.sourceId));
+  }
+
+  // Apunta lo publicado y olvida lo de hace más de una semana (para entonces ya no está en "hot")
+  async recordPostedContent(entry: PostedContentEntry): Promise<void> {
+    await db.insert(postedContent).values(entry);
+    await db
+      .delete(postedContent)
+      .where(and(eq(postedContent.feedId, entry.feedId), lt(postedContent.postedAt, new Date(Date.now() - POSTED_CONTENT_RETENTION_MS))));
+  }
+
   async updateGuildSettings(guildId: string, settings: any): Promise<void> {
     // Mezcla los ajustes nuevos con el JSON guardado (guilds.settings).
     // Solo actualiza servidores que ya existen: nunca crea filas para IDs desconocidos
@@ -1086,6 +1165,8 @@ export class DatabaseStorage implements IStorage {
 
 
 const DAY_MS = 24 * 60 * 60 * 1000;
+// Cuánto se recuerda lo que publicó cada feed
+const POSTED_CONTENT_RETENTION_MS = 7 * DAY_MS;
 // Tope de filas para las analíticas (de sobra para 30 días de moderación de un servidor)
 const MAX_ANALYTICS_ROWS = 20_000;
 
@@ -1188,3 +1269,16 @@ export function normalizeAntiRaidConfig(raw: unknown): AntiRaidConfig {
 }
 
 export const storage = new DatabaseStorage();
+
+// El JSON guardado de un lockdown, validado (lo que no sea true/false cuenta como "sin definir")
+function normalizeLockdownSnapshot(raw: unknown): ChannelLockdownSnapshot {
+  const source = raw && typeof raw === 'object' && !Array.isArray(raw) ? (raw as Record<string, unknown>) : {};
+  const rawPermissions = source.permissions && typeof source.permissions === 'object' && !Array.isArray(source.permissions)
+    ? (source.permissions as Record<string, unknown>)
+    : {};
+  const permissions: Record<string, boolean | null> = {};
+  for (const [name, value] of Object.entries(rawPermissions)) {
+    permissions[name] = typeof value === 'boolean' ? value : null;
+  }
+  return { permissions, hadOverwrite: source.hadOverwrite === true };
+}

@@ -1,40 +1,69 @@
-import { SlashCommandBuilder, ChatInputCommandInteraction, EmbedBuilder, GuildMember, TextChannel, PermissionFlagsBits, MessageFlags, PermissionsString, PermissionOverwriteOptions } from 'discord.js';
-import { storage } from '../../storage';
+import {
+  SlashCommandBuilder,
+  ChatInputCommandInteraction,
+  EmbedBuilder,
+  GuildMember,
+  TextChannel,
+  PermissionFlagsBits,
+  PermissionsBitField,
+  MessageFlags,
+  PermissionsString,
+  PermissionOverwriteOptions,
+  DiscordAPIError,
+  RESTJSONErrorCodes,
+  type Client,
+} from 'discord.js';
+import { storage, type ChannelLockdownSnapshot } from '../../storage';
 import { DiscordBot } from '../index';
 
-// Helper function to check if a member has moderator permissions
-function hasModeratorPermissions(member: GuildMember): boolean {
-  if (!member) return false;
-
-  // Define the roles that have moderator privileges
-  const moderatorRoleNames = ['Moderador', 'Admin', 'Staff'];
-  const hasRole = member.roles.cache.some(role => moderatorRoleNames.includes(role.name));
-
-  // Alternatively, you can check for specific permissions if roles are not strictly defined
-  const hasPermission = member.permissions.has(PermissionFlagsBits.ManageMessages) ||
-                        member.permissions.has(PermissionFlagsBits.KickMembers) ||
-                        member.permissions.has(PermissionFlagsBits.BanMembers) ||
-                        member.permissions.has(PermissionFlagsBits.ManageRoles) ||
-                        member.permissions.has(PermissionFlagsBits.ManageChannels);
-
-  return hasRole || hasPermission;
+// Cada comando exige en el código el mismo permiso que pide en Discord (setDefaultMemberPermissions):
+// así, aunque un admin abra el comando a otro rol en Ajustes → Integraciones, solo lo usa quien
+// tiene ese permiso. memberPermissions ya tiene en cuenta los permisos del canal donde se usa.
+async function requirePermission(
+  interaction: ChatInputCommandInteraction,
+  permission: bigint,
+  label: string,
+  action: string
+): Promise<boolean> {
+  if (interaction.memberPermissions?.has(permission)) return true;
+  await interaction.reply({
+    content: `⛔ **Acceso denegado**\nNecesitas el permiso **${label}** para ${action}.`,
+    flags: MessageFlags.Ephemeral,
+  });
+  return false;
 }
 
-// Tope del /mute: el auto-unmute usa setTimeout, que no admite más de ~24.8 días
-// (con un valor mayor Node lo dispara de inmediato).
-const MAX_MUTE_MINUTOS = 10080; // 1 semana
+// Quien usa el comando, como miembro del servidor (con sus roles)
+async function fetchModerator(interaction: ChatInputCommandInteraction): Promise<GuildMember | null> {
+  if (interaction.inCachedGuild()) return interaction.member;
+  if (!interaction.guild) return null;
+  return interaction.guild.members.fetch(interaction.user.id).catch(() => null);
+}
 
-// Permisos que se niegan al rol "Muteado". SendMessages no cubre los hilos:
-// escribir en hilos se controla con SendMessagesInThreads.
-const MUTE_DENY: PermissionsString[] = [
-  'SendMessages',
-  'SendMessagesInThreads',
-  'CreatePublicThreads',
-  'CreatePrivateThreads',
-  'AddReactions',
-  'Speak',
-  'Connect',
-];
+// Igual que en Discord: solo puedes moderar a quien tiene su rol más alto por debajo del tuyo
+// (el dueño del servidor puede con todos). Responde y devuelve false si no.
+async function ensureOutranks(interaction: ChatInputCommandInteraction, target: GuildMember): Promise<boolean> {
+  if (interaction.user.id === target.guild.ownerId) return true;
+  const moderator = await fetchModerator(interaction);
+  if (moderator && moderator.roles.highest.comparePositionTo(target.roles.highest) > 0) return true;
+  await interaction.reply({
+    content: '⛔ No puedes moderar a alguien con un rol igual o más alto que el tuyo.',
+    flags: MessageFlags.Ephemeral,
+  });
+  return false;
+}
+
+function isUnknownMember(error: unknown): boolean {
+  return error instanceof DiscordAPIError && error.code === RESTJSONErrorCodes.UnknownMember;
+}
+
+// Tope del /mute. Discord permite aislar hasta 28 días; aquí se deja en 1 semana.
+const MAX_MUTE_MINUTOS = 10080; // 1 semana
+const MAX_TIMEOUT_MS = 28 * 24 * 60 * 60 * 1000;
+
+// Antes /mute daba un rol "Muteado" y lo quitaba con un temporizador en memoria (se perdía al
+// reiniciar). Ahora usa el aislamiento de Discord; el rol viejo solo se quita a quien aún lo tenga.
+const LEGACY_MUTE_ROLE = 'Muteado';
 
 // Permisos que /lockdown quita a @everyone (incluye hilos del canal)
 const LOCKDOWN_PERMS: PermissionsString[] = [
@@ -49,6 +78,60 @@ function overwriteOptions(perms: PermissionsString[], value: boolean | null): Pe
   const options: PermissionOverwriteOptions = {};
   for (const perm of perms) options[perm] = value;
   return options;
+}
+
+/**
+ * Al arrancar el bot: los mutes del sistema viejo (rol "Muteado") que siguen vigentes pasan a ser
+ * un aislamiento de Discord por el tiempo que les quedaba, y se quita el rol. Los mutes que ya
+ * terminaron se marcan como inactivos en el historial.
+ */
+export async function migrateLegacyMutes(client: Client): Promise<void> {
+  let rows;
+  try {
+    rows = await storage.getActiveModerationActionsByType('mute');
+  } catch (error) {
+    console.error('[MUTE] No se pudieron revisar los mutes vigentes:', error);
+    return;
+  }
+
+  const now = Date.now();
+  const seen = new Set<string>();
+  // Vienen del más nuevo al más viejo: cuenta el último mute de cada persona
+  for (const row of rows) {
+    const key = `${row.guildId}:${row.userId}`;
+    if (seen.has(key)) continue;
+    seen.add(key);
+
+    const endsAt = row.createdAt && row.duration ? row.createdAt.getTime() + row.duration * 60_000 : null;
+    const guild = client.guilds.cache.get(row.guildId);
+    const legacyRole = guild?.roles.cache.find(r => r.name === LEGACY_MUTE_ROLE);
+
+    if (guild && legacyRole) {
+      const member = await guild.members.fetch(row.userId).catch(() => null);
+      if (member?.roles.cache.has(legacyRole.id)) {
+        try {
+          const remaining = endsAt !== null ? endsAt - now : 0;
+          if (remaining > 0) {
+            if (!member.moderatable) {
+              console.warn(`[MUTE] No puedo aislar a ${member.user.tag} en ${guild.name}; le dejo el rol "${LEGACY_MUTE_ROLE}" (quítaselo a mano cuando toque).`);
+              continue;
+            }
+            await member.timeout(Math.min(remaining, MAX_TIMEOUT_MS), 'El mute del rol "Muteado" pasa a ser un aislamiento de Discord');
+          }
+          await member.roles.remove(legacyRole, 'Ahora /mute usa el aislamiento de Discord');
+        } catch (error) {
+          console.error(`[MUTE] No se pudo pasar el mute de ${row.userId} en ${guild.name} al aislamiento de Discord:`, error);
+          continue;
+        }
+      }
+    }
+
+    if (endsAt !== null && endsAt <= now) {
+      await storage.deactivateModerationActions(row.guildId, row.userId, 'mute').catch((error) => {
+        console.error('[MUTE] No se pudo marcar un mute terminado:', error);
+      });
+    }
+  }
 }
 
 // Guarda la acción en el historial de moderación (si la BD falla, el comando sigue funcionando).
@@ -87,17 +170,7 @@ export const moderationCommands = [
       .setDefaultMemberPermissions(PermissionFlagsBits.ManageMessages),
 
     async execute(interaction: ChatInputCommandInteraction, bot: DiscordBot) {
-      const member = interaction.member as GuildMember;
-
-      // Verificar si tiene rol de moderador
-      if (!hasModeratorPermissions(member)) {
-        await interaction.reply({
-          content: '⛔ **Acceso Denegado**\n' +
-                   'Solo usuarios con roles de **Moderador**, **Admin** o **Staff** pueden borrar mensajes.',
-          flags: MessageFlags.Ephemeral
-        });
-        return;
-      }
+      if (!(await requirePermission(interaction, PermissionFlagsBits.ManageMessages, 'Gestionar mensajes', 'borrar mensajes'))) return;
 
       const cantidad = interaction.options.getInteger('cantidad', true);
 
@@ -148,19 +221,10 @@ export const moderationCommands = [
         return;
       }
 
-      const member = interaction.member as GuildMember;
       const usuario = interaction.options.getUser('usuario', true);
       const razon = interaction.options.getString('razon') || 'No especificada';
 
-      // Verificar si tiene rol de moderador
-      if (!hasModeratorPermissions(member)) {
-        await interaction.reply({
-          content: '⛔ **Acceso Denegado**\n' +
-                   'Solo usuarios con roles de **Moderador**, **Admin** o **Staff** pueden expulsar miembros.',
-          flags: MessageFlags.Ephemeral
-        });
-        return;
-      }
+      if (!(await requirePermission(interaction, PermissionFlagsBits.KickMembers, 'Expulsar miembros', 'expulsar miembros'))) return;
 
       if (usuario.id === interaction.user.id || usuario.id === interaction.client.user?.id || usuario.id === interaction.guild.ownerId) {
         await interaction.reply({ content: '⛔ No puedes expulsarte a ti mismo, al bot ni al dueño del servidor.', flags: MessageFlags.Ephemeral });
@@ -177,6 +241,8 @@ export const moderationCommands = [
         await interaction.reply({ content: 'No se encontró el usuario.', flags: MessageFlags.Ephemeral });
         return;
       }
+
+      if (!(await ensureOutranks(interaction, targetMember))) return;
 
       if (!targetMember.kickable) {
         await interaction.reply({ content: 'No puedo expulsar a ese usuario.', flags: MessageFlags.Ephemeral });
@@ -207,19 +273,10 @@ export const moderationCommands = [
         return;
       }
 
-      const member = interaction.member as GuildMember;
       const usuario = interaction.options.getUser('usuario', true);
       const razon = interaction.options.getString('razon') || 'No especificada';
 
-      // Verificar si tiene rol de moderador
-      if (!hasModeratorPermissions(member)) {
-        await interaction.reply({
-          content: '⛔ **Acceso Denegado**\n' +
-                   'Solo usuarios con roles de **Moderador**, **Admin** o **Staff** pueden banear miembros.',
-          flags: MessageFlags.Ephemeral
-        });
-        return;
-      }
+      if (!(await requirePermission(interaction, PermissionFlagsBits.BanMembers, 'Banear miembros', 'banear miembros'))) return;
 
       if (usuario.id === interaction.user.id || usuario.id === interaction.client.user?.id || usuario.id === interaction.guild.ownerId) {
         await interaction.reply({ content: '⛔ No puedes banearte a ti mismo, al bot ni al dueño del servidor.', flags: MessageFlags.Ephemeral });
@@ -231,19 +288,36 @@ export const moderationCommands = [
         return;
       }
 
-      const targetMember = await interaction.guild.members.fetch(usuario.id).catch(() => null);
-      if (!targetMember) {
-        await interaction.reply({ content: 'No se encontró el usuario.', flags: MessageFlags.Ephemeral });
-        return;
+      let targetMember: GuildMember | null;
+      try {
+        targetMember = await interaction.guild.members.fetch(usuario.id);
+      } catch (error) {
+        if (!isUnknownMember(error)) throw error;
+        targetMember = null; // ya no está en el servidor
       }
 
-      if (!targetMember.bannable) {
-        await interaction.reply({ content: 'No puedo banear a ese usuario.', flags: MessageFlags.Ephemeral });
-        return;
+      if (targetMember) {
+        if (!(await ensureOutranks(interaction, targetMember))) return;
+
+        if (!targetMember.bannable) {
+          await interaction.reply({ content: 'No puedo banear a ese usuario.', flags: MessageFlags.Ephemeral });
+          return;
+        }
+
+        await targetMember.ban({ reason: razon });
+      } else {
+        // Se fue (o lo sacó el anti-raid): Discord deja banear por ID para que no pueda volver
+        try {
+          await interaction.guild.bans.create(usuario.id, { reason: razon });
+        } catch (error) {
+          console.error(`No se pudo banear por ID a ${usuario.id}:`, error);
+          await interaction.reply({ content: '❌ No pude banear a ese usuario. Revisa que mi rol tenga el permiso **Banear miembros**.', flags: MessageFlags.Ephemeral });
+          return;
+        }
       }
 
-      await targetMember.ban({ reason: razon });
-      await interaction.reply({ content: `✅ **${usuario.tag}** fue baneado. Razón: ${razon}`, flags: MessageFlags.Ephemeral });
+      const fuera = targetMember ? '' : ' Ya no estaba en el servidor, pero no podrá volver a entrar.';
+      await interaction.reply({ content: `✅ **${usuario.tag}** fue baneado.${fuera} Razón: ${razon}`, flags: MessageFlags.Ephemeral });
       await registrarAccion(interaction, 'ban', usuario, { reason: razon });
     }
   },
@@ -259,7 +333,7 @@ export const moderationCommands = [
         option.setName('minutos').setDescription('Minutos a silenciar (máx. 1 semana)').setRequired(true)
           .setMinValue(1).setMaxValue(MAX_MUTE_MINUTOS)
       )
-      .setDefaultMemberPermissions(PermissionFlagsBits.ManageRoles),
+      .setDefaultMemberPermissions(PermissionFlagsBits.ModerateMembers),
 
     async execute(interaction: ChatInputCommandInteraction, bot: DiscordBot) {
       if (!interaction.guild) {
@@ -267,19 +341,10 @@ export const moderationCommands = [
         return;
       }
 
-      const member = interaction.member as GuildMember;
       const usuario = interaction.options.getUser('usuario', true);
       const minutos = interaction.options.getInteger('minutos', true);
 
-      // Verificar si tiene rol de moderador
-      if (!hasModeratorPermissions(member)) {
-        await interaction.reply({
-          content: '⛔ **Acceso Denegado**\n' +
-                   'Solo usuarios con roles de **Moderador**, **Admin** o **Staff** pueden silenciar miembros.',
-          flags: MessageFlags.Ephemeral
-        });
-        return;
-      }
+      if (!(await requirePermission(interaction, PermissionFlagsBits.ModerateMembers, 'Aislar temporalmente a miembros', 'silenciar miembros'))) return;
 
       if (usuario.id === interaction.user.id || usuario.id === interaction.client.user?.id || usuario.id === interaction.guild.ownerId) {
         await interaction.reply({ content: '⛔ No puedes mutearte a ti mismo, al bot ni al dueño del servidor.', flags: MessageFlags.Ephemeral });
@@ -291,8 +356,8 @@ export const moderationCommands = [
         return;
       }
 
-      if (!interaction.guild.members.me?.permissions.has('ManageRoles')) {
-        await interaction.reply({ content: '❌ No tengo permisos para gestionar roles.', flags: MessageFlags.Ephemeral });
+      if (!interaction.guild.members.me?.permissions.has('ModerateMembers')) {
+        await interaction.reply({ content: '❌ Me falta el permiso **Aislar temporalmente a miembros**.', flags: MessageFlags.Ephemeral });
         return;
       }
 
@@ -302,51 +367,25 @@ export const moderationCommands = [
         return;
       }
 
-      // Configurar el rol y los canales puede tardar más de los 3 s que da Discord
-      await interaction.deferReply({ flags: MessageFlags.Ephemeral });
+      if (!(await ensureOutranks(interaction, targetMember))) return;
 
-      // Busca o crea el rol "Muteado"
-      let muteRole = interaction.guild.roles.cache.find(r => r.name === 'Muteado');
-      if (!muteRole) {
-        muteRole = await interaction.guild.roles.create({
-          name: 'Muteado',
-          color: 0x808080,
-          reason: 'Rol autogenerado para silenciar usuarios',
+      // El aislamiento lo quita Discord solo al terminar: sobrevive a reinicios del bot y a salir y
+      // volver a entrar, y un /mute nuevo reemplaza al anterior
+      if (!targetMember.moderatable) {
+        await interaction.reply({
+          content: '❌ No puedo silenciar a ese usuario: tiene **Administrador** o un rol igual o más alto que el mío.',
+          flags: MessageFlags.Ephemeral,
         });
+        return;
       }
-      const rolMute = muteRole;
 
-      // Niega los permisos del mute en cada canal (también categorías y foros) donde
-      // aún no estén puestos; así se cubren canales nuevos y roles creados antes.
-      // Los hilos no tienen overwrites propios: heredan los del canal padre.
-      // Solo se tocan permisos sin valor: si un admin permitió algo a propósito, se respeta.
-      const ediciones: Promise<unknown>[] = [];
-      for (const channel of Array.from(interaction.guild.channels.cache.values())) {
-        if (channel.isThread()) continue;
-        const actual = channel.permissionOverwrites.cache.get(rolMute.id);
-        const faltantes = MUTE_DENY.filter(p => !actual?.deny.has(p) && !actual?.allow.has(p));
-        if (faltantes.length === 0) continue;
-        ediciones.push(channel.permissionOverwrites.edit(rolMute, overwriteOptions(faltantes, false)));
-      }
-      const fallidas = (await Promise.allSettled(ediciones)).filter(r => r.status === 'rejected').length;
+      await targetMember.timeout(minutos * 60_000, `Silenciado con /mute por ${interaction.user.tag}`);
 
-      await targetMember.roles.add(rolMute);
-
-      // Auto-unmute después del tiempo especificado (se programa antes de responder
-      // para que un fallo al contestar no deje al usuario muteado para siempre)
-      setTimeout(async () => {
-        try {
-          await targetMember.roles.remove(rolMute);
-          await storage.deactivateModerationActions(targetMember.guild.id, usuario.id, 'mute');
-        } catch (e) {
-          console.error('Error al quitar el mute:', e);
-        }
-      }, minutos * 60 * 1000);
-
-      const aviso = fallidas > 0
-        ? `\n⚠️ No pude aplicar el mute en ${fallidas} canal(es); revisa mis permisos ahí.`
-        : '';
-      await interaction.editReply({ content: `🔇 **${usuario.tag}** fue silenciado por ${minutos} minuto(s).${aviso}` });
+      const termina = Math.floor((Date.now() + minutos * 60_000) / 1000);
+      await interaction.reply({
+        content: `🔇 **${usuario.tag}** fue silenciado por ${minutos} minuto(s). Discord le quitará el silencio <t:${termina}:R>.`,
+        flags: MessageFlags.Ephemeral,
+      });
       await registrarAccion(interaction, 'mute', usuario, { reason: `Silenciado por ${minutos} minuto(s)`, duration: minutos, deactivate: 'mute' });
     }
   },
@@ -358,7 +397,7 @@ export const moderationCommands = [
       .addUserOption(option =>
         option.setName('usuario').setDescription('Usuario al que quitar el mute').setRequired(true)
       )
-      .setDefaultMemberPermissions(PermissionFlagsBits.ManageRoles),
+      .setDefaultMemberPermissions(PermissionFlagsBits.ModerateMembers),
 
     async execute(interaction: ChatInputCommandInteraction, bot: DiscordBot) {
       if (!interaction.guild) {
@@ -366,21 +405,12 @@ export const moderationCommands = [
         return;
       }
 
-      const member = interaction.member as GuildMember;
       const usuario = interaction.options.getUser('usuario', true);
 
-      // Verificar si tiene rol de moderador
-      if (!hasModeratorPermissions(member)) {
-        await interaction.reply({
-          content: '⛔ **Acceso Denegado**\n' +
-                   'Solo usuarios con roles de **Moderador**, **Admin** o **Staff** pueden quitar mutes.',
-          flags: MessageFlags.Ephemeral
-        });
-        return;
-      }
+      if (!(await requirePermission(interaction, PermissionFlagsBits.ModerateMembers, 'Aislar temporalmente a miembros', 'quitar silencios'))) return;
 
-      if (!interaction.guild.members.me?.permissions.has('ManageRoles')) {
-        await interaction.reply({ content: '❌ No tengo permisos para gestionar roles.', flags: MessageFlags.Ephemeral });
+      if (!interaction.guild.members.me?.permissions.has('ModerateMembers')) {
+        await interaction.reply({ content: '❌ Me falta el permiso **Aislar temporalmente a miembros**.', flags: MessageFlags.Ephemeral });
         return;
       }
 
@@ -390,19 +420,41 @@ export const moderationCommands = [
         return;
       }
 
-      const muteRole = interaction.guild.roles.cache.find(r => r.name === 'Muteado');
-      if (!muteRole) {
-        await interaction.reply({ content: '❌ El rol "Muteado" no existe en este servidor.', flags: MessageFlags.Ephemeral });
+      // Mutes de antes del cambio: el rol "Muteado"
+      const legacyRole = interaction.guild.roles.cache.find(r => r.name === LEGACY_MUTE_ROLE);
+      const hasLegacyRole = !!legacyRole && targetMember.roles.cache.has(legacyRole.id);
+      const timedOut = targetMember.isCommunicationDisabled();
+
+      if (!timedOut && !hasLegacyRole) {
+        // Quizá el silencio ya terminó solo: que el historial deje de mostrarlo como vigente
+        await storage.deactivateModerationActions(interaction.guild.id, usuario.id, 'mute').catch((error) => {
+          console.error('No se pudo marcar el mute como terminado:', error);
+        });
+        await interaction.reply({ content: '❌ Ese usuario no está silenciado.', flags: MessageFlags.Ephemeral });
         return;
       }
 
-      if (!targetMember.roles.cache.has(muteRole.id)) {
-        await interaction.reply({ content: '❌ Ese usuario no está muteado.', flags: MessageFlags.Ephemeral });
-        return;
+      if (!(await ensureOutranks(interaction, targetMember))) return;
+
+      const motivo = `Mute quitado con /unmute por ${interaction.user.tag}`;
+      if (timedOut) {
+        if (!targetMember.moderatable) {
+          await interaction.reply({ content: '❌ No puedo quitarle el silencio: tiene un rol igual o más alto que el mío.', flags: MessageFlags.Ephemeral });
+          return;
+        }
+        await targetMember.timeout(null, motivo);
+      }
+      let aviso = '';
+      if (hasLegacyRole && legacyRole) {
+        try {
+          await targetMember.roles.remove(legacyRole, motivo);
+        } catch (error) {
+          console.error('No se pudo quitar el rol "Muteado":', error);
+          aviso = `\n⚠️ No pude quitarle el rol **${LEGACY_MUTE_ROLE}**; quítaselo a mano.`;
+        }
       }
 
-      await targetMember.roles.remove(muteRole);
-      await interaction.reply({ content: `🔊 Se quitó el mute a **${usuario.tag}**.`, flags: MessageFlags.Ephemeral });
+      await interaction.reply({ content: `🔊 Se quitó el mute a **${usuario.tag}**.${aviso}`, flags: MessageFlags.Ephemeral });
       await registrarAccion(interaction, 'unmute', usuario, { active: false, deactivate: 'mute' });
     }
   },
@@ -428,19 +480,10 @@ export const moderationCommands = [
         return;
       }
 
-      const member = interaction.member as GuildMember;
       const accion = interaction.options.getString('accion', true);
       const canal = interaction.channel;
 
-      // Verificar si tiene rol de moderador
-      if (!hasModeratorPermissions(member)) {
-        await interaction.reply({
-          content: '⛔ **Acceso Denegado**\n' +
-                   'Solo usuarios con roles de **Moderador**, **Admin** o **Staff** pueden bloquear canales.',
-          flags: MessageFlags.Ephemeral
-        });
-        return;
-      }
+      if (!(await requirePermission(interaction, PermissionFlagsBits.ManageChannels, 'Gestionar canales', 'bloquear canales'))) return;
 
       if (!canal || canal.isDMBased()) {
         await interaction.reply({ content: '❌ No puedo modificar permisos en este canal.', flags: MessageFlags.Ephemeral });
@@ -462,22 +505,92 @@ export const moderationCommands = [
         return;
       }
 
-      const everyoneRole = interaction.guild.roles.everyone;
+      // Guardar y leer los permisos previos (base de datos) puede tardar más de los 3 s que da Discord
+      await interaction.deferReply({ flags: MessageFlags.Ephemeral });
 
-      const bloquear = accion === 'lock';
-      try {
-        await canal.permissionOverwrites.edit(everyoneRole, overwriteOptions(LOCKDOWN_PERMS, bloquear ? false : null));
-      } catch (e) {
-        console.error('Error en lockdown:', e);
-        await interaction.reply({ content: '❌ No pude cambiar los permisos de este canal. Revisa que tenga **Gestionar roles** y los permisos de hilos aquí.', flags: MessageFlags.Ephemeral });
-        return;
-      }
+      const guild = interaction.guild;
+      const everyoneRole = guild.roles.everyone;
+      const overwrite = canal.permissionOverwrites.cache.get(everyoneRole.id);
+      // Bloqueado = @everyone tiene negados todos los permisos del lockdown
+      const lockedNow = LOCKDOWN_PERMS.every(perm => overwrite?.deny.has(perm));
+      const motivo = `/lockdown por ${interaction.user.tag}`;
+      const permisosError = '❌ No pude cambiar los permisos de este canal. Revisa que tenga **Gestionar roles** y los permisos de hilos aquí.';
 
-      if (bloquear) {
-        await interaction.reply({ content: `🔒 Canal y sus hilos bloqueados. Solo el staff puede escribir.`, flags: MessageFlags.Ephemeral });
+      let respuesta: string;
+      if (accion === 'lock') {
+        let aviso = '';
+        // Se guarda cómo estaba @everyone para dejarlo igual al desbloquear. Si ya estaba bloqueado,
+        // se conserva lo guardado en el primer bloqueo.
+        if (!lockedNow) {
+          const snapshot: ChannelLockdownSnapshot = {
+            permissions: Object.fromEntries(LOCKDOWN_PERMS.map(perm => [
+              perm,
+              overwrite?.allow.has(perm) ? true : overwrite?.deny.has(perm) ? false : null,
+            ])),
+            hadOverwrite: !!overwrite,
+          };
+          try {
+            await storage.saveChannelLockdown(guild.id, canal.id, snapshot);
+          } catch (error) {
+            console.error('Lockdown: no se pudieron guardar los permisos previos:', error);
+            aviso = '\n⚠️ No pude guardar cómo estaban los permisos; al desbloquear solo quitaré las restricciones del bloqueo.';
+          }
+        }
+
+        try {
+          await canal.permissionOverwrites.edit(everyoneRole, overwriteOptions(LOCKDOWN_PERMS, false), { reason: motivo });
+        } catch (e) {
+          console.error('Error en lockdown:', e);
+          await interaction.editReply(permisosError);
+          return;
+        }
+        respuesta = `🔒 Canal y sus hilos bloqueados. Solo el staff puede escribir.${aviso}`;
       } else {
-        await interaction.reply({ content: `🔓 Canal desbloqueado. Todos pueden escribir de nuevo.`, flags: MessageFlags.Ephemeral });
+        let snapshot: ChannelLockdownSnapshot | undefined;
+        try {
+          snapshot = await storage.getChannelLockdown(guild.id, canal.id);
+        } catch (error) {
+          console.error('Lockdown: no se pudieron leer los permisos previos:', error);
+        }
+
+        if (!snapshot && !lockedNow) {
+          await interaction.editReply('ℹ️ Este canal no está bloqueado con /lockdown, así que no cambié nada.');
+          return;
+        }
+
+        // Con lo guardado se deja todo como estaba; sin eso, solo se quitan los permisos que niega el bloqueo
+        const options: PermissionOverwriteOptions = {};
+        for (const perm of LOCKDOWN_PERMS) options[perm] = snapshot ? snapshot.permissions[perm] ?? null : null;
+
+        // Si @everyone no tenía permisos propios antes del bloqueo y no le queda ninguno, se quitan del todo
+        // (así el canal vuelve a seguir los permisos de su categoría)
+        const lockdownBits = PermissionsBitField.resolve(LOCKDOWN_PERMS);
+        const otrosPermisos = ((overwrite?.allow.bitfield ?? 0n) | (overwrite?.deny.bitfield ?? 0n)) & ~lockdownBits;
+        const quedaVacio = otrosPermisos === 0n && LOCKDOWN_PERMS.every(perm => options[perm] === null);
+
+        try {
+          if (snapshot && !snapshot.hadOverwrite && quedaVacio) {
+            if (overwrite) await canal.permissionOverwrites.delete(everyoneRole, motivo);
+          } else {
+            await canal.permissionOverwrites.edit(everyoneRole, options, { reason: motivo });
+          }
+        } catch (e) {
+          console.error('Error en lockdown:', e);
+          await interaction.editReply(permisosError);
+          return;
+        }
+
+        if (snapshot) {
+          await storage.deleteChannelLockdown(guild.id, canal.id).catch((error) => {
+            console.error('Lockdown: no se pudieron borrar los permisos guardados:', error);
+          });
+          respuesta = '🔓 Canal desbloqueado: los permisos de @everyone quedaron como estaban antes del bloqueo.';
+        } else {
+          respuesta = '🔓 Canal desbloqueado.\n⚠️ No tenía guardado cómo estaban los permisos antes del bloqueo, así que solo quité las restricciones del bloqueo a @everyone. Revisa los permisos del canal si antes tenía alguna limitación.';
+        }
       }
+
+      await interaction.editReply(respuesta);
       // Acción sobre un canal: se registra con el propio moderador como "objetivo"
       await registrarAccion(interaction, accion === 'lock' ? 'lockdown' : 'unlock', interaction.user, {
         reason: `${accion === 'lock' ? 'Bloqueó' : 'Desbloqueó'} el canal #${canal.name}`,
@@ -504,24 +617,19 @@ export const moderationCommands = [
         return;
       }
 
-      const member = interaction.member as GuildMember;
       const usuario = interaction.options.getUser('usuario', true);
       const razon = interaction.options.getString('razon') || 'No especificada';
 
-      // Verificar si tiene rol de moderador
-      if (!hasModeratorPermissions(member)) {
-        await interaction.reply({
-          content: '⛔ **Acceso Denegado**\n' +
-                   'Solo usuarios con roles de **Moderador**, **Admin** o **Staff** pueden advertir miembros.',
-          flags: MessageFlags.Ephemeral
-        });
-        return;
-      }
+      if (!(await requirePermission(interaction, PermissionFlagsBits.ModerateMembers, 'Aislar temporalmente a miembros', 'advertir miembros'))) return;
 
       if (usuario.id === interaction.user.id || usuario.id === interaction.client.user?.id || usuario.id === interaction.guild.ownerId) {
         await interaction.reply({ content: '⛔ No puedes advertirte a ti mismo, al bot ni al dueño del servidor.', flags: MessageFlags.Ephemeral });
         return;
       }
+
+      // Si sigue en el servidor, misma regla de roles que el resto de la moderación
+      const targetMember = await interaction.guild.members.fetch(usuario.id).catch(() => null);
+      if (targetMember && !(await ensureOutranks(interaction, targetMember))) return;
 
       await interaction.reply({ content: `⚠️ **${usuario.tag}** fue advertido. Razón: ${razon}`, flags: MessageFlags.Ephemeral });
       await registrarAccion(interaction, 'warn', usuario, { reason: razon });
@@ -543,18 +651,9 @@ export const moderationCommands = [
         return;
       }
 
-      const member = interaction.member as GuildMember;
       const usuario = interaction.options.getUser('usuario', true);
 
-      // Verificar si tiene rol de moderador
-      if (!hasModeratorPermissions(member)) {
-        await interaction.reply({
-          content: '⛔ **Acceso Denegado**\n' +
-                   'Solo usuarios con roles de **Moderador**, **Admin** o **Staff** pueden ver advertencias.',
-          flags: MessageFlags.Ephemeral
-        });
-        return;
-      }
+      if (!(await requirePermission(interaction, PermissionFlagsBits.ModerateMembers, 'Aislar temporalmente a miembros', 'ver advertencias'))) return;
 
       await interaction.deferReply({ flags: MessageFlags.Ephemeral });
 

@@ -123,12 +123,16 @@ async function registerSlashCommands(commands: BotCommand[]) {
     if (isDevelopment) {
       console.log('💡 Para ver los cambios de comandos al instante en desarrollo, define DISCORD_DEV_GUILD_ID con el ID de tu servidor de pruebas.');
     }
-    await putCommands(rest, Routes.applicationCommands(clientId), bodies, 'globalmente');
+    const registered = await putCommands(rest, Routes.applicationCommands(clientId), bodies, 'globalmente');
 
-    // Copias viejas registradas por servidor durante el desarrollo saldrían repetidas: se quitan
-    // (solo las que se llaman igual que un comando del bot)
+    // Los comandos registrados por servidor durante el desarrollo saldrían repetidos (y /stress y
+    // /oauth-test quedarían sin respuesta): se quitan todos, pero solo si los globales ya están
     if (!isDevelopment && guildIds.length > 0) {
-      await removeGuildCopies(rest, clientId, guildIds, new Set(bodies.map(b => b.name)));
+      if (registered) {
+        await removeGuildCopies(rest, clientId, guildIds);
+      } else {
+        console.warn('⚠️ No quito los comandos de desarrollo de los servidores porque los globales no se registraron.');
+      }
     }
   } catch (error) {
     console.error('❌ Error inesperado al registrar los comandos de barra:', error);
@@ -136,16 +140,17 @@ async function registerSlashCommands(commands: BotCommand[]) {
 }
 
 // PUT masivo. Si Discord rechaza algunos comandos (400), se reintenta sin ellos.
+// Devuelve true si quedó registrada la lista (completa o sin los rechazados).
 async function putCommands(
   rest: REST,
   route: `/${string}`,
   bodies: RESTPostAPIChatInputApplicationCommandsJSONBody[],
   where: string
-) {
+): Promise<boolean> {
   try {
     await rest.put(route, { body: bodies });
     console.log(`✅ ${bodies.length} comandos de barra registrados ${where}`);
-    return;
+    return true;
   } catch (error) {
     const rejected = rejectedIndexes(error);
     if (rejected.size > 0 && rejected.size < bodies.length) {
@@ -157,12 +162,14 @@ async function putCommands(
       try {
         await rest.put(route, { body: valid });
         console.log(`✅ ${valid.length} comandos de barra registrados ${where} (sin los rechazados)`);
+        return true;
       } catch (retryError) {
         console.error(`❌ No se pudieron registrar los comandos ${where}:`, retryError);
       }
-      return;
+      return false;
     }
     console.error(`❌ No se pudieron registrar los comandos ${where}:`, error);
+    return false;
   }
 }
 
@@ -178,16 +185,15 @@ function rejectedIndexes(error: unknown): Set<number> {
   return indexes;
 }
 
-async function removeGuildCopies(rest: REST, clientId: string, guildIds: string[], names: Set<string>) {
+// En producción el bot no usa comandos por servidor: se deja vacía la lista de cada servidor de desarrollo
+async function removeGuildCopies(rest: REST, clientId: string, guildIds: string[]) {
   for (const guildId of guildIds) {
     try {
-      const existing = await rest.get(Routes.applicationGuildCommands(clientId, guildId)) as { id: string; name: string }[];
-      const copies = existing.filter(cmd => names.has(cmd.name));
-      for (const cmd of copies) {
-        await rest.delete(Routes.applicationGuildCommand(clientId, guildId, cmd.id));
-      }
-      if (copies.length > 0) {
-        console.log(`🧹 Quitadas ${copies.length} copias de desarrollo de los comandos en el servidor ${guildId}`);
+      const route = Routes.applicationGuildCommands(clientId, guildId);
+      const existing = await rest.get(route) as { id: string; name: string }[];
+      if (existing.length > 0) {
+        await rest.put(route, { body: [] });
+        console.log(`🧹 Quitados ${existing.length} comandos de desarrollo del servidor ${guildId}`);
       }
     } catch (error) {
       console.error(`⚠️ No se pudieron revisar los comandos de desarrollo del servidor ${guildId}:`, error);

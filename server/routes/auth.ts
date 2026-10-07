@@ -6,7 +6,8 @@ import {
   clearSessionAuth,
   endSession,
   isDevBypassEnabled,
-  isSessionAuthenticated,
+  isLoopbackRequest,
+  isRequestAuthenticated,
 } from "./middleware";
 
 const DISCORD_API = "https://discord.com/api/v10";
@@ -100,10 +101,16 @@ export function setupAuthRoutes(app: Express) {
   // En producción no se registra la ruta aunque la variable esté puesta.
   if (process.env.DEV_BYPASS_AUTH === '1') {
     if (isDevBypassEnabled()) {
-      console.warn('[DEV-BYPASS] ⚠️ DEV_BYPASS_AUTH activo: /auth/dev-login da acceso a cualquier servidor. Nunca lo uses en producción.');
+      console.warn('[DEV-BYPASS] ⚠️ DEV_BYPASS_AUTH activo: /auth/dev-login (solo desde http://localhost en este equipo) da acceso a cualquier servidor. Nunca lo uses en producción.');
 
       app.get('/auth/dev-login', async (req: Request, res: Response) => {
         if (!isDevBypassEnabled()) {
+          return res.status(404).json({ error: 'No encontrado' });
+        }
+        // Solo desde este mismo equipo y por localhost: ni desde otro aparato de la red
+        // ni desde una web que apunte su dominio a 127.0.0.1 (DNS rebinding)
+        if (!isLoopbackRequest(req)) {
+          console.warn(`[DEV-BYPASS] /auth/dev-login rechazado (${req.socket.remoteAddress}, Host: ${req.headers.host ?? '-'}): solo funciona abriendo http://localhost en este equipo.`);
           return res.status(404).json({ error: 'No encontrado' });
         }
         try {
@@ -253,7 +260,7 @@ export function setupAuthRoutes(app: Express) {
     res.set('Cache-Control', 'no-store');
     const session = req.session;
 
-    if (!isSessionAuthenticated(session)) {
+    if (!isRequestAuthenticated(req)) {
       if (session?.authenticated) {
         clearSessionAuth(session);
       }

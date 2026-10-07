@@ -1,5 +1,5 @@
 import { sql, relations } from "drizzle-orm";
-import { pgTable, text, varchar, integer, timestamp, boolean, jsonb, decimal, unique } from "drizzle-orm/pg-core";
+import { pgTable, text, varchar, integer, timestamp, boolean, jsonb, decimal, unique, primaryKey } from "drizzle-orm/pg-core";
 import { createInsertSchema } from "drizzle-zod";
 import { z } from "zod";
 
@@ -248,6 +248,28 @@ export const postedContent = pgTable("posted_content", {
   title: text("title"),
   url: text("url"),
   postedAt: timestamp("posted_at").default(sql`now()`),
+});
+
+// /lockdown: cómo estaban los permisos de @everyone en el canal antes de bloquearlo,
+// para que /lockdown Desactivar los deje igual (también tras reiniciar el bot)
+export const channelLockdowns = pgTable("channel_lockdowns", {
+  guildId: varchar("guild_id").notNull(),
+  channelId: varchar("channel_id").notNull(),
+  // { permissions: { SendMessages: true | false | null, ... }, hadOverwrite: boolean }
+  previous: jsonb("previous").notNull(),
+  createdAt: timestamp("created_at").default(sql`now()`),
+}, (table) => [
+  primaryKey({ columns: [table.guildId, table.channelId] }),
+]);
+
+// Apuestas retenidas de juegos con varios pasos (/blackjack). Si el bot se reinicia a mitad
+// de una partida, al volver devuelve estas apuestas a la cartera.
+export const pendingBets = pgTable("pending_bets", {
+  id: varchar("id").primaryKey().default(sql`gen_random_uuid()`),
+  guildId: varchar("guild_id").notNull(),
+  userId: varchar("user_id").notNull(),
+  amount: decimal("amount", { precision: 15, scale: 2 }).notNull(),
+  createdAt: timestamp("created_at").notNull(),
 });
 
 // Comandos personalizados: el bot responde a "<prefijo><name>" con `response` (máx. 50 por servidor)
