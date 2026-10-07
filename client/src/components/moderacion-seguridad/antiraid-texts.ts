@@ -1,5 +1,6 @@
 // Textos en lenguaje sencillo para la protección anti-raid (según server/bot/middleware/antiRaid.ts).
 import { Info, ShieldAlert, TriangleAlert, type LucideIcon } from "lucide-react";
+import type { RaidEventItem } from "@shared/api";
 import type { AntiRaidSettings } from "@shared/schema";
 import { formatMinutes, isSnowflake } from "./utils";
 
@@ -47,6 +48,41 @@ export function describeRule(rule: AntiRaidRule): string {
   return `Si entran ${people} en ${seconds} o menos, el bot activa el modo raid durante ${formatMinutes(rule.lockdownMinutes)}: ${phrase}.`;
 }
 
+interface LiftTexts {
+  /** Antes de terminarlo (diálogos de confirmación) */
+  future: string;
+  /** Después de terminarlo (avisos) */
+  past: string;
+}
+
+// Al terminar, el bot solo deshace lo que hizo: la verificación únicamente si la subió
+// (verificación / lockdown, y solo si tenía permiso) y deja de expulsar solo con lockdown.
+const LIFT_TEXTS: Record<string, LiftTexts> = {
+  alert: {
+    future: "El bot avisará al staff de que todo volvió a la normalidad.",
+    past: "El bot avisó al staff de que todo volvió a la normalidad.",
+  },
+  verification: {
+    future: "El bot regresará la verificación del servidor a como estaba (si la había subido) y avisará al staff.",
+    past: "El bot regresó la verificación del servidor a como estaba (si la había subido) y avisó al staff.",
+  },
+  lockdown: {
+    future:
+      "El bot dejará de expulsar a quien entre, regresará la verificación a como estaba (si la había subido) y avisará al staff.",
+    past: "El bot dejó de expulsar a quien entra, regresó la verificación a como estaba (si la había subido) y avisó al staff.",
+  },
+};
+
+const NEUTRAL_LIFT: LiftTexts = {
+  future: "El bot terminará el modo raid y avisará al staff.",
+  past: "El bot terminó el modo raid y avisó al staff.",
+};
+
+/** Qué pasa al terminar el modo raid, según la acción que estaba aplicando. */
+export function liftTexts(action: string | null | undefined): LiftTexts {
+  return (action && LIFT_TEXTS[action]) || NEUTRAL_LIFT;
+}
+
 /** Quita el emoji del principio de las etiquetas del bot ("📣 Solo alertar…" → "Solo alertar…"). */
 export function plainLabel(label: string): string {
   return label.replace(/^[^\p{L}\p{N}]+/u, "").trim() || label;
@@ -62,6 +98,23 @@ const EVENT_TYPE_LABELS: Record<string, string> = {
 
 export function raidEventTitle(type: string): string {
   return EVENT_TYPE_LABELS[type] ?? type;
+}
+
+/**
+ * Estado real de un raid. En el servidor `resolved` significa "ya no está abierto": el bot lo pone
+ * al terminar el modo raid (al cumplirse el tiempo, con /antiraid levantar, desde el panel o al
+ * reiniciarse). Solo `details.resolvedAt` indica que alguien lo marcó como revisado en el panel.
+ * - active: el modo raid sigue en curso
+ * - reviewed: alguien lo marcó como revisado desde el panel
+ * - ended: el modo raid terminó (nadie tuvo que revisarlo)
+ * - pending: quedó abierto sin modo raid activo (p. ej. el bot se reinició y no lo cerró)
+ */
+export type RaidEventStatus = "active" | "reviewed" | "ended" | "pending";
+
+export function raidEventStatus(event: Pick<RaidEventItem, "isActive" | "resolved" | "details">): RaidEventStatus {
+  if (event.isActive) return "active";
+  if (event.resolved) return typeof event.details.resolvedAt === "number" ? "reviewed" : "ended";
+  return "pending";
 }
 
 export interface SeverityMeta {
