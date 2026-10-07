@@ -159,11 +159,15 @@ export default function Economy() {
                 icon={Coins}
                 title="Aún nadie tiene monedas"
                 description={
-                  <>
-                    Las monedas llegan solas al platicar, y también con{" "}
-                    <code className="font-mono text-foreground">/daily</code> y{" "}
-                    <code className="font-mono text-foreground">/work</code>.
-                  </>
+                  economyEnabled === false ? (
+                    "Activa la economía para que la gente empiece a ganar monedas."
+                  ) : (
+                    <>
+                      Las monedas llegan solas al platicar, y también con{" "}
+                      <code className="font-mono text-foreground">/daily</code> y{" "}
+                      <code className="font-mono text-foreground">/work</code>.
+                    </>
+                  )
                 }
                 testId="empty-wealth-ranking"
               />
@@ -174,7 +178,7 @@ export default function Economy() {
         </Card>
 
         <div className="lg:col-span-2">
-          <HowCoinsWorkCard />
+          <HowCoinsWorkCard economyEnabled={economyEnabled} />
         </div>
       </div>
 
