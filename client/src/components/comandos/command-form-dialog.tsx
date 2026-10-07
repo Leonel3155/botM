@@ -180,7 +180,7 @@ export function CommandFormDialog({
     setRootError(null);
     setInsertError(null);
     cursorKnownRef.current = false;
-    // Solo al abrir o al cambiar de comando: no queremos borrar lo escrito si llega un aviso en vivo
+    // Solo al abrir o al cambiar de comando: no queremos borrar lo escrito cuando la lista se vuelve a pedir
   }, [open, command?.id, draft]);
 
   const mutation = useMutation({

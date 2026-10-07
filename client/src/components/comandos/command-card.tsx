@@ -94,10 +94,16 @@ export function CommandCard({ command, guildId, prefix, onEdit }: CommandCardPro
       toast({ title: `Eliminaste ${trigger}`, description: "El bot ya no responderá a ese comando." });
     },
     onError: (error) => {
-      // 404: ya no existía (lo borró alguien más); la lista se actualiza igual
+      // 404: ya no existía (lo borró alguien más). No es un fallo: lo quitamos de la lista y avisamos sin alarma
       if (isApiError(error) && error.kind === "notFound") {
         setConfirmOpen(false);
+        updateCachedCommands(guildId, (commands) => commands.filter((c) => c.id !== command.id));
         invalidateCustomCommands(guildId, { dashboard: true });
+        toast({
+          title: `${trigger} ya no existía`,
+          description: "Parece que alguien más lo borró; ya actualizamos la lista.",
+        });
+        return;
       }
       toast({ variant: "destructive", title: `No se pudo eliminar ${trigger}`, description: errorMessage(error) });
     },
