@@ -31,13 +31,9 @@ export async function setupVite(app: Express, server: Server) {
   const vite = await createViteServer({
     ...viteConfig,
     configFile: false,
-    customLogger: {
-      ...viteLogger,
-      error: (msg, options) => {
-        viteLogger.error(msg, options);
-        process.exit(1);
-      },
-    },
+    // Los errores de Vite (un archivo bloqueado por fs.deny, un error de sintaxis mientras editas)
+    // solo se muestran: antes cerraban todo el proceso, bot incluido, con una sola petición.
+    customLogger: viteLogger,
     server: serverOptions,
     appType: "custom",
   });

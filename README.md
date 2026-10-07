@@ -42,7 +42,8 @@ BotM es un bot de Discord con su propio **panel web en español** para administr
 
 ### 🔨 Moderación
 
-- `/clear`, `/kick`, `/ban`, `/mute` (con un rol "Muteado" que el bot crea solo, hasta 1 semana), `/unmute`, `/lockdown` (bloquea el canal) y `/warn` / `/warnings`.
+- `/clear`, `/kick`, `/ban` (también a alguien que ya se fue, con su ID), `/mute` (con el aislamiento temporal de Discord, hasta 1 semana), `/unmute`, `/lockdown` (bloquea el canal y al desbloquear deja los permisos como estaban) y `/warn` / `/warnings`.
+- Cada comando pide su propio permiso de Discord, y nadie puede usarlos contra alguien con un rol igual o más alto que el suyo (el dueño del servidor sí).
 - Cada acción queda guardada y la ves en el panel, en **Moderación**.
 
 ### 🛡️ Anti-raid
@@ -303,8 +304,8 @@ Si Windows pregunta si permites que Node.js use la red, basta con **Redes privad
    https://discord.com/oauth2/authorize?client_id=TU_APPLICATION_ID&scope=bot+applications.commands&permissions=1486330784886
    ```
 
-   Ese número de permisos es el mismo que arma el panel e incluye: Ver canales, Enviar mensajes, Enviar mensajes en hilos, Crear hilos públicos, Crear hilos privados, Insertar enlaces, Adjuntar archivos, Leer el historial de mensajes, Añadir reacciones, Usar emojis externos, Mencionar @everyone, @here y todos los roles, Gestionar mensajes, Gestionar canales, Gestionar roles, Gestionar servidor, Gestionar eventos, Expulsar miembros, Banear miembros, Aislar temporalmente a miembros, Conectar y Hablar. (Conectar y Hablar no son para música: `/mute` se los quita al rol "Muteado" en los canales de voz, y Discord solo deja que el bot quite permisos que él mismo tiene.)
-4. En Discord, ve a **Ajustes del servidor → Roles** y arrastra el rol del bot **por encima** del rol de bienvenida, del rol "Muteado" y de los roles de las personas que quieras poder expulsar, banear o silenciar. Si no, Discord no lo deja.
+   Ese número de permisos es el mismo que arma el panel e incluye: Ver canales, Enviar mensajes, Enviar mensajes en hilos, Crear hilos públicos, Crear hilos privados, Insertar enlaces, Adjuntar archivos, Leer el historial de mensajes, Añadir reacciones, Usar emojis externos, Mencionar @everyone, @here y todos los roles, Gestionar mensajes, Gestionar canales, Gestionar roles, Gestionar servidor, Gestionar eventos, Expulsar miembros, Banear miembros, Aislar temporalmente a miembros, Conectar y Hablar. (Conectar y Hablar no son para música: Discord pide Conectar para crear eventos en canales de voz con `/evento`, y el `/mute` de versiones viejas los usaba con el rol "Muteado".)
+4. En Discord, ve a **Ajustes del servidor → Roles** y arrastra el rol del bot **por encima** del rol de bienvenida y de los roles de las personas que quieras poder expulsar, banear o silenciar. Si no, Discord no lo deja.
 5. De vuelta en el panel, elige tu servidor y configura lo que quieras: **Canales**, **Bienvenida y pregunta del día**, **Seguridad**… En Discord escribe `/` para ver los comandos del bot. Para revisar que todo esté bien, usa `/selftest` (solo administradores).
 
 ¡Listo! 🎉
@@ -328,7 +329,8 @@ Los ejemplos con todos los valores y comentarios están en [`.env.example`](.env
 | `FRONTEND_URL` | Recomendada | Dirección del panel. Pon lo mismo que en `APP_URL` (el panel y el servidor van juntos). Por defecto, igual que `APP_URL`. |
 | `PORT` | No | Puerto donde escucha el servidor. Por defecto `5000`. |
 | `DISCORD_DEV_GUILD_ID` | No | ID de tu servidor de pruebas (o varios separados por comas). Con `npm run dev` los comandos se registran ahí al instante. Con `npm start`, si sigue puesto, el bot registra los comandos globales y borra las copias de prueba de esos servidores. |
-| `DEV_BYPASS_AUTH` | No | Solo para desarrollo: con `1` aparece `/auth/dev-login`, que entra al panel **sin Discord** y deja ver todos los servidores del bot. Solo funciona con `npm run dev`. Nunca lo actives en un servidor público. |
+| `DEV_BYPASS_AUTH` | No | Solo para desarrollo: con `1` aparece `/auth/dev-login`, que entra al panel **sin Discord** y deja ver todos los servidores del bot. Solo funciona con `npm run dev` y desde la misma computadora, entrando por `http://localhost`. Nunca lo actives en un servidor público. |
+| `HOST` | No | Dirección de red donde escucha el servidor. Por defecto, con `npm run dev` solo se puede abrir desde tu computadora (`127.0.0.1`) y con `npm start` desde cualquier lado (`0.0.0.0`). Pon `HOST=0.0.0.0` si quieres abrir el panel de desarrollo desde tu celular en la misma red. |
 | `DATABASE_DRIVER` | No | Fuerza el controlador de la base: `neon` o `pg`. Sin ella se elige solo: `neon` si `DATABASE_URL` es de Neon (`….neon.tech`) y `pg` (PostgreSQL normal) con cualquier otra. `pg` también funciona con Neon. Casi nunca hace falta. |
 | `DB_POOL_MAX` | No | Conexiones a la base abiertas a la vez (por defecto `10`). Déjalo así. |
 | `DB_CONNECTION_TIMEOUT_MS` | No | Cuánto esperar al abrir una conexión antes de dar error, en milisegundos (por defecto `10000`). |
@@ -427,8 +429,8 @@ Además del permiso de Discord, el bot pide que quien lo usa tenga un rol llamad
 | `/clear <cantidad>` | Borra de 1 a 100 mensajes del canal (Discord no deja borrar así mensajes de más de 14 días). | 🔒 Gestionar mensajes |
 | `/kick <usuario> [razon]` | Expulsa a un miembro. | 🔒 Expulsar miembros |
 | `/ban <usuario> [razon]` | Banea a un miembro. | 🔒 Banear miembros |
-| `/mute <usuario> <minutos>` | Silencia con el rol "Muteado" (lo crea si no existe), hasta 1 semana. | 🔒 Gestionar roles |
-| `/unmute <usuario>` | Quita el silencio. | 🔒 Gestionar roles |
+| `/mute <usuario> <minutos>` | Aísla temporalmente al miembro (no puede escribir, hablar ni reaccionar), hasta 1 semana. Discord lo quita solo al cumplirse el tiempo, aunque el bot se reinicie. | 🔒 Aislar temporalmente a miembros |
+| `/unmute <usuario>` | Quita el aislamiento antes de tiempo (o el rol "Muteado" de versiones viejas). | 🔒 Aislar temporalmente a miembros |
 | `/lockdown <accion>` | Bloquea (o desbloquea) el canal actual y sus hilos para que solo el staff escriba. | 🔒 Gestionar canales |
 | `/warn <usuario> [razon]` | Registra una advertencia. | 🔒 Aislar temporalmente a miembros |
 | `/warnings <usuario>` | Historial de advertencias y otras acciones de alguien. | 🔒 Aislar temporalmente a miembros |
@@ -506,10 +508,10 @@ El panel abre aunque el bot no se haya conectado. Busca en la consola la línea 
 - `Falta DISCORD_TOKEN en el archivo .env`: pega el token del bot en `DISCORD_TOKEN` (paso 4).
 - `DISCORD_TOKEN no es válido ("An invalid token was provided.")`: el `DISCORD_TOKEN` está mal copiado. Genera otro en **Bot → Reset Token**.
 - `Faltan los Privileged Gateway Intents ("Used disallowed intents")`: faltan **Server Members Intent** o **Message Content Intent** (Developer Portal → Bot → Privileged Gateway Intents → Save Changes). BotM necesita los dos: sin el primero no se entera de quién entra (bienvenida y anti-raid) y sin el segundo no lee los comandos con prefijo.
-- `No se pudo llegar a Discord` o `Discord rechazó la conexión`: no hay internet, o un firewall, antivirus o proxy bloquea a Discord (o Discord está caído). Cuando se arregle, reinicia BotM.
+- `No se pudo llegar a Discord` o `Discord rechazó la conexión`: no hay internet, o un firewall, antivirus o proxy bloquea a Discord (o Discord está caído). El bot lo vuelve a intentar solo (cada vez espera un poco más, hasta 5 minutos), así que cuando se arregle se conecta sin reiniciar.
 - No hay ningún error: recuerda que el bot vive dentro de `npm run dev`. Si cerraste PowerShell o la computadora se durmió, el bot se apaga.
 
-Después de corregir el `.env`, reinicia BotM (Ctrl + C y otra vez `npm run dev`): el bot solo intenta conectarse al arrancar.
+Si el problema era el token o los intents, el bot no lo reintenta: corrige el `.env` o el Developer Portal y reinicia BotM (Ctrl + C y otra vez `npm run dev`).
 
 ### Los comandos `/` no aparecen
 
@@ -613,7 +615,8 @@ Ten en cuenta:
 
 ## Bueno saber
 
-- **`/mute` y los reinicios:** el bot quita el mute solo cuando se cumple el tiempo, pero si se reinicia antes, ese temporizador se pierde. En ese caso quítalo a mano con `/unmute`.
+- **Rol "Muteado" viejo:** si usabas la versión anterior, al conectarse el bot pasa a quienes aún tenían ese rol al aislamiento de Discord por el tiempo que les quedaba. El rol se queda en el servidor; puedes borrarlo a mano.
+- **Mientras el modo raid está activo** el bot no da la bienvenida ni el rol automático a quien entra. Si alguien legítimo entró en ese rato, dale el rol a mano.
 - **Lotería:** los boletos se acumulan, pero todavía no hay sorteos.
 - **Twitter/X:** no está disponible; solo hay feeds de Reddit.
 - **Preguntas del día:** están en `server/bot/data/preguntasDelDia.ts`. Puedes agregar o quitar las que quieras; el bot recuerda cuáles ya salieron (si corriges el texto de una, cuenta como nueva).
