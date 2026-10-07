@@ -1,19 +1,18 @@
-import type { ContentFeedItem } from "@shared/api";
+import { CONTENT_FEED_LIMITS as API_CONTENT_FEED_LIMITS, type ContentFeedItem } from "@shared/api";
 
 /**
- * Límites de los feeds de Reddit. shared/api.ts aún no los exporta como constante, así que
- * aquí se copian de la API (server/routes.ts → contentFeedSchema / postIntervalSchema y
- * server/storage.ts → MAX_CONTENT_FEEDS_PER_GUILD). Si cambian allá, hay que cambiarlos aquí.
+ * Límites de los feeds de Reddit, sacados de shared/api.ts (los mismos que valida el servidor).
+ * Aquí el patrón del subreddit va ya como RegExp para usarlo directo en los formularios.
  */
 export const CONTENT_FEED_LIMITS = {
   /** Feeds por servidor (cuentan también los de Twitter/X viejos). */
-  maxPerGuild: 10,
+  maxPerGuild: API_CONTENT_FEED_LIMITS.maxPerGuild,
   /** Nombre de subreddit válido (sin "r/"). */
-  subredditPattern: /^[A-Za-z0-9_]{2,21}$/,
-  subredditMinLength: 2,
-  subredditMaxLength: 21,
+  subredditPattern: new RegExp(API_CONTENT_FEED_LIMITS.subredditPattern),
+  subredditMinLength: API_CONTENT_FEED_LIMITS.subredditMinLength,
+  subredditMaxLength: API_CONTENT_FEED_LIMITS.subredditMaxLength,
   /** Minutos entre publicaciones. */
-  postInterval: { min: 1, max: 1440 },
+  postInterval: API_CONTENT_FEED_LIMITS.postInterval,
 } as const;
 
 /** Intervalo propuesto para un feed nuevo. */

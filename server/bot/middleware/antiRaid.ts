@@ -321,9 +321,13 @@ export async function liftLockdown(guildId: string, liftedBy: string = 'manual')
   }
 
   if (state.eventId) {
+    // resolvedAt/resolvedBy: cuándo y quién cerró el evento (el panel lo muestra en el historial)
+    const endedAt = Date.now();
     await storage.resolveRaidEvent(state.eventId, {
-      liftedAt: Date.now(),
+      liftedAt: endedAt,
       liftedBy,
+      resolvedAt: endedAt,
+      resolvedBy: liftedBy,
       joinsDuringRaid: state.joinsDuringRaid,
       kicked: state.kicked,
     }).catch((error) => console.error('Anti-raid: no se pudo marcar el evento como resuelto:', error));
@@ -381,7 +385,8 @@ async function restoreGuildRaids(guild: Guild) {
     // Solo puede haber un modo raid por servidor: los demás eventos abiertos se cierran (nunca el del vigente)
     if (current) {
       if (current.eventId !== event.id) {
-        await storage.resolveRaidEvent(event.id, { liftedAt: Date.now(), liftedBy: 'restart' });
+        const endedAt = Date.now();
+        await storage.resolveRaidEvent(event.id, { liftedAt: endedAt, liftedBy: 'restart', resolvedAt: endedAt, resolvedBy: 'restart' });
       }
       continue;
     }

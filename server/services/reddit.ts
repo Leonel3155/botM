@@ -19,17 +19,22 @@ interface RedditResponse {
   };
 }
 
+// Tiempo máximo de espera por cada petición a Reddit
+const REDDIT_TIMEOUT_MS = 15_000;
+
 export class RedditService {
   private baseUrl = 'https://www.reddit.com';
 
   async getHotPosts(subreddit: string, limit: number = 25): Promise<RedditPost[]> {
     try {
       const response = await fetch(
-        `${this.baseUrl}/r/${subreddit}/hot.json?limit=${limit}`,
+        `${this.baseUrl}/r/${encodeURIComponent(subreddit)}/hot.json?limit=${limit}`,
         {
           headers: {
             'User-Agent': 'UltraBot-Pro/1.0 (Discord Bot)'
-          }
+          },
+          // Si Reddit no contesta, mejor rendirse que dejar colgado el repaso de feeds
+          signal: AbortSignal.timeout(REDDIT_TIMEOUT_MS)
         }
       );
 
@@ -48,11 +53,12 @@ export class RedditService {
   async getTopPosts(subreddit: string, timeframe: 'hour' | 'day' | 'week' | 'month' | 'year' = 'day', limit: number = 25): Promise<RedditPost[]> {
     try {
       const response = await fetch(
-        `${this.baseUrl}/r/${subreddit}/top.json?t=${timeframe}&limit=${limit}`,
+        `${this.baseUrl}/r/${encodeURIComponent(subreddit)}/top.json?t=${timeframe}&limit=${limit}`,
         {
           headers: {
             'User-Agent': 'UltraBot-Pro/1.0 (Discord Bot)'
-          }
+          },
+          signal: AbortSignal.timeout(REDDIT_TIMEOUT_MS)
         }
       );
 

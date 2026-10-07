@@ -275,11 +275,14 @@ export interface DashboardStatsResponse {
 // Niveles y economía
 // =============================================
 
-/** GET /api/levels/:guildId/top?limit=1..100 (por defecto 10) */
+/** GET /api/levels/:guildId/top?limit=1..100 (por defecto 10). Una entrada por persona, mismo orden que /lb en Discord. */
 export type LevelsTopResponse = LeaderboardEntry[];
 /** GET /api/levels/:guildId/user/:userId */
 export type UserLevelResponse = Jsonify<UserLevel>;
-/** GET /api/economy/:guildId/top?limit=1..100 (por defecto 10): cartera + banco */
+/**
+ * GET /api/economy/:guildId/top?limit=1..100 (por defecto 10): cartera + banco.
+ * Una entrada por persona (la cuenta que usa el bot) y solo quien tiene monedas, igual que /leaderboard en Discord.
+ */
 export type EconomyTopResponse = WealthEntry[];
 /** GET /api/economy/:guildId/user/:userId */
 export type UserEconomyResponse = Jsonify<UserEconomy>;
@@ -429,9 +432,16 @@ export interface RaidEventDetails {
   /** Cuándo terminó (ms) y quién: "auto", "restart" o el ID de un usuario. */
   liftedAt?: number;
   liftedBy?: string;
-  /** Marcado como revisado desde el panel. */
+  /**
+   * Cuándo se cerró el evento (ms) y quién: el ID de un usuario, "auto" o "restart".
+   * Lo escribe cualquier cierre (fin del modo raid, /antiraid levantar, el panel o un reinicio).
+   * Eventos viejos cerrados desde el panel solo traen resolvedAt/resolvedBy (sin liftedAt).
+   */
   resolvedAt?: number;
   resolvedBy?: string;
+  /** Cuándo (ms) y quién (ID de Discord) lo marcó como revisado desde el panel. */
+  reviewedAt?: number;
+  reviewedBy?: string;
   [key: string]: unknown;
 }
 
@@ -444,15 +454,33 @@ export interface RaidEventItem {
   /** Es el modo raid que está activo ahora mismo. */
   isActive: boolean;
   createdAt: IsoDateString | null;
+  /** Cuándo se cerró (null si sigue abierto o no se sabe). */
+  resolvedAt: IsoDateString | null;
+  /** Alguien del staff lo marcó como revisado desde el panel (esté cerrado o no). */
+  reviewed: boolean;
+  reviewedAt: IsoDateString | null;
+  /** ID de Discord de quien lo revisó (null si no se sabe). */
+  reviewedBy: string | null;
   details: RaidEventDetails;
 }
 
-/** GET /api/guilds/:guildId/raid-events?status=all|open|resolved&limit=1..100&before=<cursor> */
+/**
+ * Filtros de ?status= del historial de raids:
+ * all (todos), open (sin cerrar), resolved (cerrados), unreviewed (nadie los ha revisado, cerrados o no).
+ */
+export const RAID_EVENT_STATUS_FILTERS = ["all", "open", "resolved", "unreviewed"] as const;
+export type RaidEventStatusFilter = (typeof RAID_EVENT_STATUS_FILTERS)[number];
+
+/** GET /api/guilds/:guildId/raid-events?status=all|open|resolved|unreviewed&limit=1..100&before=<cursor> */
 export interface RaidEventsResponse extends Paged {
   events: RaidEventItem[];
 }
 
-/** POST /api/guilds/:guildId/raid-events/:eventId/resolve (cuerpo vacío). Si es el raid activo, lo termina. */
+/**
+ * POST /api/guilds/:guildId/raid-events/:eventId/resolve (cuerpo vacío).
+ * Lo marca como revisado (aunque ya estuviera cerrado), lo cierra si seguía abierto y,
+ * si es el modo raid activo, lo termina.
+ */
 export interface RaidEventResolveResponse {
   success: true;
   event: RaidEventItem;
@@ -475,10 +503,13 @@ export const MODERATION_ACTION_LABELS: Record<string, string> = {
   unlock: "Canal desbloqueado",
 };
 
-/** GET /api/moderation/:guildId/actions?type=&userId=&limit=1..100&before=<cursor> */
+/** GET /api/moderation/:guildId/actions?type=&userId=&moderatorId=&limit=1..100&before=<cursor> */
 export interface ModerationActionsQuery {
   type?: string;
+  /** Persona sancionada (ID de Discord). */
   userId?: string;
+  /** Quien aplicó la acción (ID de Discord). */
+  moderatorId?: string;
   limit?: number;
   before?: string;
 }
@@ -568,16 +599,28 @@ export type CustomCommandResponse = CustomCommandItem;
 // Contenido automático (Reddit)
 // =============================================
 
+/** Límites de los feeds de contenido (los mismos para el servidor y el panel). */
+export const CONTENT_FEED_LIMITS = {
+  /** Feeds por servidor (cuentan también los de Twitter/X viejos). */
+  maxPerGuild: 10,
+  /** Nombre de subreddit válido, sin "r/": letras, números y "_" (úsalo con new RegExp). */
+  subredditPattern: "^[A-Za-z0-9_]{2,21}$",
+  subredditMinLength: 2,
+  subredditMaxLength: 21,
+  /** Minutos entre publicaciones. */
+  postInterval: { min: 1, max: 1440 },
+} as const;
+
 export type ContentFeedItem = Jsonify<ContentFeed>;
 /** GET /api/social/:guildId/feeds */
 export type ContentFeedsResponse = ContentFeedItem[];
 
-/** POST /api/social/:guildId/feeds (máximo 10 por servidor; Twitter/X aún no está disponible) */
+/** POST /api/social/:guildId/feeds (máximo CONTENT_FEED_LIMITS.maxPerGuild por servidor; Twitter/X aún no está disponible) */
 export interface ContentFeedCreateRequest {
   source: "reddit";
   channelId: string;
   sourceConfig: { subreddit: string; filterNSFW?: boolean };
-  /** Minutos entre publicaciones (1-1440). */
+  /** Minutos entre publicaciones (CONTENT_FEED_LIMITS.postInterval). */
   postInterval: number;
 }
 /**

@@ -1,5 +1,5 @@
 import type { GuildEngagementSettings } from '@shared/schema';
-import { CUSTOM_COMMAND_LIMITS } from '@shared/api';
+import { CONTENT_FEED_LIMITS, CUSTOM_COMMAND_LIMITS, type RaidEventStatusFilter } from '@shared/api';
 import { db } from './db';
 import {
   users, guilds, userLevels, userEconomy, economyTransactions,
@@ -27,7 +27,7 @@ export interface ModerationLogEntry {
 
 export type ContentFeedUpdate = Partial<Omit<ContentFeed, 'id' | 'guildId'>>;
 
-export const MAX_CONTENT_FEEDS_PER_GUILD = 10;
+export const MAX_CONTENT_FEEDS_PER_GUILD = CONTENT_FEED_LIMITS.maxPerGuild;
 
 export class ContentFeedLimitError extends Error {
   constructor(public readonly limit: number) {
@@ -72,7 +72,10 @@ export interface PageCursor {
 
 export interface ModerationActionFilters {
   type?: string;
+  /** Persona sancionada. */
   userId?: string;
+  /** Quien aplicó la acción. */
+  moderatorId?: string;
   before?: PageCursor;
   limit?: number;
 }
@@ -85,7 +88,8 @@ export interface ModerationActionWithUsers {
 }
 
 export interface RaidEventFilters {
-  status?: 'all' | 'open' | 'resolved';
+  /** unreviewed = nadie lo ha marcado como revisado desde el panel (esté cerrado o no). */
+  status?: RaidEventStatusFilter;
   before?: PageCursor;
   limit?: number;
 }
@@ -106,6 +110,16 @@ export interface WealthLeaderboardRow {
   wallet: number;
   bank: number;
   total: number;
+}
+
+/** Totales de la economía de un servidor (una cuenta por persona: la que usa el bot). */
+export interface EconomyTotals {
+  /** Personas con cuenta. */
+  accounts: number;
+  /** Personas con algo en cartera o banco. */
+  withMoney: number;
+  wallet: number;
+  bank: number;
 }
 
 /** Contadores del resumen del panel (todo de la base de datos). */
@@ -145,7 +159,6 @@ export interface IStorage {
   createUserLevel(insertUserLevel: InsertUserLevel): Promise<UserLevel>;
   updateUserLevel(userId: string, guildId: string, data: Partial<UserLevel>): Promise<void>;
   updateUserXP(userId: string, guildId: string, xpGain: number): Promise<UserLevel>;
-  getTopUsersByLevel(guildId: string, limit?: number): Promise<UserLevel[]>;
   
   // Economy helper methods
   addCoins(userId: string, guildId: string, amount: number): Promise<void>;
@@ -158,7 +171,6 @@ export interface IStorage {
   createUserEconomy(insertUserEconomy: InsertUserEconomy): Promise<UserEconomy>;
   updateUserEconomy(userId: string, guildId: string, data: Partial<UserEconomy>): Promise<void>;
   getAllUserEconomies(guildId: string): Promise<UserEconomy[]>;
-  getTopUsersByEconomy(guildId: string, limit?: number): Promise<UserEconomy[]>;
   
   // Moderation methods
   createModerationAction(data: InsertModerationAction): Promise<ModerationAction>;
@@ -174,6 +186,7 @@ export interface IStorage {
   getUnresolvedRaidEvents(guildId: string): Promise<RaidEvent[]>;
   resolveRaidEvent(id: string, extraDetails?: Record<string, unknown>): Promise<RaidEvent | undefined>;
   updateRaidEventDetails(id: string, extraDetails: Record<string, unknown>): Promise<RaidEvent | undefined>;
+  markRaidEventReviewed(guildId: string, id: string, reviewedBy: string): Promise<RaidEvent | undefined>;
   getAntiRaidConfig(guildId: string): Promise<AntiRaidSettings>;
   setAntiRaidConfig(guildId: string, updates: Partial<AntiRaidSettings>): Promise<AntiRaidSettings>;
 
@@ -184,6 +197,7 @@ export interface IStorage {
   queryModerationActions(guildId: string, filters?: ModerationActionFilters): Promise<ModerationActionWithUsers[]>;
   getLevelLeaderboard(guildId: string, limit?: number): Promise<LevelLeaderboardRow[]>;
   getWealthLeaderboard(guildId: string, limit?: number): Promise<WealthLeaderboardRow[]>;
+  getEconomyTotals(guildId: string): Promise<EconomyTotals>;
   getGuildDashboardCounts(guildId: string): Promise<GuildDashboardCounts>;
   getLevelCounts(guildId: string): Promise<{ level: number; users: number }[]>;
   getModerationActivitySince(guildId: string, since: Date): Promise<{ type: string; createdAt: Date | null }[]>;
@@ -342,11 +356,14 @@ export class DatabaseStorage implements IStorage {
   }
 
   // ===== USER LEVEL METHODS =====
+  // Si hubiera filas repetidas, la misma que usa el bot (services/levels.ts → getLevelRow): la de menor id
   async getUserLevel(userId: string, guildId: string): Promise<UserLevel | undefined> {
     const [userLevel] = await db
       .select()
       .from(userLevels)
-      .where(and(eq(userLevels.userId, userId), eq(userLevels.guildId, guildId)));
+      .where(and(eq(userLevels.userId, userId), eq(userLevels.guildId, guildId)))
+      .orderBy(userLevels.id)
+      .limit(1);
     return userLevel || undefined;
   }
 
@@ -492,21 +509,15 @@ export class DatabaseStorage implements IStorage {
     return Math.floor((userLevel?.xp || 0) / 20); // Approximate from XP
   }
 
-  async getTopUsersByLevel(guildId: string, limit: number = 10): Promise<UserLevel[]> {
-    return await db
-      .select()
-      .from(userLevels)
-      .where(eq(userLevels.guildId, guildId))
-      .orderBy(desc(userLevels.level), desc(userLevels.xp))
-      .limit(limit);
-  }
-
   // ===== ECONOMY METHODS =====
+  // Si hubiera filas repetidas, la misma que usa el bot (services/economy.ts → getAccount): la de menor id
   async getUserEconomy(userId: string, guildId: string): Promise<UserEconomy | undefined> {
     const [economy] = await db
       .select()
       .from(userEconomy)
-      .where(and(eq(userEconomy.userId, userId), eq(userEconomy.guildId, guildId)));
+      .where(and(eq(userEconomy.userId, userId), eq(userEconomy.guildId, guildId)))
+      .orderBy(userEconomy.id)
+      .limit(1);
     return economy || undefined;
   }
 
@@ -530,14 +541,6 @@ export class DatabaseStorage implements IStorage {
       .select()
       .from(userEconomy)
       .where(eq(userEconomy.guildId, guildId));
-  }
-
-  async getTopUsersByEconomy(guildId: string, limit: number = 10): Promise<UserEconomy[]> {
-    return await db.select()
-      .from(userEconomy)
-      .where(eq(userEconomy.guildId, guildId))
-      .orderBy(desc(sql`CAST(${userEconomy.balance} AS NUMERIC) + CAST(${userEconomy.bank} AS NUMERIC)`))
-      .limit(limit);
   }
 
   // ===== MODERATION METHODS =====
@@ -635,7 +638,9 @@ export class DatabaseStorage implements IStorage {
       .orderBy(desc(raidEvents.createdAt));
   }
 
-  // Marca el evento como resuelto y mezcla datos extra en `details`
+  // Marca el evento como cerrado y mezcla datos extra en `details`.
+  // Quien cierra pasa resolvedAt/resolvedBy; el bot además liftedAt/liftedBy (sin liftedAt, un evento
+  // con resolvedAt cuenta como revisado desde el panel: ver raidEventReviewedSql).
   async resolveRaidEvent(id: string, extraDetails: Record<string, unknown> = {}): Promise<RaidEvent | undefined> {
     const [event] = await db
       .update(raidEvents)
@@ -654,6 +659,18 @@ export class DatabaseStorage implements IStorage {
       .update(raidEvents)
       .set({ details: sql`${jsonObjectOrEmpty(raidEvents.details)} || ${JSON.stringify(extraDetails)}::jsonb` })
       .where(eq(raidEvents.id, id))
+      .returning();
+    return event || undefined;
+  }
+
+  // Marca el evento como revisado desde el panel (reviewedAt/reviewedBy en `details`), esté cerrado o no.
+  // Si ya estaba revisado se conserva la primera revisión.
+  async markRaidEventReviewed(guildId: string, id: string, reviewedBy: string): Promise<RaidEvent | undefined> {
+    const review = JSON.stringify({ reviewedAt: Date.now(), reviewedBy });
+    const [event] = await db
+      .update(raidEvents)
+      .set({ details: sql`${review}::jsonb || ${jsonObjectOrEmpty(raidEvents.details)}` })
+      .where(and(eq(raidEvents.guildId, guildId), eq(raidEvents.id, id)))
       .returning();
     return event || undefined;
   }
@@ -707,6 +724,7 @@ export class DatabaseStorage implements IStorage {
     const conditions: SQL[] = [eq(raidEvents.guildId, guildId)];
     if (filters.status === 'open') conditions.push(eq(raidEvents.resolved, false));
     if (filters.status === 'resolved') conditions.push(eq(raidEvents.resolved, true));
+    if (filters.status === 'unreviewed') conditions.push(sql`not coalesce(${raidEventReviewedSql()}, false)`);
     if (filters.before) conditions.push(beforeCursor(raidEvents.createdAt, raidEvents.id, filters.before));
 
     return await db
@@ -725,6 +743,7 @@ export class DatabaseStorage implements IStorage {
     const conditions: SQL[] = [eq(moderationActions.guildId, guildId)];
     if (filters.type) conditions.push(eq(moderationActions.type, filters.type));
     if (filters.userId) conditions.push(eq(moderationActions.userId, filters.userId));
+    if (filters.moderatorId) conditions.push(eq(moderationActions.moderatorId, filters.moderatorId));
     if (filters.before) conditions.push(beforeCursor(moderationActions.createdAt, moderationActions.id, filters.before));
 
     const rows = await db
@@ -749,48 +768,52 @@ export class DatabaseStorage implements IStorage {
     }));
   }
 
+  // Una fila por persona aunque haya filas repetidas (la tabla no tiene índice único usuario+servidor):
+  // la de nivel y XP más altos, el mismo orden que usa el bot en /lb y en el puesto de /level
   async getLevelLeaderboard(guildId: string, limit: number = 10): Promise<LevelLeaderboardRow[]> {
+    const best = bestLevelRows(guildId);
     const rows = await db
       .select({
-        userId: userLevels.userId,
+        userId: best.userId,
         username: users.username,
         avatar: users.avatar,
-        level: userLevels.level,
-        xp: userLevels.xp,
-        totalXp: userLevels.totalXp,
+        level: best.level,
+        xp: best.xp,
+        totalXp: best.totalXp,
       })
-      .from(userLevels)
-      .leftJoin(users, eq(users.id, userLevels.userId))
-      .where(eq(userLevels.guildId, guildId))
-      .orderBy(desc(userLevels.level), desc(userLevels.xp), userLevels.userId)
+      .from(best)
+      .leftJoin(users, eq(users.id, best.userId))
+      .orderBy(desc(best.level), desc(best.xp), best.userId)
       .limit(clampLimit(limit, 10));
 
     return rows.map((row) => ({
       userId: row.userId,
       username: row.username ?? null,
       avatar: row.avatar ?? null,
-      level: row.level ?? 1,
-      xp: row.xp ?? 0,
-      totalXp: row.totalXp ?? 0,
+      level: toNumber(row.level) || 1,
+      xp: toNumber(row.xp),
+      totalXp: toNumber(row.totalXp),
     }));
   }
 
-  // Cartera + banco (lo que de verdad tiene cada quien ahora mismo)
+  // Cartera + banco de la cuenta que usa el bot (una por persona; ver economyAccounts).
+  // Igual que /leaderboard en Discord: solo quien tiene monedas, de más a menos.
   async getWealthLeaderboard(guildId: string, limit: number = 10): Promise<WealthLeaderboardRow[]> {
-    const total = sql<string>`(coalesce(${userEconomy.balance}, 0) + coalesce(${userEconomy.bank}, 0))`;
+    const account = economyAccounts(guildId);
+    const total = sql<string>`(${account.wallet} + ${account.bank})`;
     const rows = await db
       .select({
-        userId: userEconomy.userId,
+        userId: account.userId,
         username: users.username,
         avatar: users.avatar,
-        wallet: userEconomy.balance,
-        bank: userEconomy.bank,
+        wallet: account.wallet,
+        bank: account.bank,
         total,
       })
-      .from(userEconomy)
-      .leftJoin(users, eq(users.id, userEconomy.userId))
-      .where(eq(userEconomy.guildId, guildId))
-      .orderBy(desc(total), userEconomy.userId)
+      .from(account)
+      .leftJoin(users, eq(users.id, account.userId))
+      .where(sql`${total} > 0`)
+      .orderBy(desc(total), account.userId)
       .limit(clampLimit(limit, 10));
 
     return rows.map((row) => ({
@@ -803,6 +826,25 @@ export class DatabaseStorage implements IStorage {
     }));
   }
 
+  async getEconomyTotals(guildId: string): Promise<EconomyTotals> {
+    const account = economyAccounts(guildId);
+    const [row] = await db
+      .select({
+        accounts: sql<number>`count(*)::int`,
+        withMoney: sql<number>`(count(*) filter (where ${account.wallet} + ${account.bank} > 0))::int`,
+        wallet: sql<string>`coalesce(sum(${account.wallet}), 0)`,
+        bank: sql<string>`coalesce(sum(${account.bank}), 0)`,
+      })
+      .from(account);
+
+    return {
+      accounts: row?.accounts ?? 0,
+      withMoney: row?.withMoney ?? 0,
+      wallet: toNumber(row?.wallet),
+      bank: toNumber(row?.bank),
+    };
+  }
+
   async getGuildDashboardCounts(guildId: string): Promise<GuildDashboardCounts> {
     const now = Date.now();
     const since7d = new Date(now - 7 * DAY_MS).toISOString();
@@ -810,15 +852,13 @@ export class DatabaseStorage implements IStorage {
     const since30dIso = since30d.toISOString();
     const count = sql<number>`count(*)::int`;
 
-    const [levelRows, economyRows, moderationRows, raidRows, commandRows] = await Promise.all([
-      db.select({ total: count }).from(userLevels).where(eq(userLevels.guildId, guildId)),
+    const [levelRows, economy, moderationRows, raidRows, commandRows] = await Promise.all([
+      // Personas, no filas (puede haber filas repetidas de la misma persona)
       db
-        .select({
-          users: count,
-          coins: sql<string>`coalesce(sum(coalesce(${userEconomy.balance}, 0) + coalesce(${userEconomy.bank}, 0)), 0)`,
-        })
-        .from(userEconomy)
-        .where(eq(userEconomy.guildId, guildId)),
+        .select({ total: sql<number>`count(distinct ${userLevels.userId})::int` })
+        .from(userLevels)
+        .where(eq(userLevels.guildId, guildId)),
+      this.getEconomyTotals(guildId),
       db
         .select({
           last7d: sql<number>`(count(*) filter (where ${moderationActions.createdAt} >= ${since7d}::timestamp))::int`,
@@ -837,8 +877,8 @@ export class DatabaseStorage implements IStorage {
 
     return {
       usersWithLevels: levelRows[0]?.total ?? 0,
-      usersWithEconomy: economyRows[0]?.users ?? 0,
-      coinsInCirculation: toNumber(economyRows[0]?.coins),
+      usersWithEconomy: economy.accounts,
+      coinsInCirculation: economy.wallet + economy.bank,
       moderationActions7d: moderationRows[0]?.last7d ?? 0,
       moderationActions30d: moderationRows[0]?.last30d ?? 0,
       warnings30d: moderationRows[0]?.warnings30d ?? 0,
@@ -848,15 +888,15 @@ export class DatabaseStorage implements IStorage {
     };
   }
 
-  // Cuántas personas hay en cada nivel (para la distribución de niveles)
+  // Cuántas personas hay en cada nivel (para la distribución de niveles), una vez cada persona
   async getLevelCounts(guildId: string): Promise<{ level: number; users: number }[]> {
-    const level = sql<number>`coalesce(${userLevels.level}, 1)`;
-    return await db
-      .select({ level, users: sql<number>`count(*)::int` })
-      .from(userLevels)
-      .where(eq(userLevels.guildId, guildId))
-      .groupBy(level)
-      .orderBy(level);
+    const best = bestLevelRows(guildId);
+    const rows = await db
+      .select({ level: best.level, users: sql<number>`count(*)::int` })
+      .from(best)
+      .groupBy(best.level)
+      .orderBy(best.level);
+    return rows.map((row) => ({ level: toNumber(row.level) || 1, users: row.users }));
   }
 
   // Tipo y fecha de las acciones desde `since` (para agruparlas por día en la zona del servidor)
@@ -1089,6 +1129,49 @@ function clampLimit(limit: number, fallback: number): number {
 // La columna jsonb como objeto (o {} si está vacía / no es objeto) para poder mezclarla con ||
 function jsonObjectOrEmpty(column: typeof guilds.settings | typeof raidEvents.details) {
   return sql`(case when jsonb_typeof(${column}) = 'object' then ${column} else '{}'::jsonb end)`;
+}
+
+// ¿Alguien lo marcó como revisado desde el panel? Misma regla que raidEventReview (server/routes/helpers.ts):
+// tiene reviewedAt, o es un evento viejo que se cerró desde el panel (resolvedAt sin liftedAt).
+function raidEventReviewedSql(): SQL {
+  const details = jsonObjectOrEmpty(raidEvents.details);
+  return sql`(jsonb_typeof(${details} -> 'reviewedAt') = 'number' or (jsonb_typeof(${details} -> 'resolvedAt') = 'number' and jsonb_typeof(${details} -> 'liftedAt') is distinct from 'number'))`;
+}
+
+// La mejor fila de niveles de cada persona en el servidor (nivel y luego XP más altos).
+// totalXp como lo muestra el bot: total_xp, o xp si total_xp está vacío.
+function bestLevelRows(guildId: string) {
+  const level = sql<number>`coalesce(${userLevels.level}, 1)`;
+  const xp = sql<number>`coalesce(${userLevels.xp}, 0)`;
+  return db
+    .selectDistinctOn([userLevels.userId], {
+      userId: userLevels.userId,
+      // Alias propios: drizzle los usa sin prefijo en la consulta de fuera (no deben chocar con columnas de users)
+      level: level.as('best_level'),
+      xp: xp.as('best_xp'),
+      totalXp: sql<number>`coalesce(nullif(${userLevels.totalXp}, 0), ${userLevels.xp}, 0)`.as('best_total_xp'),
+    })
+    .from(userLevels)
+    .where(eq(userLevels.guildId, guildId))
+    .orderBy(userLevels.userId, desc(level), desc(xp), userLevels.id)
+    .as('best_level_row');
+}
+
+// La cuenta económica de cada persona tal como la lee y la modifica el bot (services/economy.ts →
+// getAccount / lockAccount): la de menor id si hubiera filas repetidas. Así el panel, /balance y
+// /leaderboard muestran siempre los mismos números.
+function economyAccounts(guildId: string) {
+  return db
+    .selectDistinctOn([userEconomy.userId], {
+      userId: userEconomy.userId,
+      // Alias propios: drizzle los usa sin prefijo en la consulta de fuera (no deben chocar con columnas de users)
+      wallet: sql<string>`coalesce(${userEconomy.balance}, 0)`.as('account_wallet'),
+      bank: sql<string>`coalesce(${userEconomy.bank}, 0)`.as('account_bank'),
+    })
+    .from(userEconomy)
+    .where(eq(userEconomy.guildId, guildId))
+    .orderBy(userEconomy.userId, userEconomy.id)
+    .as('economy_account');
 }
 
 // Valida la config guardada campo por campo; lo inválido o ausente toma el valor por defecto
