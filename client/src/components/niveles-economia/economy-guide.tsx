@@ -182,7 +182,7 @@ function EarnItem({ icon: Icon, title, children }: { icon: LucideIcon; title: st
 }
 
 /** De dónde salen las monedas, según el código del bot. */
-export function HowCoinsWorkCard() {
+export function HowCoinsWorkCard({ economyEnabled }: { economyEnabled: boolean | null }) {
   const coins10 = messageCoinRange(10);
   const reward10 = levelUpReward(10);
   const luckyPercent = (LUCKY_CHANCE * 100).toLocaleString("es-MX");
@@ -194,7 +194,15 @@ export function HowCoinsWorkCard() {
           <HandCoins className="h-5 w-5 text-primary" aria-hidden="true" />
           De dónde salen las monedas
         </CardTitle>
-        <CardDescription>Así reparte el bot, sin que tengas que hacer nada.</CardDescription>
+        <CardDescription>
+          {economyEnabled === false ? (
+            <span className="block text-status-warning">
+              Con la economía desactivada, el bot no reparte monedas: esto es lo que hará cuando la vuelvas a activar.
+            </span>
+          ) : (
+            "Así reparte el bot, sin que tengas que hacer nada."
+          )}
+        </CardDescription>
       </CardHeader>
       <CardContent className="p-4 pt-0 sm:p-6 sm:pt-0">
         <ul className="space-y-4">

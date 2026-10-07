@@ -44,8 +44,9 @@ function WealthRow({ entry }: { entry: WealthEntry }) {
 export function WealthLeaderboard({ entries }: { entries: WealthEntry[] }) {
   return (
     <ol className="divide-y divide-border" aria-label="Ranking de monedas" data-testid="list-wealth-ranking">
+      {/* La tabla no impide filas repetidas de una persona: el puesto (único) va en la clave */}
       {entries.map((entry) => (
-        <WealthRow key={entry.userId} entry={entry} />
+        <WealthRow key={`${entry.rank}-${entry.userId}`} entry={entry} />
       ))}
     </ol>
   );

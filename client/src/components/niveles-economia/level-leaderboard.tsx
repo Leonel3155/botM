@@ -53,8 +53,9 @@ function LevelRow({ entry }: { entry: LeaderboardEntry }) {
 export function LevelLeaderboard({ entries }: { entries: LeaderboardEntry[] }) {
   return (
     <ol className="divide-y divide-border" aria-label="Ranking de niveles" data-testid="list-level-ranking">
+      {/* La tabla no impide filas repetidas de una persona: el puesto (único) va en la clave */}
       {entries.map((entry) => (
-        <LevelRow key={entry.userId} entry={entry} />
+        <LevelRow key={`${entry.rank}-${entry.userId}`} entry={entry} />
       ))}
     </ol>
   );
