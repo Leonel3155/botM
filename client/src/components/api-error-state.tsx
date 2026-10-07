@@ -1,11 +1,11 @@
-import { AlertCircle, Bot, LogIn, RefreshCw, ShieldOff, WifiOff } from "lucide-react";
+import { AlertCircle, Bot, Clock, LogIn, RefreshCw, ShieldOff, WifiOff } from "lucide-react";
 import { Link } from "wouter";
 import { Button } from "@/components/ui/button";
 import { Card, CardContent } from "@/components/ui/card";
 import { InviteBotButton } from "@/components/invite-bot-button";
 import { startLogin } from "@/lib/auth";
 import { useSelectedGuildId } from "@/lib/guild";
-import { getApiErrorInfo } from "@/lib/queryClient";
+import { getApiErrorInfo, isRateLimitError } from "@/lib/queryClient";
 import { cn } from "@/lib/utils";
 
 interface ApiErrorStateProps {
@@ -23,9 +23,11 @@ interface ApiErrorStateProps {
  * - 403 { forbidden } → "No tienes permisos de administrador en este servidor"
  * - 404 { botMissing } → "El bot no está en este servidor" + Invitar bot
  * - 503 → "El bot no está disponible ahora, intenta en un momento" + Reintentar
+ * - 429, o 503 porque Discord está limitando → "Espera un momento" con el texto del servidor + Reintentar
  */
 export function ApiErrorState({ error, onRetry, bare = false, className }: ApiErrorStateProps) {
   const info = getApiErrorInfo(error);
+  const rateLimited = isRateLimitError(error);
   const guildId = useSelectedGuildId();
 
   const Icon =
@@ -33,9 +35,11 @@ export function ApiErrorState({ error, onRetry, bare = false, className }: ApiEr
     : info.kind === "forbidden" ? ShieldOff
     : info.kind === "network" ? WifiOff
     : info.kind === "unauthorized" ? LogIn
+    : rateLimited ? Clock
     : AlertCircle;
 
-  const isWarning = info.kind === "botMissing" || info.kind === "unavailable";
+  // Basta con esperar: aviso en amarillo, no error en rojo
+  const isWarning = info.kind === "botMissing" || info.kind === "unavailable" || rateLimited;
   const canRetry = onRetry && info.kind !== "forbidden" && info.kind !== "unauthorized" && info.kind !== "botMissing";
 
   const content = (

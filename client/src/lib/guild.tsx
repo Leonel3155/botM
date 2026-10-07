@@ -1,5 +1,6 @@
 import { createContext, useCallback, useContext, useEffect, useMemo, useState, type ReactNode } from "react";
 import { useQuery } from "@tanstack/react-query";
+import { USER_GUILDS_KEY } from "./queryClient";
 
 /** Un servidor de GET /api/user/guilds (solo los que la persona puede administrar). */
 export interface UserGuild {
@@ -11,7 +12,8 @@ export interface UserGuild {
   botInGuild: boolean;
 }
 
-export const USER_GUILDS_KEY = ["/api/user/guilds"] as const;
+// La clave vive en queryClient.ts: ahí se vuelve a pedir la lista tras un 403 o un "bot ausente"
+export { USER_GUILDS_KEY };
 const STORAGE_KEY = "botm:selectedGuildId";
 
 interface GuildContextValue {
@@ -42,6 +44,11 @@ function writeStoredGuildId(guildId: string | null) {
   } catch {
     // localStorage bloqueado (modo privado, etc.): la selección vive solo en memoria
   }
+}
+
+/** Olvida el servidor elegido guardado en este navegador (al cerrar sesión). */
+export function forgetSelectedGuild() {
+  writeStoredGuildId(null);
 }
 
 /** Acepta solo filas con la forma esperada (por si la API cambia o falla a medias). */
@@ -92,6 +99,12 @@ export function GuildProvider({ children }: { children: ReactNode }) {
     }
   }, [query.isSuccess, guilds, preferredId]);
 
+  // Si no había uno elegido, fijamos (solo en memoria) el que tomamos por defecto: así, si
+  // la lista se reordena al actualizarse (p. ej. sacaron al bot), el panel no salta a otro servidor
+  useEffect(() => {
+    if (!preferredId && selectedGuild) setPreferredId(selectedGuild.id);
+  }, [preferredId, selectedGuild]);
+
   const selectGuild = useCallback((guildId: string) => {
     setPreferredId(guildId);
     writeStoredGuildId(guildId);
@@ -100,14 +113,16 @@ export function GuildProvider({ children }: { children: ReactNode }) {
   const { refetch } = query;
   const value = useMemo<GuildContextValue>(() => ({
     guilds,
-    isLoading: query.isLoading,
+    // isPending y no isLoading: sin conexión la petición queda en pausa (no "cargando") y
+    // el panel diría que no hay servidores
+    isLoading: query.isPending,
     isFetching: query.isFetching,
     error: query.error,
     refetch: () => { void refetch(); },
     selectedGuildId: selectedGuild?.id ?? null,
     selectedGuild,
     selectGuild,
-  }), [guilds, query.isLoading, query.isFetching, query.error, refetch, selectedGuild, selectGuild]);
+  }), [guilds, query.isPending, query.isFetching, query.error, refetch, selectedGuild, selectGuild]);
 
   return <GuildContext.Provider value={value}>{children}</GuildContext.Provider>;
 }

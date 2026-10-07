@@ -1,5 +1,7 @@
 import { useMutation, useQuery } from "@tanstack/react-query";
-import { AUTH_STATUS_KEY, ApiError, apiRequest } from "@/lib/queryClient";
+import { AUTH_STATUS_KEY, ApiError, apiRequest, queryClient } from "@/lib/queryClient";
+import { forgetSelectedGuild } from "@/lib/guild";
+import { realtime } from "@/lib/websocket";
 
 /** Usuario de Discord guardado en la sesión (ver server/routes/auth.ts). */
 export interface SessionUser {
@@ -82,13 +84,37 @@ export function takeReturnTo(): string | null {
   return null;
 }
 
-/** Cierra la sesión y recarga el panel desde cero (así no queda ningún dato en memoria). */
+/** true desde que se cerró sesión en esta pestaña (ver el aviso de "pageshow" de abajo). */
+let loggedOut = false;
+
+if (typeof window !== "undefined") {
+  // Si el navegador restaura esta página desde su caché al pulsar "Atrás" después de cerrar
+  // sesión, volvería a mostrar el panel con los datos de antes: recargamos para ver el login.
+  window.addEventListener("pageshow", (event) => {
+    if (event.persisted && loggedOut) window.location.reload();
+  });
+}
+
+/**
+ * Cierra la sesión y recarga el panel desde cero: borra la caché de react-query y el
+ * servidor elegido guardado en este navegador, así no queda ningún dato de la cuenta.
+ */
 export function useLogout() {
   return useMutation({
     mutationFn: async () => {
       await apiRequest("POST", "/api/auth/logout");
     },
     onSuccess: () => {
+      loggedOut = true;
+      forgetSelectedGuild();
+      try {
+        sessionStorage.removeItem(RETURN_TO_KEY);
+      } catch {
+        // sessionStorage bloqueado: no pasa nada
+      }
+      // Sin reconexiones del tiempo real mientras el navegador cambia de página
+      realtime.stop();
+      queryClient.clear();
       window.location.replace("/");
     },
   });

@@ -1,6 +1,6 @@
 import { useEffect, useSyncExternalStore } from "react";
-import { AUTH_STATUS_KEY, queryClient, queryKeyToPath } from "./queryClient";
-import { toast } from "@/hooks/use-toast";
+import type { WsServerMessage } from "@shared/api";
+import { AUTH_STATUS_KEY, USER_GUILDS_KEY, queryClient, queryKeyToPath } from "./queryClient";
 
 /**
  * Tiempo real del panel (WebSocket en /ws).
@@ -8,8 +8,8 @@ import { toast } from "@/hooks/use-toast";
  * El servidor solo acepta la conexión con una sesión válida. Tras conectar se
  * manda { type: 'join', guildId } y el servidor responde { type: 'joined' } o
  * { type: 'error', status, error }. Después avisa de cambios del servidor
- * elegido (settingsUpdated, feedCreated, lockdown_update) y aquí se invalidan
- * las consultas de react-query que correspondan.
+ * elegido (los avisos de WsServerMessage en shared/api.ts) y aquí se invalidan
+ * las consultas de react-query que correspondan (ver GUILD_INVALIDATIONS).
  *
  * Un "error" con 400/403 es definitivo (id no válido, sin permisos). Un 5xx o un
  * error sin código (Discord no respondió, limitó las solicitudes o falló algo en
@@ -61,6 +61,42 @@ function isPermanentJoinError(message: ServerMessage): boolean {
   return status >= 400 && status < 500 && status !== 408 && status !== 429;
 }
 
+/** Avisos que se refieren al servidor elegido (todos menos las respuestas al "join"). */
+type GuildUpdateType = Exclude<WsServerMessage["type"], "joined" | "error">;
+
+/**
+ * Qué consultas refresca cada aviso, como prefijos de URL (queryKeyToPath convierte
+ * ["/api/guild", id, "config"] en /api/guild/{id}/config). Es un Record sobre
+ * WsServerMessage: si el servidor agrega un aviso en shared/api.ts, TypeScript obliga a
+ * decidir aquí qué refrescar.
+ */
+const GUILD_INVALIDATIONS: Record<GuildUpdateType, (guildId: string) => string[]> = {
+  // Config y prefijo (/api/guild/{id}/config), canales, bienvenida y pregunta del día
+  // (/api/guilds/{id}/engagement), anti-raid y eventos de raid, analíticas y el resumen.
+  // La lista de comandos personalizados también trae el prefijo.
+  settingsUpdated: (guildId) => [
+    `/api/guilds/${guildId}`,
+    `/api/guild/${guildId}`,
+    `/api/dashboard/${guildId}`,
+    `/api/custom-commands/${guildId}`,
+  ],
+  // Feeds de redes sociales (/api/social/{id}/feeds)
+  feedCreated: (guildId) => [`/api/social/${guildId}`],
+  feedsUpdated: (guildId) => [`/api/social/${guildId}`],
+  // Lista de comandos y el total que sale en el resumen (counts.customCommands)
+  customCommandsUpdated: (guildId) => [`/api/custom-commands/${guildId}`, `/api/dashboard/${guildId}`],
+};
+
+function isGuildUpdateType(type: string): type is GuildUpdateType {
+  return Object.prototype.hasOwnProperty.call(GUILD_INVALIDATIONS, type);
+}
+
+/** Todo lo que pueden cambiar los avisos de un servidor (para ponerse al día tras reconectar). */
+function allGuildPaths(guildId: string): string[] {
+  const paths = Object.values(GUILD_INVALIDATIONS).flatMap((toPaths) => toPaths(guildId));
+  return Array.from(new Set(paths));
+}
+
 /** Invalida las consultas cuya URL empieza por alguno de los prefijos dados. */
 function invalidatePaths(prefixes: string[]) {
   void queryClient.invalidateQueries({
@@ -83,6 +119,11 @@ class RealtimeConnection {
   /** Reintentos seguidos del "join" tras errores pasajeros (con la conexión abierta) */
   private joinAttempts = 0;
   private joinRetryTimer: ReturnType<typeof setTimeout> | null = null;
+  /**
+   * Estuvimos suscritos y se cortó: los avisos de mientras se perdieron, así que al
+   * volver a unirnos a ese mismo servidor refrescamos sus datos.
+   */
+  private resyncGuildId: string | null = null;
   private active = false;
   private status: RealtimeStatus = "idle";
   private listeners = new Set<() => void>();
@@ -111,6 +152,8 @@ class RealtimeConnection {
     if (this.guildId === guildId && this.ws) return;
     this.guildId = guildId;
     this.joinedGuildId = null;
+    // Al cambiar de servidor las páginas se montan de nuevo y piden sus datos
+    if (this.resyncGuildId !== guildId) this.resyncGuildId = null;
     this.clearJoinRetry();
 
     if (this.ws?.readyState === WebSocket.OPEN) {
@@ -128,6 +171,7 @@ class RealtimeConnection {
     this.active = false;
     this.guildId = null;
     this.joinedGuildId = null;
+    this.resyncGuildId = null;
     this.attempts = 0;
     this.clearReconnectTimer();
     this.clearJoinRetry();
@@ -184,7 +228,9 @@ class RealtimeConnection {
 
     ws.onopen = () => {
       if (this.ws !== ws) return;
-      this.attempts = 0;
+      // `attempts` no se reinicia aquí sino cuando el servidor contesta al "join": si
+      // acepta la conexión y la cierra enseguida (p. ej. 4401 aunque /api/auth/status
+      // diga que hay sesión), la espera sigue creciendo en vez de reintentar cada segundo.
       this.clearJoinRetry();
       this.sendJoin();
     };
@@ -203,6 +249,7 @@ class RealtimeConnection {
     ws.onclose = (event) => {
       if (this.ws !== ws) return; // ya la reemplazamos o la cerramos nosotros
       this.ws = null;
+      if (this.joinedGuildId) this.resyncGuildId = this.joinedGuildId;
       this.joinedGuildId = null;
       this.clearJoinRetry(); // al reconectar, onopen vuelve a mandar el "join"
       if (!this.active) return;
@@ -288,19 +335,30 @@ class RealtimeConnection {
       case "joined":
         if (message.guildId && message.guildId === this.guildId) {
           this.joinedGuildId = message.guildId;
+          this.attempts = 0;
           this.clearJoinRetry();
           this.setStatus("live");
+          if (this.resyncGuildId === message.guildId) {
+            // Volvimos tras un corte: lo que cambió mientras tanto no llegó por aquí
+            invalidatePaths(allGuildPaths(message.guildId));
+          }
+          this.resyncGuildId = null;
         }
         return;
 
       case "error":
         this.joinedGuildId = null;
+        this.attempts = 0; // el servidor contestó: la conexión en sí funciona
         if (isPermanentJoinError(message)) {
           // 403 sin permisos, 400 id no válido: la conexión sigue abierta pero sin
           // avisos de este servidor. Repetir no cambiaría nada.
           console.warn("[TIEMPO-REAL] El servidor rechazó la suscripción:", message.error ?? message);
           this.clearJoinRetry();
           this.setStatus("denied");
+          // Sin permisos: puede que ya no administre ese servidor; la lista se pone al día
+          if (message.forbidden === true || message.status === 403) {
+            void queryClient.invalidateQueries({ queryKey: USER_GUILDS_KEY, exact: true }, { cancelRefetch: false });
+          }
         } else {
           // Discord no respondió, limitó las solicitudes o falló algo en el servidor
           console.warn("[TIEMPO-REAL] No se pudo suscribir por ahora; se reintentará:", message.error ?? message);
@@ -312,37 +370,8 @@ class RealtimeConnection {
     const guildId = this.joinedGuildId;
     if (!guildId) return;
 
-    switch (message.type) {
-      case "settingsUpdated":
-        invalidatePaths([
-          `/api/guilds/${guildId}`,
-          `/api/guild/${guildId}`,
-          `/api/dashboard/${guildId}`,
-        ]);
-        break;
-
-      case "feedCreated":
-        invalidatePaths([`/api/social/${guildId}`]);
-        break;
-
-      case "lockdown_update":
-        invalidatePaths([`/api/protection/${guildId}`]);
-        toast({
-          title: message.enabled ? "🔒 Bloqueo activado" : "🔓 Bloqueo desactivado",
-          description: message.enabled
-            ? (message.reason ? `Motivo: ${message.reason}` : "Los miembros no pueden escribir por ahora.")
-            : "Los miembros ya pueden volver a escribir.",
-        });
-        break;
-
-      // El servidor aún no los manda, pero si llegan mantenemos las listas al día
-      case "userLevelUp":
-        invalidatePaths([`/api/levels/${guildId}`]);
-        break;
-
-      case "moderationAction":
-        invalidatePaths([`/api/moderation/${guildId}`]);
-        break;
+    if (isGuildUpdateType(message.type)) {
+      invalidatePaths(GUILD_INVALIDATIONS[message.type](guildId));
     }
   }
 }
