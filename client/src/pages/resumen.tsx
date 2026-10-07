@@ -1,25 +1,24 @@
 import type { ReactNode } from "react";
 import { useQuery } from "@tanstack/react-query";
 import { Link } from "wouter";
-import { formatDistanceToNow } from "date-fns";
-import { es } from "date-fns/locale";
 import {
   Activity,
   ArrowRight,
-  Ban,
-  Eraser,
+  Coins,
   Gavel,
-  Lock,
   MessageCircleHeart,
-  MessageSquareOff,
   MessagesSquare,
   RefreshCw,
   ShieldAlert,
-  Unlock,
-  UserX,
+  ShieldCheck,
+  Siren,
+  Sparkles,
+  Trophy,
+  TriangleAlert,
   Users,
-  Volume2,
+  type LucideIcon,
 } from "lucide-react";
+import type { DashboardStatsResponse, DiscordChannelsResponse } from "@shared/api";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card";
@@ -31,35 +30,23 @@ import { InviteBotButton } from "@/components/invite-bot-button";
 import { PageHeader } from "@/components/page-header";
 import { StatCard } from "@/components/stat-card";
 import { StatusIndicator, type StatusKind } from "@/components/status-indicator";
-import type { GuildResponse, ModerationActionResponse } from "@/lib/api-types";
+import { BotDetailRows, DetailRow, getBotStatus, useDashboardStats } from "@/components/ajustes-resumen/bot-status";
+import {
+  formatDay,
+  formatHour,
+  formatNumber,
+  parseIso,
+  plural,
+  relativeTime,
+  userName,
+} from "@/components/ajustes-resumen/format";
+import { ModerationList } from "@/components/ajustes-resumen/moderation-list";
+import { UserAvatar } from "@/components/ajustes-resumen/user-avatar";
 import { useSelectedGuild } from "@/lib/guild";
 import { NAV_ITEMS } from "@/lib/navigation";
-import { getApiErrorInfo, isApiError } from "@/lib/queryClient";
+import { getApiErrorInfo } from "@/lib/queryClient";
 import { useRealtimeStatus, type RealtimeStatus } from "@/lib/websocket";
 import { cn } from "@/lib/utils";
-
-/**
- * GET /api/dashboard/:guildId/stats. Solo se muestran los campos que son datos
- * reales; todos son opcionales por si la API cambia.
- */
-interface DashboardStats {
-  totalMembers?: number;
-}
-
-/** GET /api/guild/:guildId/discord-channels */
-interface DiscordChannel {
-  id: string;
-  name: string;
-  type: "text" | "voice";
-  category: string;
-}
-
-const numberFormat = new Intl.NumberFormat("es-MX");
-
-function formatHour(hour: number | null | undefined): string | null {
-  if (typeof hour !== "number" || !Number.isInteger(hour) || hour < 0 || hour > 23) return null;
-  return `${String(hour).padStart(2, "0")}:00`;
-}
 
 const realtimeText: Record<RealtimeStatus, { status: StatusKind; label: string }> = {
   idle: { status: "offline", label: "Desconectadas" },
@@ -69,197 +56,499 @@ const realtimeText: Record<RealtimeStatus, { status: StatusKind; label: string }
   denied: { status: "offline", label: "No disponibles para este servidor" },
 };
 
-const moderationLabels: Record<string, { label: string; icon: typeof Gavel; tone: string }> = {
-  warn: { label: "Advertencia", icon: ShieldAlert, tone: "text-status-warning bg-status-warning/10" },
-  mute: { label: "Silencio", icon: MessageSquareOff, tone: "text-status-warning bg-status-warning/10" },
-  unmute: { label: "Se quitó el silencio", icon: Volume2, tone: "text-status-online bg-status-online/10" },
-  kick: { label: "Expulsión", icon: UserX, tone: "text-status-error bg-status-error/10" },
-  ban: { label: "Baneo", icon: Ban, tone: "text-status-error bg-status-error/10" },
-  clear: { label: "Mensajes borrados", icon: Eraser, tone: "text-muted-foreground bg-muted" },
-  lockdown: { label: "Canal bloqueado", icon: Lock, tone: "text-status-error bg-status-error/10" },
-  unlock: { label: "Canal desbloqueado", icon: Unlock, tone: "text-status-online bg-status-online/10" },
-};
-
-function DetailRow({ label, children }: { label: string; children: ReactNode }) {
-  return (
-    <div className="flex flex-col gap-1 py-3 sm:flex-row sm:items-center sm:justify-between sm:gap-4">
-      <span className="text-sm text-muted-foreground">{label}</span>
-      <div className="text-sm text-foreground sm:text-right">{children}</div>
-    </div>
-  );
+/** "America/Mexico_City" → "America/Mexico City" (más fácil de leer). */
+function prettyTimezone(timezone: string): string {
+  return timezone.replace(/_/g, " ");
 }
+
+// =============================================
+// Tarjeta de una función (bienvenida, pregunta del día, anti-raid)
+// =============================================
 
 interface FeatureTileProps {
   title: string;
-  icon: typeof Gavel;
+  icon: LucideIcon;
   loading: boolean;
   enabled: boolean;
-  detail: ReactNode;
+  /** Texto de la insignia: "Activada" / "Activado"... */
+  onLabel: string;
+  offLabel: string;
+  /** Aviso en rojo (p. ej. modo raid activo) */
+  alert?: ReactNode;
+  /** Aviso en naranja (p. ej. falta el canal) */
   warning?: string | null;
+  href: string;
+  linkLabel: string;
+  testId: string;
+  children?: ReactNode;
 }
 
-function FeatureTile({ title, icon: Icon, loading, enabled, detail, warning }: FeatureTileProps) {
+function FeatureTile({
+  title,
+  icon: Icon,
+  loading,
+  enabled,
+  onLabel,
+  offLabel,
+  alert,
+  warning,
+  href,
+  linkLabel,
+  testId,
+  children,
+}: FeatureTileProps) {
   return (
-    <div className="flex flex-col gap-3 rounded-lg border border-border bg-background/40 p-4">
+    <div className="flex h-full flex-col gap-3 rounded-lg border border-border bg-background/40 p-4" data-testid={testId}>
       <div className="flex items-center justify-between gap-2">
-        <div className="flex items-center gap-2">
-          <Icon className="h-5 w-5 text-primary" aria-hidden="true" />
-          <span className="font-medium text-foreground">{title}</span>
+        <div className="flex min-w-0 items-center gap-2">
+          <Icon className="h-5 w-5 shrink-0 text-primary" aria-hidden="true" />
+          <span className="truncate font-medium text-foreground">{title}</span>
         </div>
         {loading ? (
           <Skeleton className="h-5 w-20" />
         ) : (
-          <Badge
-            variant={enabled ? "default" : "outline"}
-            className={cn(!enabled && "text-muted-foreground")}
-          >
-            {enabled ? "Activada" : "Desactivada"}
+          <Badge variant={enabled ? "default" : "outline"} className={cn("shrink-0", !enabled && "text-muted-foreground")}>
+            {enabled ? onLabel : offLabel}
           </Badge>
         )}
       </div>
+
       {loading ? (
-        <Skeleton className="h-4 w-48" />
+        <div className="space-y-2">
+          <Skeleton className="h-4 w-full" />
+          <Skeleton className="h-4 w-2/3" />
+        </div>
       ) : (
-        <p className="text-sm text-muted-foreground">{detail}</p>
+        <div className="space-y-1.5 text-sm text-muted-foreground">{children}</div>
       )}
-      {!loading && warning && <p className="text-xs text-status-warning">{warning}</p>}
+
+      {!loading && alert && (
+        <div className="flex items-start gap-2 rounded-md border border-status-error/40 bg-status-error/10 p-2 text-xs text-foreground" role="status">
+          <Siren className="mt-0.5 h-4 w-4 shrink-0 text-status-error" aria-hidden="true" />
+          <span>{alert}</span>
+        </div>
+      )}
+      {!loading && warning && (
+        <p className="flex items-start gap-2 text-xs text-status-warning">
+          <TriangleAlert className="mt-0.5 h-3.5 w-3.5 shrink-0" aria-hidden="true" />
+          {warning}
+        </p>
+      )}
+
+      <div className="mt-auto pt-1">
+        <Button asChild size="sm" variant="outline" className="w-full sm:w-auto">
+          <Link href={href} data-testid={`${testId}-link`}>
+            {linkLabel}
+            <ArrowRight />
+          </Link>
+        </Button>
+      </div>
     </div>
   );
 }
 
+// =============================================
+// Funciones principales del bot
+// =============================================
+
+function FeaturesCard({
+  stats,
+  loading,
+  channelName,
+}: {
+  stats: DashboardStatsResponse | undefined;
+  loading: boolean;
+  channelName: (channelId: string | null) => string | null;
+}) {
+  const welcome = stats?.features.welcome;
+  const question = stats?.features.dailyQuestion;
+  const antiRaid = stats?.features.antiRaid;
+  const raidEvents30d = stats?.counts.raidEvents30d ?? 0;
+
+  // Bienvenida
+  const welcomeOn = welcome?.enabled === true;
+  const welcomeChannel = channelName(welcome?.channelId ?? null);
+
+  // Pregunta del día
+  const questionOn = question?.enabled === true;
+  const questionChannel = channelName(question?.channelId ?? null);
+  const questionHour = formatHour(question?.hour);
+  const nextPost = parseIso(question?.nextPostAt);
+  const nextPostText = nextPost
+    ? nextPost.getTime() <= Date.now()
+      ? "La próxima sale en cualquier momento."
+      : `La próxima sale ${relativeTime(nextPost)}.`
+    : null;
+
+  // Anti-raid
+  const antiRaidOn = antiRaid?.enabled === true;
+  const raidEndsAt = parseIso(antiRaid?.raidModeEndsAt);
+  const raidAlert = antiRaid?.raidModeActive
+    ? `Modo raid activo ahora${raidEndsAt && raidEndsAt.getTime() > Date.now() ? `: termina ${relativeTime(raidEndsAt)}` : ""}. Revisa Seguridad.`
+    : null;
+
+  return (
+    <Card>
+      <CardHeader>
+        <CardTitle className="flex items-center gap-2 text-xl">
+          <Sparkles className="h-5 w-5 text-primary" aria-hidden="true" />
+          Mantén vivo y seguro el servidor
+        </CardTitle>
+        <CardDescription>
+          El bot puede saludar a quien llega, lanzar una pregunta cada día para que la gente converse y vigilar los raids.
+        </CardDescription>
+      </CardHeader>
+      <CardContent>
+        <div className="grid grid-cols-1 gap-4 md:grid-cols-3">
+          <FeatureTile
+            title="Bienvenida"
+            icon={MessageCircleHeart}
+            loading={loading}
+            enabled={welcomeOn}
+            onLabel="Activada"
+            offLabel="Desactivada"
+            warning={welcomeOn && !welcome?.channelId ? "Falta elegir el canal de bienvenida." : null}
+            href="/comunidad"
+            linkLabel="Configurar bienvenida"
+            testId="feature-welcome"
+          >
+            {welcomeOn ? (
+              <p>
+                {welcomeChannel
+                  ? <>Saluda a cada persona nueva en <span className="text-foreground">{welcomeChannel}</span>.</>
+                  : "Saluda a cada persona nueva que entra."}
+              </p>
+            ) : (
+              <p>Nadie recibe un saludo al entrar todavía. Actívala para que los nuevos se sientan en casa.</p>
+            )}
+          </FeatureTile>
+
+          <FeatureTile
+            title="Pregunta del día"
+            icon={MessagesSquare}
+            loading={loading}
+            enabled={questionOn}
+            onLabel="Activada"
+            offLabel="Desactivada"
+            warning={questionOn && !question?.channelId ? "Falta elegir el canal de la pregunta." : null}
+            href="/comunidad"
+            linkLabel="Configurar pregunta"
+            testId="feature-question"
+          >
+            {questionOn && question ? (
+              <>
+                <p>
+                  Todos los días{questionHour ? <> a las <span className="font-mono text-foreground">{questionHour}</span></> : null}{" "}
+                  ({prettyTimezone(question.timezone)})
+                  {questionChannel ? <> en <span className="text-foreground">{questionChannel}</span></> : null}.
+                </p>
+                {nextPostText && <p>{nextPostText}</p>}
+                {question.lastPosted && <p className="text-xs">Última pregunta: {formatDay(question.lastPosted, "long")}.</p>}
+              </>
+            ) : (
+              <p>Una pregunta diaria para que la conversación no se apague, aunque nadie escriba primero.</p>
+            )}
+          </FeatureTile>
+
+          <FeatureTile
+            title="Anti-raid"
+            icon={ShieldCheck}
+            loading={loading}
+            enabled={antiRaidOn}
+            onLabel="Activado"
+            offLabel="Desactivado"
+            alert={raidAlert}
+            href="/seguridad"
+            linkLabel="Ver seguridad"
+            testId="feature-antiraid"
+          >
+            <p>
+              {antiRaidOn
+                ? "Vigila si entran muchas cuentas de golpe y avisa al staff."
+                : "Apagado: el bot no reaccionará si entran muchas cuentas de golpe."}
+            </p>
+            <p className="text-xs">
+              {raidEvents30d > 0
+                ? `${plural(raidEvents30d, "alerta", "alertas")} de raid en los últimos 30 días.`
+                : "Sin alertas de raid en los últimos 30 días."}
+            </p>
+          </FeatureTile>
+        </div>
+        <p className="mt-4 text-xs text-muted-foreground">
+          También puedes hacerlo desde Discord con{" "}
+          <code className="font-mono text-foreground">/bienvenida</code>,{" "}
+          <code className="font-mono text-foreground">/pregunta-del-dia</code> y{" "}
+          <code className="font-mono text-foreground">/antiraid</code>.
+        </p>
+      </CardContent>
+    </Card>
+  );
+}
+
+// =============================================
+// Listas: top de niveles y moderación reciente
+// =============================================
+
+function ListSkeleton() {
+  return (
+    <div className="space-y-3" aria-busy="true" aria-label="Cargando">
+      {[0, 1, 2, 3].map((i) => (
+        <Skeleton key={i} className="h-11 w-full" />
+      ))}
+    </div>
+  );
+}
+
+function TopLevelsCard({ stats, loading }: { stats: DashboardStatsResponse | undefined; loading: boolean }) {
+  const top = stats?.topLevels ?? [];
+  return (
+    <Card className="flex flex-col">
+      <CardHeader>
+        <CardTitle className="flex items-center justify-between gap-2 text-xl">
+          <span className="flex items-center gap-2">
+            <Trophy className="h-5 w-5 text-primary" aria-hidden="true" />
+            Top 5 por nivel
+          </span>
+          <Link href="/estadisticas" className="text-xs font-normal text-muted-foreground hover:text-primary">
+            Ver estadísticas
+          </Link>
+        </CardTitle>
+        <CardDescription>Quiénes más participan en el servidor.</CardDescription>
+      </CardHeader>
+      <CardContent className="flex-1">
+        {loading ? (
+          <ListSkeleton />
+        ) : top.length === 0 ? (
+          <EmptyState
+            bare
+            icon={Trophy}
+            title="Aún nadie tiene nivel"
+            description="Cuando la gente escriba en el servidor, el bot les dará XP y aquí verás quién va arriba."
+          />
+        ) : (
+          <ol className="-my-2" data-testid="list-top-levels">
+            {top.map((entry) => {
+              const user = { id: entry.userId, username: entry.username, avatar: entry.avatar };
+              return (
+                <li key={entry.userId} className="flex items-center gap-3 border-b border-border py-2.5 last:border-0">
+                  <span
+                    className={cn(
+                      "w-6 shrink-0 text-center font-mono text-sm",
+                      entry.rank === 1 ? "font-bold text-primary" : "text-muted-foreground",
+                    )}
+                  >
+                    <span className="sr-only">Puesto </span>
+                    {entry.rank}
+                  </span>
+                  <UserAvatar user={user} />
+                  <div className="min-w-0 flex-1">
+                    <p className="truncate text-sm font-medium text-foreground">{userName(user)}</p>
+                    <p className="font-mono text-xs text-muted-foreground">{formatNumber(entry.totalXp)} XP en total</p>
+                  </div>
+                  <Badge variant={entry.rank === 1 ? "default" : "outline"} className="shrink-0 font-mono">
+                    Nivel {entry.level}
+                  </Badge>
+                </li>
+              );
+            })}
+          </ol>
+        )}
+      </CardContent>
+    </Card>
+  );
+}
+
+function RecentModerationCard({ stats, loading }: { stats: DashboardStatsResponse | undefined; loading: boolean }) {
+  const actions = stats?.recentModeration ?? [];
+  return (
+    <Card className="flex flex-col">
+      <CardHeader>
+        <CardTitle className="flex items-center justify-between gap-2 text-xl">
+          <span className="flex items-center gap-2">
+            <Gavel className="h-5 w-5 text-primary" aria-hidden="true" />
+            Moderación reciente
+          </span>
+          <Link href="/moderacion" className="text-xs font-normal text-muted-foreground hover:text-primary">
+            Ver todo
+          </Link>
+        </CardTitle>
+        <CardDescription>Las últimas 5 acciones del staff.</CardDescription>
+      </CardHeader>
+      <CardContent className="flex-1">
+        {loading ? (
+          <ListSkeleton />
+        ) : actions.length === 0 ? (
+          <EmptyState
+            bare
+            icon={Gavel}
+            title="Aún no hay acciones de moderación"
+            description="Cuando el staff use comandos como /warn, /mute o /ban, aparecerán aquí."
+          />
+        ) : (
+          <ModerationList actions={actions} />
+        )}
+      </CardContent>
+    </Card>
+  );
+}
+
+// =============================================
+// Página
+// =============================================
+
 export default function Resumen() {
   const { guildId, guild } = useSelectedGuild();
   const realtimeStatus = useRealtimeStatus();
+  const statsQuery = useDashboardStats(guildId);
+  const stats = statsQuery.data;
+  const loading = statsQuery.isLoading;
+  const botReady = !!stats?.bot.online && !!stats.bot.inGuild;
 
-  // Estado del bot + número de miembros (requiere que el bot esté en el servidor)
-  const statsQuery = useQuery<DashboardStats>({
-    queryKey: ["/api/dashboard", guildId, "stats"],
-    staleTime: 60_000,
-    refetchInterval: 60_000,
-  });
-
-  // Configuración guardada del servidor (bienvenida, pregunta del día...).
-  // 404 = el servidor aún no tiene fila en la base de datos: todo con valores por defecto.
-  const configQuery = useQuery<GuildResponse>({
-    queryKey: ["/api/guilds", guildId],
-    staleTime: 60_000,
-  });
-
-  // Nombres de los canales (solo si el bot está: los saca de su caché)
-  const channelsQuery = useQuery<DiscordChannel[]>({
+  // Nombres de los canales (solo con el bot en el servidor: salen de su caché)
+  const channelsQuery = useQuery<DiscordChannelsResponse>({
     queryKey: ["/api/guild", guildId, "discord-channels"],
-    enabled: statsQuery.isSuccess,
+    enabled: botReady,
     staleTime: 5 * 60_000,
   });
-
-  const moderationQuery = useQuery<ModerationActionResponse[]>({
-    queryKey: ["/api/moderation", guildId, "actions?limit=5"],
-    staleTime: 60_000,
-  });
-
-  const refreshAll = () => {
-    void statsQuery.refetch();
-    void configQuery.refetch();
-    void moderationQuery.refetch();
-    if (statsQuery.isSuccess) void channelsQuery.refetch();
-  };
-
-  // ---- Estado del bot ----
-  const statsErrorKind = isApiError(statsQuery.error) ? statsQuery.error.kind : null;
-  let botStatus: { status: StatusKind; label: string };
-  if (statsQuery.isLoading) botStatus = { status: "pending", label: "Comprobando…" };
-  else if (statsQuery.isSuccess) botStatus = { status: "online", label: "En línea" };
-  else if (statsErrorKind === "botMissing") botStatus = { status: "offline", label: "No está en este servidor" };
-  else if (statsErrorKind === "unavailable") botStatus = { status: "error", label: "No disponible ahora" };
-  else botStatus = { status: "warning", label: "No pudimos comprobarlo" };
-
-  const totalMembers = statsQuery.data?.totalMembers;
-  const realtime = realtimeText[realtimeStatus];
-
-  // ---- Comunidad ----
-  const configMissing = isApiError(configQuery.error) && configQuery.error.kind === "notFound";
-  const config = configQuery.data;
-  const configLoading = configQuery.isLoading;
-  const channelName = (channelId: string | null | undefined) => {
+  const channelName = (channelId: string | null): string | null => {
     if (!channelId) return null;
     const channel = channelsQuery.data?.find((c) => c.id === channelId);
     return channel ? `#${channel.name}` : null;
   };
 
-  const welcomeEnabled = config?.welcomeEnabled === true;
-  const welcomeChannel = channelName(config?.welcomeChannelId);
-  const welcomeDetail = welcomeEnabled
-    ? welcomeChannel ? `Saluda a cada persona nueva en ${welcomeChannel}.` : "Saluda a cada persona nueva que entra."
-    : "Nadie recibe un saludo al entrar todavía.";
-  const welcomeWarning = welcomeEnabled && !config?.welcomeChannelId ? "Falta elegir el canal de bienvenida." : null;
+  const refreshAll = () => {
+    void statsQuery.refetch();
+    if (botReady) void channelsQuery.refetch();
+  };
 
-  const questionEnabled = config?.dailyQuestionEnabled === true;
-  const questionHour = formatHour(config?.dailyQuestionHour);
-  const questionChannel = channelName(config?.dailyQuestionChannelId);
-  const questionDetail = questionEnabled
-    ? [
-        questionHour ? `Todos los días a las ${questionHour}` : "Todos los días",
-        config?.timezone ? ` (${config.timezone})` : "",
-        questionChannel ? ` en ${questionChannel}` : "",
-        ".",
-      ].join("")
-    : "Una pregunta diaria para que el servidor no se quede en silencio.";
-  const questionWarning = questionEnabled && !config?.dailyQuestionChannelId ? "Falta elegir el canal de la pregunta." : null;
+  const botStatus = getBotStatus(stats, { loading, failed: statsQuery.isError });
+  const realtime = realtimeText[realtimeStatus];
+  const updatedAt = statsQuery.dataUpdatedAt ? new Date(statsQuery.dataUpdatedAt) : null;
 
+  const counts = stats?.counts;
+  const memberCount = stats?.guild.memberCount ?? null;
+  const onlineCount = stats?.guild.onlineCount ?? null;
+
+  const title = guild?.name ?? stats?.guild.name ?? "Resumen";
   const quickLinks = NAV_ITEMS.filter((item) => item.href !== "/");
+  const quickLinkBadges: Record<string, string> =
+    counts && counts.customCommands > 0 ? { "/comandos": plural(counts.customCommands, "comando", "comandos") } : {};
+
+  const header = (
+    <PageHeader
+      leading={guild ? <GuildAvatar guild={guild} size="lg" /> : null}
+      title={title}
+      description={
+        <>
+          Así va tu servidor
+          {updatedAt && stats ? <span className="text-muted-foreground"> · actualizado {relativeTime(updatedAt)}</span> : null}
+        </>
+      }
+      actions={
+        <Button variant="outline" onClick={refreshAll} disabled={statsQuery.isFetching} data-testid="button-refresh">
+          <RefreshCw className={cn(statsQuery.isFetching && "animate-spin")} />
+          Actualizar
+        </Button>
+      }
+    />
+  );
+
+  const quickLinksSection = (
+    <section className="space-y-4" aria-labelledby="quick-links-title">
+      <h2 id="quick-links-title" className="text-lg font-semibold text-foreground">
+        Accesos rápidos
+      </h2>
+      <div className="grid grid-cols-1 gap-4 sm:grid-cols-2 lg:grid-cols-3">
+        {quickLinks.map((item) => (
+          <Link
+            key={item.href}
+            href={item.href}
+            className="group flex items-center gap-4 rounded-xl border border-card-border bg-card p-4 transition-colors hover:border-primary/60 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
+            data-testid={`quick-link-${item.href.slice(1)}`}
+          >
+            <div className="flex h-10 w-10 shrink-0 items-center justify-center rounded-md bg-primary/10">
+              <item.icon className="h-5 w-5 text-primary" aria-hidden="true" />
+            </div>
+            <div className="min-w-0 flex-1">
+              <p className="truncate font-medium text-foreground">{item.title}</p>
+              <p className="truncate text-xs text-muted-foreground">{item.description}</p>
+            </div>
+            {quickLinkBadges[item.href] && (
+              <Badge variant="outline" className="shrink-0 font-mono text-[10px] text-muted-foreground">
+                {quickLinkBadges[item.href]}
+              </Badge>
+            )}
+            <ArrowRight
+              className="h-4 w-4 shrink-0 text-muted-foreground transition-transform group-hover:translate-x-0.5 group-hover:text-primary"
+              aria-hidden="true"
+            />
+          </Link>
+        ))}
+      </div>
+    </section>
+  );
+
+  // Sin datos y con error: no hay nada real que mostrar
+  if (statsQuery.isError && !stats) {
+    return (
+      <div className="space-y-8">
+        {header}
+        <ApiErrorState error={statsQuery.error} onRetry={() => void statsQuery.refetch()} />
+        {quickLinksSection}
+      </div>
+    );
+  }
 
   return (
     <div className="space-y-8">
-      <PageHeader
-        leading={guild ? <GuildAvatar guild={guild} size="lg" /> : null}
-        title={guild?.name ?? "Resumen"}
-        description="Resumen de tu servidor y del bot"
-        actions={
-          <Button variant="outline" onClick={refreshAll} disabled={statsQuery.isFetching} data-testid="button-refresh">
-            <RefreshCw className={cn(statsQuery.isFetching && "animate-spin")} />
-            Actualizar
-          </Button>
-        }
-      />
+      {header}
 
       {/* Estado del bot + miembros */}
       <div className="grid grid-cols-1 gap-6 lg:grid-cols-3">
         <Card className="lg:col-span-2">
           <CardHeader>
-            <CardTitle className="flex items-center gap-2">
+            <CardTitle className="flex items-center gap-2 text-xl">
               <Activity className="h-5 w-5 text-primary" aria-hidden="true" />
               Estado del bot
             </CardTitle>
           </CardHeader>
           <CardContent>
             <div className="divide-y divide-border">
-              <DetailRow label="Bot en este servidor">
-                <StatusIndicator status={botStatus.status} label={botStatus.label} testId="status-bot" />
-              </DetailRow>
+              <BotDetailRows stats={stats} loading={loading} failed={statsQuery.isError} />
               <DetailRow label="Actualizaciones en vivo">
-                <StatusIndicator status={realtime.status} label={realtime.label} testId="status-realtime-detail" />
+                <StatusIndicator
+                  status={realtime.status}
+                  label={realtime.label}
+                  className="sm:justify-end"
+                  testId="status-realtime-detail"
+                />
               </DetailRow>
-              {guild && (
-                <DetailRow label="Tu acceso">
-                  {guild.owner ? "Dueño del servidor" : "Administrador"}
+              {stats && (
+                <DetailRow label="Zona horaria del servidor">
+                  {prettyTimezone(stats.features.dailyQuestion.timezone)}
                 </DetailRow>
               )}
+              {guild && <DetailRow label="Tu acceso">{guild.owner ? "Dueño del servidor" : "Administrador"}</DetailRow>}
             </div>
-            {statsQuery.isError && (
+
+            {botStatus.hint && (
               <div className="mt-4 flex flex-col gap-3 rounded-lg border border-border bg-background/40 p-4 sm:flex-row sm:items-center sm:justify-between">
-                <div>
-                  <p className="text-sm font-medium text-foreground">{getApiErrorInfo(statsQuery.error).title}</p>
-                  <p className="text-sm text-muted-foreground">{getApiErrorInfo(statsQuery.error).description}</p>
-                </div>
-                {statsErrorKind === "botMissing" ? (
+                <p className="text-sm text-muted-foreground">{botStatus.hint}</p>
+                {stats?.bot.online && !stats.bot.inGuild ? (
                   <InviteBotButton guildId={guildId} size="sm" className="shrink-0" />
-                ) : statsErrorKind !== "forbidden" && statsErrorKind !== "unauthorized" ? (
-                  <Button variant="outline" size="sm" className="shrink-0" onClick={() => void statsQuery.refetch()}>
-                    <RefreshCw />
+                ) : (
+                  <Button variant="outline" size="sm" className="shrink-0" onClick={refreshAll} disabled={statsQuery.isFetching}>
+                    <RefreshCw className={cn(statsQuery.isFetching && "animate-spin")} />
                     Reintentar
                   </Button>
-                ) : null}
+                )}
               </div>
+            )}
+
+            {statsQuery.isError && stats && (
+              <p className="mt-4 text-xs text-status-warning" role="status">
+                No se pudo actualizar: {getApiErrorInfo(statsQuery.error).title}. Mostramos los últimos datos que tenemos.
+              </p>
             )}
           </CardContent>
         </Card>
@@ -267,163 +556,65 @@ export default function Resumen() {
         <StatCard
           title="Miembros"
           icon={Users}
-          loading={statsQuery.isLoading}
-          value={typeof totalMembers === "number" ? numberFormat.format(totalMembers) : "—"}
+          loading={loading}
+          value={formatNumber(memberCount)}
           subtitle={
-            typeof totalMembers === "number"
-              ? "Personas en el servidor, según Discord"
-              : "Aún no hay datos: el bot tiene que estar en el servidor"
+            loading
+              ? undefined
+              : memberCount === null
+              ? "Aparece cuando el bot esté conectado y dentro del servidor"
+              : onlineCount !== null
+                ? `${formatNumber(onlineCount)} conectados ahora, según Discord`
+                : "Personas en el servidor, según Discord"
           }
           testId="stat-members"
         />
       </div>
 
-      {/* Comunidad + moderación reciente */}
-      <div className="grid grid-cols-1 gap-6 lg:grid-cols-3">
-        <Card className="lg:col-span-2">
-          <CardHeader>
-            <CardTitle className="flex items-center gap-2">
-              <MessageCircleHeart className="h-5 w-5 text-primary" aria-hidden="true" />
-              Mantén vivo el servidor
-            </CardTitle>
-            <CardDescription>
-              El bot puede saludar a quien llega y lanzar una pregunta cada día para que la gente converse.
-            </CardDescription>
-          </CardHeader>
-          <CardContent className="space-y-4">
-            {configQuery.isError && !configMissing ? (
-              <ApiErrorState error={configQuery.error} onRetry={() => void configQuery.refetch()} bare />
-            ) : (
-              <div className="grid grid-cols-1 gap-4 md:grid-cols-2">
-                <FeatureTile
-                  title="Bienvenida"
-                  icon={MessageCircleHeart}
-                  loading={configLoading}
-                  enabled={welcomeEnabled}
-                  detail={welcomeDetail}
-                  warning={welcomeWarning}
-                />
-                <FeatureTile
-                  title="Pregunta del día"
-                  icon={MessagesSquare}
-                  loading={configLoading}
-                  enabled={questionEnabled}
-                  detail={questionDetail}
-                  warning={questionWarning}
-                />
-              </div>
-            )}
-            <div className="flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between">
-              <p className="text-xs text-muted-foreground">
-                También puedes hacerlo desde Discord con{" "}
-                <code className="font-mono text-foreground">/bienvenida</code> y{" "}
-                <code className="font-mono text-foreground">/pregunta-del-dia</code>.
-              </p>
-              <div className="flex flex-wrap gap-2">
-                <Button asChild size="sm">
-                  <Link href="/comunidad" data-testid="link-config-bienvenida">Configurar bienvenida</Link>
-                </Button>
-                <Button asChild size="sm" variant="outline">
-                  <Link href="/comunidad" data-testid="link-config-pregunta">Configurar pregunta del día</Link>
-                </Button>
-              </div>
-            </div>
-          </CardContent>
-        </Card>
-
-        <Card>
-          <CardHeader>
-            <CardTitle className="flex items-center justify-between gap-2">
-              <span className="flex items-center gap-2">
-                <Gavel className="h-5 w-5 text-primary" aria-hidden="true" />
-                Moderación reciente
-              </span>
-              <Link href="/moderacion" className="text-xs font-normal text-muted-foreground hover:text-primary">
-                Ver todo
-              </Link>
-            </CardTitle>
-          </CardHeader>
-          <CardContent>
-            {moderationQuery.isLoading ? (
-              <div className="space-y-3">
-                {[0, 1, 2].map((i) => (
-                  <Skeleton key={i} className="h-12 w-full" />
-                ))}
-              </div>
-            ) : moderationQuery.isError ? (
-              <ApiErrorState error={moderationQuery.error} onRetry={() => void moderationQuery.refetch()} bare />
-            ) : !moderationQuery.data || moderationQuery.data.length === 0 ? (
-              <EmptyState
-                bare
-                icon={Gavel}
-                title="Aún no hay acciones de moderación"
-                description="Cuando el equipo use comandos como /warn o /mute, aparecerán aquí."
-              />
-            ) : (
-              <ul className="max-h-80 overflow-y-auto" data-testid="list-moderation">
-                {moderationQuery.data.slice(0, 5).map((action) => {
-                  const meta = moderationLabels[action.type] ?? {
-                    label: action.type,
-                    icon: Gavel,
-                    tone: "text-muted-foreground bg-muted",
-                  };
-                  const Icon = meta.icon;
-                  const when = action.createdAt ? new Date(action.createdAt) : null;
-                  return (
-                    <li key={action.id} className="flex items-start gap-3 border-b border-border py-3 last:border-0">
-                      <div className={cn("mt-0.5 rounded-full p-2", meta.tone)}>
-                        <Icon className="h-4 w-4" aria-hidden="true" />
-                      </div>
-                      <div className="min-w-0 flex-1">
-                        <p className="text-sm font-medium text-foreground">
-                          {meta.label}
-                          {typeof action.duration === "number" && action.duration > 0 && (
-                            <span className="font-normal text-muted-foreground"> · {action.duration} min</span>
-                          )}
-                        </p>
-                        {action.reason && (
-                          <p className="truncate text-xs text-muted-foreground" title={action.reason}>
-                            {action.reason}
-                          </p>
-                        )}
-                        {when && !Number.isNaN(when.getTime()) && (
-                          <p className="mt-1 font-mono text-xs text-muted-foreground">
-                            {formatDistanceToNow(when, { addSuffix: true, locale: es })}
-                          </p>
-                        )}
-                      </div>
-                    </li>
-                  );
-                })}
-              </ul>
-            )}
-          </CardContent>
-        </Card>
+      {/* Números reales de la base de datos */}
+      <div className="grid grid-cols-1 gap-6 sm:grid-cols-2 lg:grid-cols-4">
+        <StatCard
+          title="Personas con nivel"
+          icon={Trophy}
+          loading={loading}
+          value={formatNumber(counts?.usersWithLevels)}
+          subtitle="Ya escribieron al menos un mensaje"
+          testId="stat-users-levels"
+        />
+        <StatCard
+          title="Monedas en circulación"
+          icon={Coins}
+          loading={loading}
+          value={formatNumber(counts?.coinsInCirculation)}
+          subtitle="Sumando carteras y bancos"
+          testId="stat-coins"
+        />
+        <StatCard
+          title="Moderación · 7 días"
+          icon={Gavel}
+          loading={loading}
+          value={formatNumber(counts?.moderationActions7d)}
+          subtitle={counts ? `${formatNumber(counts.moderationActions30d)} en los últimos 30 días` : undefined}
+          testId="stat-moderation-7d"
+        />
+        <StatCard
+          title="Advertencias · 30 días"
+          icon={ShieldAlert}
+          loading={loading}
+          value={formatNumber(counts?.warnings30d)}
+          subtitle={counts ? `${formatNumber(counts.warningsTotal)} en total` : undefined}
+          testId="stat-warnings-30d"
+        />
       </div>
 
-      {/* Accesos rápidos */}
-      <section className="space-y-4">
-        <h2 className="text-lg font-semibold text-foreground">Accesos rápidos</h2>
-        <div className="grid grid-cols-1 gap-4 sm:grid-cols-2 lg:grid-cols-3">
-          {quickLinks.map((item) => (
-            <Link
-              key={item.href}
-              href={item.href}
-              className="group flex items-center gap-4 rounded-xl border border-card-border bg-card p-4 transition-colors hover:border-primary/60 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
-              data-testid={`quick-link-${item.href.slice(1)}`}
-            >
-              <div className="flex h-10 w-10 shrink-0 items-center justify-center rounded-md bg-primary/10">
-                <item.icon className="h-5 w-5 text-primary" aria-hidden="true" />
-              </div>
-              <div className="min-w-0 flex-1">
-                <p className="truncate font-medium text-foreground">{item.title}</p>
-                <p className="truncate text-xs text-muted-foreground">{item.description}</p>
-              </div>
-              <ArrowRight className="h-4 w-4 shrink-0 text-muted-foreground transition-transform group-hover:translate-x-0.5 group-hover:text-primary" />
-            </Link>
-          ))}
-        </div>
-      </section>
+      <FeaturesCard stats={stats} loading={loading} channelName={channelName} />
+
+      <div className="grid grid-cols-1 gap-6 lg:grid-cols-2">
+        <TopLevelsCard stats={stats} loading={loading} />
+        <RecentModerationCard stats={stats} loading={loading} />
+      </div>
+
+      {quickLinksSection}
     </div>
   );
 }
