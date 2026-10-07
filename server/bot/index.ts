@@ -152,6 +152,7 @@ export class DiscordBot {
     let delayMs = LOGIN_RETRY_MIN_MS;
     while (!this.stopping) {
       try {
+        this.clearFailedLoginState();
         await this.start();
         console.log('🚀 Bot de Discord conectado');
         return;
@@ -168,6 +169,17 @@ export class DiscordBot {
         delayMs = Math.min(delayMs * 2, LOGIN_RETRY_MAX_MS);
       }
     }
+  }
+
+  /**
+   * Si client.login() falla, discord.js llama a client.destroy(), y en discord.js 14 eso deja la
+   * conexión marcada como destruida para siempre (client.ws.destroyed nunca vuelve a false). Aunque
+   * el reintento conecte, client.isReady() seguiría en false: el panel diría "bot desconectado",
+   * los cambios darían 503 y la pregunta del día no saldría. Por eso se desmarca antes de reintentar.
+   */
+  private clearFailedLoginState() {
+    const ws = this.client.ws as unknown as { destroyed?: boolean };
+    if (ws.destroyed === true) ws.destroyed = false;
   }
 
   public async stop() {
