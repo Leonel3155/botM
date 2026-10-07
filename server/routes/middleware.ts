@@ -465,7 +465,16 @@ const spanishErrorMap: z.ZodErrorMap = (issue, ctx) => {
  * guildId en el cuerpo) se rechazan; el servidor siempre sale de la URL.
  */
 export function parseBody<T extends z.ZodTypeAny>(schema: T, req: Request, res: Response): z.output<T> | null {
-  const result = schema.safeParse(req.body ?? {}, { errorMap: spanishErrorMap });
+  return parseInput(schema, req.body ?? {}, res);
+}
+
+/** Igual que parseBody, pero con los parámetros de la URL (?a=1&b=2). */
+export function parseQuery<T extends z.ZodTypeAny>(schema: T, req: Request, res: Response): z.output<T> | null {
+  return parseInput(schema, req.query ?? {}, res);
+}
+
+function parseInput<T extends z.ZodTypeAny>(schema: T, input: unknown, res: Response): z.output<T> | null {
+  const result = schema.safeParse(input, { errorMap: spanishErrorMap });
   if (result.success) {
     return result.data;
   }

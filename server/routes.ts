@@ -5,15 +5,16 @@ import type { Duplex } from "stream";
 import { WebSocketServer, WebSocket } from "ws";
 import { storage, ContentFeedLimitError, type ContentFeedUpdate } from "./storage";
 import { z } from "zod";
-import type {
-  ContentFeedResponse,
-  ContentFeedsResponse,
-  GuildConfigResponse,
-  GuildRowResponse,
-  SuccessResponse,
-  UserEconomyResponse,
-  UserGuildsResponse,
-  UserLevelResponse,
+import {
+  CONTENT_FEED_LIMITS,
+  type ContentFeedResponse,
+  type ContentFeedsResponse,
+  type GuildConfigResponse,
+  type GuildRowResponse,
+  type SuccessResponse,
+  type UserEconomyResponse,
+  type UserGuildsResponse,
+  type UserLevelResponse,
 } from "@shared/api";
 import { bot } from "./bot/index";
 import { invalidateAntiRaidConfig, liftLockdown } from "./bot/middleware/antiRaid";
@@ -115,10 +116,15 @@ const guildSettingsSchema = z.object({
   }).strict().optional()
 }).strict();
 
+const { min: POST_INTERVAL_MIN, max: POST_INTERVAL_MAX } = CONTENT_FEED_LIMITS.postInterval;
+const POST_INTERVAL_RANGE_ERROR = `El intervalo va de ${POST_INTERVAL_MIN} a ${POST_INTERVAL_MAX} minutos.`;
+
 const postIntervalSchema = z.number()
   .int('El intervalo debe ser un número entero de minutos.')
-  .min(1, 'El intervalo va de 1 a 1440 minutos.')
-  .max(1440, 'El intervalo va de 1 a 1440 minutos.');
+  .min(POST_INTERVAL_MIN, POST_INTERVAL_RANGE_ERROR)
+  .max(POST_INTERVAL_MAX, POST_INTERVAL_RANGE_ERROR);
+
+const SUBREDDIT_REGEX = new RegExp(CONTENT_FEED_LIMITS.subredditPattern);
 
 // Solo Reddit: Twitter/X no tiene acceso real a su API (publicaría contenido de relleno)
 const TWITTER_FEEDS_DISABLED_ERROR = 'Twitter/X todavía no está disponible: por ahora solo se puede usar Reddit.';
@@ -127,7 +133,7 @@ const contentFeedSchema = z.object({
   source: z.literal('reddit'),
   channelId: snowflakeSchema,
   sourceConfig: z.object({
-    subreddit: z.string().regex(/^[A-Za-z0-9_]{2,21}$/, 'El nombre del subreddit no es válido.'),
+    subreddit: z.string().regex(SUBREDDIT_REGEX, 'El nombre del subreddit no es válido.'),
     filterNSFW: z.boolean().optional()
   }).strict(),
   postInterval: postIntervalSchema

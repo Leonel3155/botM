@@ -3,6 +3,7 @@ import { z } from "zod";
 import { antiRaidActions, antiRaidConfigSchema, type AntiRaidSettings } from "@shared/schema";
 import {
   ANTI_RAID_LIMITS,
+  RAID_EVENT_STATUS_FILTERS,
   type ActiveRaidInfo,
   type AntiRaidLiftResponse,
   type AntiRaidResponse,
@@ -36,6 +37,7 @@ import {
   isRowId,
   plainDiscordText,
   queryString,
+  raidEventReview,
   sessionUserId,
   toRaidEventItem,
 } from "./helpers";
@@ -65,7 +67,6 @@ const antiRaidUpdateSchema = antiRaidConfigSchema
   .strict();
 
 const emptyBodySchema = z.object({}).strict();
-const RAID_EVENT_STATUSES = ["all", "open", "resolved"] as const;
 
 function activeRaidInfo(guildId: string): ActiveRaidInfo | null {
   const raid = getActiveRaid(guildId);
@@ -172,9 +173,9 @@ export function setupSecurityRoutes(app: Express, { broadcast }: { broadcast: Br
       const limit = parseLimit(req.query.limit, 20, 100);
 
       const statusParam = queryString(req.query.status) ?? "all";
-      const status = RAID_EVENT_STATUSES.find((value) => value === statusParam);
+      const status = RAID_EVENT_STATUS_FILTERS.find((value) => value === statusParam);
       if (!status) {
-        return res.status(400).json({ error: 'El filtro "status" debe ser all, open o resolved.' });
+        return res.status(400).json({ error: 'El filtro "status" debe ser all, open, resolved o unreviewed.' });
       }
 
       const before = decodeCursor(req.query.before);
@@ -198,7 +199,8 @@ export function setupSecurityRoutes(app: Express, { broadcast }: { broadcast: Br
     }
   });
 
-  // Marcar un raid como revisado. Si es el modo raid activo, se termina (restaura la verificación y avisa).
+  // Marcar un raid como revisado (aunque ya estuviera cerrado). Si seguía abierto se cierra y,
+  // si es el modo raid activo, se termina (restaura la verificación y avisa).
   app.post("/api/guilds/:guildId/raid-events/:eventId/resolve", ...guildAdmin, async (req: Request, res: Response) => {
     try {
       const { guildId, eventId } = req.params;
@@ -212,18 +214,27 @@ export function setupSecurityRoutes(app: Express, { broadcast }: { broadcast: Br
         return res.status(404).json({ error: "Ese evento de raid no existe en este servidor." });
       }
 
+      const reviewer = liftedBy(req);
       let liftedRaid = false;
+      let changed = false;
       if (!event.resolved) {
         if (isActiveRaidEvent(event)) {
-          liftedRaid = await liftLockdown(guildId, liftedBy(req));
+          liftedRaid = await liftLockdown(guildId, reviewer);
         }
-        // Si no era el activo (o alguien lo levantó justo antes), lo marcamos como revisado
+        // Si no era el activo (o alguien lo levantó justo antes), lo cerramos aquí
         const fresh = await storage.getRaidEvent(guildId, eventId);
         if (fresh && !fresh.resolved) {
-          await storage.resolveRaidEvent(eventId, { resolvedAt: Date.now(), resolvedBy: liftedBy(req) });
+          await storage.resolveRaidEvent(eventId, { resolvedAt: Date.now(), resolvedBy: reviewer });
         }
-        broadcast(guildId, { type: "settingsUpdated" });
+        changed = true;
       }
+
+      // Revisado siempre, esté cerrado o no (si ya lo estaba se conserva la primera revisión)
+      if (!raidEventReview(event).reviewed) {
+        await storage.markRaidEventReviewed(guildId, eventId, reviewer);
+        changed = true;
+      }
+      if (changed) broadcast(guildId, { type: "settingsUpdated" });
 
       const updated = await storage.getRaidEvent(guildId, eventId);
       const body: RaidEventResolveResponse = {

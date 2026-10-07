@@ -53,12 +53,13 @@ export async function buildLevelEmbed(guildId: string, target: User): Promise<Em
 }
 
 export async function buildLevelLeaderboard(guildId: string, limit: number): Promise<EmbedBuilder | null> {
-  const top = await storage.getTopUsersByLevel(guildId, limit);
+  // El mismo ranking que el panel: una fila por persona aunque haya filas repetidas
+  const top = await storage.getLevelLeaderboard(guildId, limit);
   if (top.length === 0) return null;
 
   const lines = top.map((entry, index) => {
     const medal = index === 0 ? '🥇' : index === 1 ? '🥈' : index === 2 ? '🥉' : `**${index + 1}.**`;
-    return `${medal} <@${entry.userId}> — Nivel ${entry.level ?? 1} (${rowTotalXp(entry).toLocaleString('es-MX')} XP)`;
+    return `${medal} <@${entry.userId}> — Nivel ${entry.level} (${entry.totalXp.toLocaleString('es-MX')} XP)`;
   });
 
   return new EmbedBuilder()

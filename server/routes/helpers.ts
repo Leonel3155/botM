@@ -210,15 +210,51 @@ export function isActiveRaidEvent(event: RaidEvent): boolean {
   return !!active && raidDetails(event).liftAt === active.liftAt;
 }
 
+function msToIso(value: unknown): string | null {
+  if (typeof value !== "number" || !Number.isFinite(value)) return null;
+  const date = new Date(value);
+  return Number.isNaN(date.getTime()) ? null : date.toISOString();
+}
+
+/**
+ * Revisión desde el panel: details.reviewedAt/reviewedBy. Los eventos de antes de existir ese campo
+ * que se cerraron desde el panel solo traen resolvedAt/resolvedBy sin liftedAt (los que cerró el bot
+ * siempre traen liftedAt), y también cuentan como revisados.
+ * Misma regla que raidEventReviewedSql en server/storage.ts (filtro ?status=unreviewed).
+ */
+export function raidEventReview(event: RaidEvent): { reviewed: boolean; reviewedAt: string | null; reviewedBy: string | null } {
+  const details = raidDetails(event);
+  if (typeof details.reviewedAt === "number") {
+    return {
+      reviewed: true,
+      reviewedAt: msToIso(details.reviewedAt),
+      reviewedBy: typeof details.reviewedBy === "string" ? details.reviewedBy : null,
+    };
+  }
+  if (typeof details.resolvedAt === "number" && typeof details.liftedAt !== "number") {
+    return {
+      reviewed: true,
+      reviewedAt: msToIso(details.resolvedAt),
+      reviewedBy: typeof details.resolvedBy === "string" ? details.resolvedBy : null,
+    };
+  }
+  return { reviewed: false, reviewedAt: null, reviewedBy: null };
+}
+
 export function toRaidEventItem(event: RaidEvent): RaidEventItem {
+  const details = raidDetails(event);
+  const resolved = event.resolved ?? false;
   return {
     id: event.id,
     type: event.type,
     severity: event.severity,
-    resolved: event.resolved ?? false,
+    resolved,
     isActive: isActiveRaidEvent(event),
     createdAt: toIso(event.createdAt),
-    details: raidDetails(event),
+    // Los eventos cerrados antes de guardar resolvedAt solo tienen liftedAt
+    resolvedAt: resolved ? msToIso(details.resolvedAt) ?? msToIso(details.liftedAt) : null,
+    ...raidEventReview(event),
+    details,
   };
 }
 

@@ -554,35 +554,21 @@ export async function adminAddCoinsToMany(guildId: string, userIds: string[], am
 }
 
 // ===== Rankings y estadísticas =====
-
-const wealthExpr = sql<string>`SUM(COALESCE(${userEconomy.balance}, 0) + COALESCE(${userEconomy.bank}, 0))`;
+// Salen de storage, igual que en el panel: una cuenta por persona, la misma que leen y modifican
+// getAccount / lockAccount (la de menor id si hubiera filas repetidas). Así /balance, /leaderboard,
+// /economy-stats y el panel siempre muestran los mismos números.
 
 export async function topByWealth(guildId: string, limit: number): Promise<{ userId: string; total: number }[]> {
-  const rows = await db
-    .select({ userId: userEconomy.userId, total: wealthExpr })
-    .from(userEconomy)
-    .where(eq(userEconomy.guildId, guildId))
-    .groupBy(userEconomy.userId)
-    .having(sql`${wealthExpr} > 0`)
-    .orderBy(desc(wealthExpr))
-    .limit(limit);
+  const rows = await storage.getWealthLeaderboard(guildId, limit);
   return rows.map((r) => ({ userId: r.userId, total: toCoins(r.total) }));
 }
 
 export async function economyStats(guildId: string): Promise<{ accounts: number; withMoney: number; cash: number; bank: number }> {
-  const [row] = await db
-    .select({
-      accounts: sql<string>`COUNT(DISTINCT ${userEconomy.userId})`,
-      withMoney: sql<string>`COUNT(DISTINCT ${userEconomy.userId}) FILTER (WHERE COALESCE(${userEconomy.balance}, 0) + COALESCE(${userEconomy.bank}, 0) > 0)`,
-      cash: sql<string>`COALESCE(SUM(${userEconomy.balance}), 0)`,
-      bank: sql<string>`COALESCE(SUM(${userEconomy.bank}), 0)`,
-    })
-    .from(userEconomy)
-    .where(eq(userEconomy.guildId, guildId));
+  const totals = await storage.getEconomyTotals(guildId);
   return {
-    accounts: Number(row?.accounts ?? 0),
-    withMoney: Number(row?.withMoney ?? 0),
-    cash: toCoins(row?.cash),
-    bank: toCoins(row?.bank),
+    accounts: totals.accounts,
+    withMoney: totals.withMoney,
+    cash: toCoins(totals.wallet),
+    bank: toCoins(totals.bank),
   };
 }
