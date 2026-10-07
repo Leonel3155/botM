@@ -144,7 +144,7 @@ export function FeedCard({ guildId, feed, channels, canEdit, botMissing = false,
   const channel = findChannel(channels, feed.channelId);
   const channelIssue = feed.channelId ? getChannelIssue(channels, feed.channelId) : null;
   const lastPosted = parseDate(feed.lastPosted);
-  // Si el canal falla, el bot no marca el intento y lo reintenta cada minuto sin publicar nada
+  // Si el canal falla, el bot igual marca el intento (lastPosted) sin publicar nada y el siguiente espera el intervalo completo
   const blocked: { text: string; className: string } | null = !feed.channelId
     ? { text: "Detenido: falta el canal", className: "text-destructive" }
     : channelIssue?.level === "error"

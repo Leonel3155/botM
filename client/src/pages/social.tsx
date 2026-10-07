@@ -187,8 +187,10 @@ export default function Social() {
               aunque Reddit no haya devuelto nada esa vez.
             </li>
             <li>
-              Si el canal ya no existe o el bot no puede escribir ahí, no publica nada y «Último intento» puede
-              quedarse sin cambiar: el bot lo reintenta cada minuto hasta que arregles el canal.
+              Si el canal ya no existe o el bot no puede escribir ahí, no publica nada, pero ese turno también cuenta
+              como intento y mueve «Último intento». Cuando arregles el canal, la próxima publicación llega en el
+              siguiente turno del feed (lo ves en «Siguiente turno»); cambiar el canal o pausar y reanudar el feed no
+              lo adelanta.
             </li>
           </ul>
           <p>
