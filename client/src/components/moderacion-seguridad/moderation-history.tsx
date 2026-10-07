@@ -153,7 +153,9 @@ export function ModerationHistory({ guildId }: { guildId: string }) {
   const [search, setSearch] = useState("");
   const debouncedSearch = useDebouncedValue(search.trim(), 400);
 
-  // Un ID completo se busca en el servidor (todo el historial); un nombre, entre lo ya cargado
+  // Un ID completo se busca en el servidor (todo el historial); un nombre, entre lo ya cargado.
+  // Las dos búsquedas miran lo mismo: la persona guardada en la acción (quien la recibió; en /clear
+  // y /lockdown el bot guarda a quien usó el comando), nunca al moderador de las demás acciones.
   const userIdFilter = isSnowflake(debouncedSearch) ? debouncedSearch : null;
   const nameFilter = !userIdFilter && debouncedSearch ? debouncedSearch.toLowerCase() : "";
   const typeFilter = type === ALL_TYPES ? null : type;
@@ -179,12 +181,9 @@ export function ModerationHistory({ guildId }: { guildId: string }) {
   const loaded = useMemo(() => query.data?.pages.flatMap((page) => page.actions) ?? [], [query.data]);
   const rows = useMemo(() => {
     if (!nameFilter) return loaded;
-    return loaded.filter((action) => {
-      const people = isChannelAction(action.type) ? [action.moderator] : [action.user, action.moderator];
-      return people.some(
-        (person) => person.username?.toLowerCase().includes(nameFilter) || person.id.includes(nameFilter),
-      );
-    });
+    return loaded.filter(
+      (action) => action.user.username?.toLowerCase().includes(nameFilter) || action.user.id.includes(nameFilter),
+    );
   }, [loaded, nameFilter]);
 
   // Un tipo que el panel aún no conoce (p. ej. elegido desde los atajos) también se puede mostrar
@@ -229,7 +228,7 @@ export function ModerationHistory({ guildId }: { guildId: string }) {
         title="No hay acciones con estos filtros"
         description={
           userIdFilter
-            ? "Nadie del equipo ha usado un comando de moderación con esa persona (o el ID no es de este servidor)."
+            ? "No hay acciones de moderación sobre esa persona (o el ID no es de este servidor). Ojo: el buscador encuentra a quien recibió la acción, no al moderador que la hizo."
             : "Prueba con otro tipo de acción o quita los filtros."
         }
         action={
@@ -257,8 +256,8 @@ export function ModerationHistory({ guildId }: { guildId: string }) {
         title={`Nadie con “${debouncedSearch}” en lo que llevas cargado`}
         description={
           query.hasNextPage
-            ? "Carga más acciones para seguir buscando, o pega el ID de Discord de la persona para buscar en todo el historial."
-            : "Revisa cómo se escribe el nombre o pega el ID de Discord de la persona."
+            ? "Carga más acciones para seguir buscando, o pega el ID de Discord de la persona para buscar en todo el historial. El buscador encuentra a quien recibió la acción, no al moderador."
+            : "Revisa cómo se escribe el nombre o pega el ID de Discord de la persona. El buscador encuentra a quien recibió la acción, no al moderador."
         }
         action={
           <>
@@ -396,9 +395,9 @@ export function ModerationHistory({ guildId }: { guildId: string }) {
               autoComplete="off"
               value={search}
               onChange={(event) => setSearch(event.target.value)}
-              placeholder="Nombre o ID de Discord"
+              placeholder="Persona: nombre o ID de Discord"
               className="pl-9 pr-9"
-              aria-label="Buscar por nombre o ID de Discord"
+              aria-label="Buscar por la persona que recibió la acción: nombre o ID de Discord"
               data-testid="input-moderation-search"
             />
             {search && (
@@ -427,8 +426,9 @@ export function ModerationHistory({ guildId }: { guildId: string }) {
           <p className="flex items-start gap-2 text-xs text-muted-foreground" role="status">
             <Info className="mt-0.5 h-3.5 w-3.5 shrink-0 text-primary" aria-hidden="true" />
             <span>
-              Buscando por nombre solo entre {loadedPhrase(loaded.length)}. Para buscar en todo el historial, pega el ID
-              de Discord de la persona (Modo desarrollador → clic derecho → Copiar ID).
+              Buscando por nombre solo entre {loadedPhrase(loaded.length)}: encuentra a quien recibió la acción, no al
+              moderador que la hizo. Para buscar en todo el historial, pega el ID de Discord de la persona (Modo
+              desarrollador → clic derecho → Copiar ID).
             </span>
           </p>
         ) : userIdFilter ? (
@@ -436,6 +436,8 @@ export function ModerationHistory({ guildId }: { guildId: string }) {
             <Filter className="mt-0.5 h-3.5 w-3.5 shrink-0 text-primary" aria-hidden="true" />
             <span>
               Mostrando solo las acciones sobre el usuario con ID <span className="font-mono text-foreground">{userIdFilter}</span>.
+              También salen los /clear y /lockdown que usó (aparecen como «Un canal»), pero no las sanciones que puso a
+              otras personas.
             </span>
           </p>
         ) : null}

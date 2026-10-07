@@ -1,11 +1,19 @@
 import { useState, type ReactNode } from "react";
-import { CheckCheck, ChevronDown, Copy, Loader2 } from "lucide-react";
+import { CheckCheck, ChevronDown, Copy, Loader2, Square } from "lucide-react";
 import type { RaidEventItem as RaidEvent } from "@shared/api";
 import { Button } from "@/components/ui/button";
 import { Collapsible, CollapsibleContent, CollapsibleTrigger } from "@/components/ui/collapsible";
 import { useToast } from "@/hooks/use-toast";
 import { cn } from "@/lib/utils";
-import { describeLiftedBy, describeResolvedBy, plainLabel, raidEventTitle, severityMeta } from "./antiraid-texts";
+import {
+  describeLiftedBy,
+  describeResolvedBy,
+  plainLabel,
+  raidEventStatus,
+  raidEventTitle,
+  severityMeta,
+  type RaidEventStatus,
+} from "./antiraid-texts";
 import { RelativeTime } from "./relative-time";
 import { formatRelative, numberFormat, parseDate } from "./utils";
 
@@ -15,32 +23,32 @@ interface RaidEventItemProps {
   actionLabels: Record<string, string>;
   currentUserId: string | null;
   now: Date;
-  /** Se está marcando como revisado */
+  /** Se está terminando o marcando como revisado */
   resolving: boolean;
   /** Otra acción en curso: el botón se desactiva */
   busy: boolean;
   onResolve: (event: RaidEvent) => void;
 }
 
-function StatusPill({ event }: { event: RaidEvent }) {
-  if (event.isActive) {
-    return (
-      <span className="inline-flex items-center gap-1.5 whitespace-nowrap rounded-md border border-status-error/40 bg-status-error/15 px-2 py-0.5 text-xs font-semibold text-status-error">
-        <span className="h-1.5 w-1.5 animate-pulse rounded-full bg-status-error" aria-hidden="true" />
-        En curso
-      </span>
-    );
-  }
-  if (!event.resolved) {
-    return (
-      <span className="inline-flex items-center whitespace-nowrap rounded-md border border-status-warning/40 bg-status-warning/10 px-2 py-0.5 text-xs font-semibold text-status-warning">
-        Sin revisar
-      </span>
-    );
-  }
+const STATUS_PILLS: Record<RaidEventStatus, { label: string; className: string }> = {
+  active: { label: "En curso", className: "border-status-error/40 bg-status-error/15 text-status-error" },
+  pending: { label: "Pendiente", className: "border-status-warning/40 bg-status-warning/10 text-status-warning" },
+  ended: { label: "Terminado", className: "border-border bg-muted text-muted-foreground" },
+  reviewed: { label: "Revisado", className: "border-primary/40 bg-primary/10 text-primary" },
+};
+
+function StatusPill({ status }: { status: RaidEventStatus }) {
+  const pill = STATUS_PILLS[status];
   return (
-    <span className="inline-flex items-center whitespace-nowrap rounded-md border border-border bg-muted px-2 py-0.5 text-xs font-semibold text-muted-foreground">
-      Revisado
+    <span
+      className={cn(
+        "inline-flex items-center gap-1.5 whitespace-nowrap rounded-md border px-2 py-0.5 text-xs font-semibold",
+        pill.className,
+      )}
+    >
+      {status === "active" && <span className="h-1.5 w-1.5 animate-pulse rounded-full bg-status-error" aria-hidden="true" />}
+      {status === "reviewed" && <CheckCheck className="h-3 w-3" aria-hidden="true" />}
+      {pill.label}
     </span>
   );
 }
@@ -59,6 +67,7 @@ export function RaidEventItem({ event, actionLabels, currentUserId, now, resolvi
   const { toast } = useToast();
   const [idsOpen, setIdsOpen] = useState(false);
   const d = event.details;
+  const status = raidEventStatus(event);
   const severity = severityMeta(event.severity);
   const SeverityIcon = severity.icon;
 
@@ -93,6 +102,11 @@ export function RaidEventItem({ event, actionLabels, currentUserId, now, resolvi
     ending = liftAt ? `El modo raid termina ${formatRelative(liftAt, now)}.` : "El modo raid sigue activo.";
   } else if (liftedAt) {
     ending = `El modo raid terminó ${formatRelative(liftedAt, now)}${liftedBy ? ` ${liftedBy}` : ""}.`;
+  } else if (status === "pending") {
+    ending =
+      "El modo raid ya no está activo, pero quedó abierto en el historial (por ejemplo, si el bot se reinició o no pudo guardar cuándo terminó). Márcalo como revisado para cerrarlo.";
+  } else if (status === "ended") {
+    ending = "El modo raid ya terminó.";
   }
 
   const copyIds = async () => {
@@ -134,7 +148,7 @@ export function RaidEventItem({ event, actionLabels, currentUserId, now, resolvi
             >
               Severidad {severity.label.toLowerCase()}
             </span>
-            <StatusPill event={event} />
+            <StatusPill status={status} />
           </div>
         </div>
 
@@ -173,16 +187,22 @@ export function RaidEventItem({ event, actionLabels, currentUserId, now, resolvi
         )}
 
         <div className="flex flex-col gap-2 sm:flex-row sm:flex-wrap sm:items-center">
-          {!event.resolved && (
+          {(status === "active" || status === "pending") && (
             <Button
               size="sm"
-              variant={event.isActive ? "destructive" : "default"}
+              variant={status === "active" ? "destructive" : "default"}
               onClick={() => onResolve(event)}
               disabled={busy || resolving}
               data-testid={`button-resolve-${event.id}`}
             >
-              {resolving ? <Loader2 className="animate-spin" /> : <CheckCheck />}
-              {resolving ? "Guardando…" : event.isActive ? "Terminar y marcar revisado" : "Marcar como revisado"}
+              {resolving ? <Loader2 className="animate-spin" /> : status === "active" ? <Square /> : <CheckCheck />}
+              {resolving
+                ? status === "active"
+                  ? "Terminando…"
+                  : "Guardando…"
+                : status === "active"
+                  ? "Terminar modo raid"
+                  : "Marcar como revisado"}
             </Button>
           )}
 

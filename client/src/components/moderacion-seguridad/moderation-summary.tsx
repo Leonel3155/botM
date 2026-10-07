@@ -41,7 +41,7 @@ export function ModerationSummary({ guildId }: { guildId: string }) {
           icon={TriangleAlert}
           loading={stats.isLoading}
           value={value(counts?.warnings30d)}
-          subtitle="Hechas con /warn este mes"
+          subtitle="Hechas con /warn en los últimos 30 días"
           testId="stat-warnings-30d"
         />
         <StatCard

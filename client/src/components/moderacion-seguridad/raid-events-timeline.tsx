@@ -11,6 +11,7 @@ import { EmptyState } from "@/components/empty-state";
 import { useToast } from "@/hooks/use-toast";
 import { useAuthStatus } from "@/lib/auth";
 import { apiRequest } from "@/lib/queryClient";
+import { liftTexts, raidEventStatus } from "./antiraid-texts";
 import { ConfirmDialog } from "./confirm-dialog";
 import { raidEventsKey } from "./query-keys";
 import { RaidEventItem } from "./raid-event-item";
@@ -21,10 +22,12 @@ const PAGE_SIZE = 10;
 
 type StatusFilter = "all" | "open" | "resolved";
 
+// El filtro del servidor separa por `resolved`: abiertos = en curso o pendientes de cerrar;
+// terminados = el modo raid ya acabó (solo o a mano) o alguien lo marcó como revisado.
 const STATUS_TABS: { value: StatusFilter; label: string }[] = [
   { value: "all", label: "Todos" },
-  { value: "open", label: "Sin revisar" },
-  { value: "resolved", label: "Revisados" },
+  { value: "open", label: "Abiertos" },
+  { value: "resolved", label: "Terminados" },
 ];
 
 const EMPTY_TEXT: Record<StatusFilter, { title: string; description: string }> = {
@@ -34,12 +37,13 @@ const EMPTY_TEXT: Record<StatusFilter, { title: string; description: string }> =
       "Cuando el bot detecte una entrada masiva de cuentas (con la protección activada), aparecerá aquí con todo lo que hizo para proteger el servidor.",
   },
   open: {
-    title: "No hay raids por revisar",
-    description: "Todo lo que detectó el bot ya está revisado.",
+    title: "No hay raids abiertos",
+    description: "No hay ningún modo raid en curso ni raids que hayan quedado sin cerrar.",
   },
   resolved: {
-    title: "Aún no hay raids revisados",
-    description: "Cuando un raid termine o lo marques como revisado, aparecerá aquí.",
+    title: "Aún no hay raids terminados",
+    description:
+      "Cuando un modo raid termine (al cumplirse el tiempo, con /antiraid levantar o desde este panel), aparecerá aquí.",
   },
 };
 
@@ -53,14 +57,16 @@ interface RaidEventsTimelineProps {
   actions: { value: string; label: string }[];
 }
 
-/** Historial de raids con filtro por estado, páginas y el botón para marcarlos como revisados. */
+/** Historial de raids con filtro por estado, páginas y botones para terminar el activo o cerrar los pendientes. */
 export function RaidEventsTimeline({ guildId, actions }: RaidEventsTimelineProps) {
   const { toast } = useToast();
   const now = useNow(30_000);
   const auth = useAuthStatus();
   const currentUserId = auth.data?.user?.id ?? null;
   const [status, setStatus] = useState<StatusFilter>("all");
+  // El evento se queda guardado al cerrar el diálogo para que el texto no cambie durante la animación
   const [confirmEvent, setConfirmEvent] = useState<RaidEvent | null>(null);
+  const [confirmOpen, setConfirmOpen] = useState(false);
   const resolve = useResolveRaidEvent(guildId);
 
   const actionLabels = useMemo(
@@ -85,26 +91,41 @@ export function RaidEventsTimeline({ guildId, actions }: RaidEventsTimelineProps
   const events = useMemo(() => query.data?.pages.flatMap((page) => page.events) ?? [], [query.data]);
 
   const doResolve = (event: RaidEvent) => {
+    const wasActive = event.isActive;
     resolve.mutate(event.id, {
       onSuccess: (result) => {
-        toast({
-          title: "Raid marcado como revisado",
-          description: result.liftedRaid
-            ? "También terminó el modo raid: la verificación volvió a como estaba y el bot avisó al staff."
-            : "Quedó guardado en el historial como revisado.",
-        });
+        const lift = liftTexts(result.event.details.action ?? event.details.action);
+        if (result.liftedRaid) {
+          toast({ title: "Modo raid terminado", description: lift.past });
+        } else if (raidEventStatus(result.event) === "reviewed") {
+          toast({ title: "Raid marcado como revisado", description: "Quedó cerrado en el historial." });
+        } else {
+          // Otra persona (o el tiempo) lo terminó justo antes: solo actualizamos
+          toast({
+            title: wasActive ? "El modo raid ya había terminado" : "Ese raid ya estaba cerrado",
+            description: "Actualizamos el historial con lo último.",
+          });
+        }
       },
       onError: (error) => {
-        toast({ variant: "destructive", title: "No se pudo marcar como revisado", description: describeMutationError(error) });
+        toast({
+          variant: "destructive",
+          title: wasActive ? "No se pudo terminar el modo raid" : "No se pudo marcar como revisado",
+          description: describeMutationError(error),
+        });
       },
-      onSettled: () => setConfirmEvent(null),
+      onSettled: () => setConfirmOpen(false),
     });
   };
 
   const onResolve = (event: RaidEvent) => {
-    // Si es el raid en curso, marcarlo también lo termina: mejor confirmarlo
-    if (event.isActive) setConfirmEvent(event);
-    else doResolve(event);
+    // Si es el raid en curso, el servidor lo termina: mejor confirmarlo
+    if (event.isActive) {
+      setConfirmEvent(event);
+      setConfirmOpen(true);
+    } else {
+      doResolve(event);
+    }
   };
 
   let body: ReactNode;
@@ -157,7 +178,7 @@ export function RaidEventsTimeline({ guildId, actions }: RaidEventsTimelineProps
             Historial de raids
           </CardTitle>
           <CardDescription className="mt-1.5">
-            Cada vez que el bot detecta una entrada masiva lo guarda aquí. Márcalo como revisado cuando ya lo hayas visto.
+            Cada vez que el bot detecta una entrada masiva lo guarda aquí, con lo que hizo y cómo terminó.
           </CardDescription>
         </div>
         <Tabs value={status} onValueChange={(value) => isStatusFilter(value) && setStatus(value)}>
@@ -202,13 +223,13 @@ export function RaidEventsTimeline({ guildId, actions }: RaidEventsTimelineProps
       </CardContent>
 
       <ConfirmDialog
-        open={confirmEvent !== null}
-        onOpenChange={(open) => !open && setConfirmEvent(null)}
-        title="¿Terminar el modo raid y marcarlo como revisado?"
+        open={confirmOpen}
+        onOpenChange={setConfirmOpen}
+        title="¿Terminar el modo raid ahora?"
         description={
           <>
-            <p>Este raid sigue en curso. Al marcarlo como revisado, el bot termina el modo raid: la verificación vuelve a como estaba y deja de expulsar a quien entre.</p>
-            <p>Hazlo solo si ya pasó el peligro.</p>
+            <p>Este raid sigue en curso. {liftTexts(confirmEvent?.details.action).future}</p>
+            <p>Hazlo solo si ya pasó el peligro. Si vuelven a entrar muchas cuentas de golpe, se activará otra vez.</p>
           </>
         }
         confirmLabel="Sí, terminar"

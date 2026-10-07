@@ -9,7 +9,7 @@ import { Switch } from "@/components/ui/switch";
 import { StatusIndicator } from "@/components/status-indicator";
 import { useToast } from "@/hooks/use-toast";
 import { cn } from "@/lib/utils";
-import { describeRule } from "./antiraid-texts";
+import { describeRule, liftTexts } from "./antiraid-texts";
 import { ConfirmDialog } from "./confirm-dialog";
 import { dashboardStatsKey } from "./query-keys";
 import { useAntiRaidUpdate } from "./use-antiraid";
@@ -27,6 +27,9 @@ export function AntiRaidStatusCard({ guildId, data, botInGuild }: AntiRaidStatus
   const { toast } = useToast();
   const update = useAntiRaidUpdate(guildId);
   const [confirmDisableOpen, setConfirmDisableOpen] = useState(false);
+  // Lo que se deshace al terminar depende de la acción del modo raid activo. Se guarda al abrir el
+  // diálogo para que su texto no cambie mientras se cierra (al terminar, activeRaid pasa a null).
+  const [raidActionToLift, setRaidActionToLift] = useState<string | undefined>(undefined);
 
   const stats = useQuery<DashboardStatsResponse>({
     queryKey: dashboardStatsKey(guildId),
@@ -37,7 +40,8 @@ export function AntiRaidStatusCard({ guildId, data, botInGuild }: AntiRaidStatus
   // Mientras se guarda, el interruptor muestra ya el valor pedido
   const enabled = update.isPending && update.variables?.enabled !== undefined ? update.variables.enabled : data.config.enabled;
 
-  const save = (next: boolean) => {
+  /** `raidAction`: acción del modo raid que se terminaría al desactivar (para el aviso). */
+  const save = (next: boolean, raidAction?: string) => {
     update.mutate(
       { enabled: next },
       {
@@ -51,7 +55,7 @@ export function AntiRaidStatusCard({ guildId, data, botInGuild }: AntiRaidStatus
                 }
               : {
                   title: "Protección anti-raid desactivada",
-                  description: `${result.liftedRaid ? "También terminó el modo raid que estaba activo. " : ""}El bot ya no reaccionará ante entradas masivas.${extra}`,
+                  description: `${result.liftedRaid ? `También terminó el modo raid que estaba activo. ${liftTexts(raidAction).past} ` : ""}El bot ya no reaccionará ante entradas masivas.${extra}`,
                 },
           );
         },
@@ -70,10 +74,11 @@ export function AntiRaidStatusCard({ guildId, data, botInGuild }: AntiRaidStatus
   const onToggle = (next: boolean) => {
     // Apagarla en pleno raid también lo termina: lo confirmamos antes
     if (!next && data.activeRaid) {
+      setRaidActionToLift(data.activeRaid.action);
       setConfirmDisableOpen(true);
       return;
     }
-    save(next);
+    save(next, data.activeRaid?.action);
   };
 
   const Icon = enabled ? ShieldCheck : ShieldOff;
@@ -140,7 +145,7 @@ export function AntiRaidStatusCard({ guildId, data, botInGuild }: AntiRaidStatus
         title="¿Desactivar la protección anti-raid?"
         description={
           <>
-            <p>Hay un modo raid activo ahora mismo. Si desactivas la protección, también se termina: la verificación vuelve a como estaba y el bot deja de actuar.</p>
+            <p>Hay un modo raid activo ahora mismo. Si desactivas la protección, también se termina. {liftTexts(raidActionToLift).future}</p>
             <p>Después de esto el bot no reaccionará ante nuevas entradas masivas.</p>
           </>
         }
@@ -148,7 +153,7 @@ export function AntiRaidStatusCard({ guildId, data, botInGuild }: AntiRaidStatus
         pendingLabel="Desactivando…"
         destructive
         pending={update.isPending}
-        onConfirm={() => save(false)}
+        onConfirm={() => save(false, raidActionToLift)}
         testId="dialog-disable-antiraid"
       />
     </Card>

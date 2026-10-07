@@ -1,11 +1,11 @@
-import { useEffect, useRef, useState } from "react";
+import { useEffect, useId, useRef, useState } from "react";
 import { useQueryClient } from "@tanstack/react-query";
 import { Siren, Square } from "lucide-react";
 import type { ActiveRaidInfo } from "@shared/api";
 import { Button } from "@/components/ui/button";
 import { useToast } from "@/hooks/use-toast";
 import { ConfirmDialog } from "./confirm-dialog";
-import { plainLabel } from "./antiraid-texts";
+import { liftTexts, plainLabel } from "./antiraid-texts";
 import { antiRaidKey } from "./query-keys";
 import { useLiftRaid } from "./use-antiraid";
 import { describeMutationError, formatRelative, numberFormat, parseDate } from "./utils";
@@ -18,18 +18,14 @@ interface ActiveRaidBannerProps {
   now: Date;
 }
 
-const AFTER_LIFT: Record<string, string> = {
-  alert: "El bot avisará al staff de que todo volvió a la normalidad.",
-  verification: "El bot regresará la verificación del servidor a como estaba y avisará al staff.",
-  lockdown: "El bot dejará de expulsar a quien entre, regresará la verificación a como estaba y avisará al staff.",
-};
-
 /** Aviso grande y rojo mientras el modo raid está activo, con el botón para terminarlo. */
 export function ActiveRaidBanner({ guildId, raid, actionLabel, now }: ActiveRaidBannerProps) {
   const { toast } = useToast();
   const queryClient = useQueryClient();
   const lift = useLiftRaid(guildId);
   const [confirmOpen, setConfirmOpen] = useState(false);
+  const titleId = useId();
+  const afterLift = liftTexts(raid.action);
 
   const startedAt = parseDate(raid.startedAt);
   const endsAt = parseDate(raid.endsAt);
@@ -51,7 +47,7 @@ export function ActiveRaidBanner({ guildId, raid, actionLabel, now }: ActiveRaid
       onSuccess: (result) => {
         toast(
           result.lifted
-            ? { title: "Modo raid terminado", description: "Todo vuelve a la normalidad. El bot ya avisó al staff." }
+            ? { title: "Modo raid terminado", description: afterLift.past }
             : { title: "El modo raid ya había terminado", description: "No había ningún modo raid activo. Actualizamos la página." },
         );
       },
@@ -63,19 +59,25 @@ export function ActiveRaidBanner({ guildId, raid, actionLabel, now }: ActiveRaid
   };
 
   return (
+    // Sin role="alert" en todo el bloque: el tiempo y los contadores cambian solos y el lector de
+    // pantalla lo leería entero una y otra vez. Solo se anuncia una vez el aviso fijo de abajo.
     <section
       className="rounded-xl border border-status-error/50 bg-status-error/10 p-4 sm:p-6"
-      role="alert"
-      aria-label="Modo raid activo"
+      aria-labelledby={titleId}
       data-testid="banner-active-raid"
     >
+      <p role="alert" className="sr-only">
+        Modo raid activo: el bot detectó una entrada masiva de cuentas.
+      </p>
       <div className="flex flex-col gap-4 md:flex-row md:items-start md:justify-between">
         <div className="flex min-w-0 gap-3">
           <div className="flex h-10 w-10 shrink-0 items-center justify-center rounded-full bg-status-error/20 text-status-error">
             <Siren className="h-5 w-5 animate-pulse" aria-hidden="true" />
           </div>
           <div className="min-w-0 space-y-1">
-            <h2 className="text-lg font-semibold text-foreground">Modo raid activo</h2>
+            <h2 id={titleId} className="text-lg font-semibold text-foreground">
+              Modo raid activo
+            </h2>
             <p className="text-sm text-foreground/90">
               El bot detectó una entrada masiva{startedAt ? ` ${formatRelative(startedAt, now)}` : ""} y está
               aplicando: <span className="font-medium">{plainLabel(actionLabel)}</span>.
@@ -117,7 +119,7 @@ export function ActiveRaidBanner({ guildId, raid, actionLabel, now }: ActiveRaid
         title="¿Terminar el modo raid ahora?"
         description={
           <>
-            <p>{AFTER_LIFT[raid.action] ?? "El bot volverá a la normalidad y avisará al staff."}</p>
+            <p>{afterLift.future}</p>
             <p>Hazlo solo si ya pasó el peligro. Si vuelven a entrar muchas cuentas de golpe, se activará otra vez.</p>
           </>
         }

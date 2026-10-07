@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { useForm, useWatch, type UseFormReturn } from "react-hook-form";
 import { zodResolver } from "@hookform/resolvers/zod";
 import { z } from "zod";
@@ -86,16 +86,20 @@ function toFormValues(config: AntiRaidSettings): FormValues {
   };
 }
 
-/** Solo lo que cambió respecto a lo guardado. */
-function changedFields(values: FormValues, config: AntiRaidSettings): AntiRaidUpdateRequest {
+/**
+ * Solo lo que la persona cambió respecto a los valores con los que empezó a editar (`baseline`),
+ * no respecto a lo último del servidor: así no se pisa lo que otro cambió mientras tanto
+ * (desde /antiraid configurar u otra pestaña) en campos que aquí nadie tocó.
+ */
+function changedFields(values: FormValues, baseline: AntiRaidSettings): AntiRaidUpdateRequest {
   const body: AntiRaidUpdateRequest = {};
   for (const field of NUMBER_FIELDS) {
     const value = Number(values[field]);
-    if (value !== config[field]) body[field] = value;
+    if (value !== baseline[field]) body[field] = value;
   }
-  if (values.action !== config.action) body.action = values.action as AntiRaidAction;
+  if (values.action !== baseline.action) body.action = values.action as AntiRaidAction;
   const channel = values.logChannelId === AUTO_CHANNEL ? null : values.logChannelId;
-  if (channel !== (config.logChannelId ?? null)) body.logChannelId = channel;
+  if (channel !== (baseline.logChannelId ?? null)) body.logChannelId = channel;
   return body;
 }
 
@@ -180,11 +184,26 @@ export function AntiRaidSettingsForm({ guildId, data, botInGuild }: AntiRaidSett
   });
   const { isDirty } = form.formState;
 
-  // Si cambia en otro lado (Discord, otra pestaña), mostramos lo nuevo salvo que estés editando
+  // Configuración desde la que se empezó a editar: al guardar se compara contra esta
+  const [baseline, setBaseline] = useState<AntiRaidSettings>(data.config);
+  const resetTo = useCallback(
+    (config: AntiRaidSettings) => {
+      setBaseline(config);
+      form.reset(toFormValues(config));
+    },
+    [form],
+  );
+
+  // Si cambia en otro lado (Discord, otra pestaña), mostramos lo nuevo salvo que estés editando.
+  // También al dejar de editar (p. ej. si vuelves a poner los valores de antes), para no quedarnos con lo viejo.
   const serverKey = JSON.stringify(toFormValues(data.config));
+  const latestConfig = useRef(data.config);
+  latestConfig.current = data.config;
   useEffect(() => {
-    if (!form.formState.isDirty) form.reset(JSON.parse(serverKey) as FormValues);
-  }, [serverKey, form]);
+    if (!isDirty) resetTo(latestConfig.current);
+  }, [serverKey, isDirty, resetTo]);
+  // …y si estás editando, te avisamos de que hay algo nuevo
+  const changedElsewhere = isDirty && serverKey !== JSON.stringify(toFormValues(baseline));
 
   const channelsQuery = useQuery<DiscordChannelsResponse>({
     queryKey: discordChannelsKey(guildId),
@@ -211,16 +230,16 @@ export function AntiRaidSettingsForm({ guildId, data, botInGuild }: AntiRaidSett
   const selectedIsKnown = selectedChannelId === AUTO_CHANNEL || !!selectedChannel;
 
   const onSubmit = form.handleSubmit((values) => {
-    const body = changedFields(values, data.config);
+    const body = changedFields(values, baseline);
     if (Object.keys(body).length === 0) {
-      form.reset(toFormValues(data.config));
+      resetTo(data.config);
       toast({ title: "No hay cambios que guardar", description: "Todo estaba igual a lo guardado." });
       return;
     }
 
     update.mutate(body, {
       onSuccess: (result) => {
-        form.reset(toFormValues(result.config));
+        resetTo(result.config);
         setWarnings(result.warnings);
         toast({
           title: "Ajustes anti-raid guardados",
@@ -244,7 +263,7 @@ export function AntiRaidSettingsForm({ guildId, data, botInGuild }: AntiRaidSett
   });
 
   const discard = () => {
-    form.reset(toFormValues(data.config));
+    resetTo(data.config);
   };
 
   return (
@@ -448,6 +467,30 @@ export function AntiRaidSettingsForm({ guildId, data, botInGuild }: AntiRaidSett
                   </ul>
                   <Button type="button" variant="ghost" size="sm" className="mt-2" onClick={() => setWarnings([])}>
                     Entendido
+                  </Button>
+                </AlertDescription>
+              </Alert>
+            )}
+
+            {changedElsewhere && (
+              <Alert className="border-primary/40 bg-primary/5" data-testid="alert-antiraid-changed-elsewhere">
+                <Info className="h-4 w-4 !text-primary" />
+                <AlertTitle>Alguien cambió estos ajustes mientras editabas</AlertTitle>
+                <AlertDescription className="space-y-2">
+                  <p>
+                    Se cambiaron desde Discord (/antiraid configurar) o desde otra pestaña. Si guardas, solo se envían los
+                    campos que tú cambiaste; el resto se queda como lo dejó la otra persona.
+                  </p>
+                  <Button
+                    type="button"
+                    variant="outline"
+                    size="sm"
+                    onClick={discard}
+                    disabled={update.isPending}
+                    data-testid="button-load-latest-antiraid"
+                  >
+                    <RefreshCw />
+                    Descartar mis cambios y ver lo nuevo
                   </Button>
                 </AlertDescription>
               </Alert>
