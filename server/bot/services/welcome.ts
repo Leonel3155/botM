@@ -10,6 +10,7 @@ import {
 import type { Guild as GuildRow } from '@shared/schema';
 import { storage } from '../../storage';
 import { resolveSendableChannel, truncate } from './channels';
+import { isGuildLocked } from '../middleware/antiRaid';
 
 export const DEFAULT_WELCOME_MESSAGE =
   '¡Hola {usuario}! 👋 Bienvenid@ a **{servidor}**, ya somos **{miembros}** miembros.\n' +
@@ -153,12 +154,22 @@ async function sendWelcome(member: GuildMember, settings: GuildRow): Promise<voi
   await target.channel.send(buildWelcomeMessage(member, settings.welcomeMessage));
 }
 
+// Con el modo anti-raid activo no se saluda (sería mencionar a cada cuenta del raid) ni se da el
+// rol automático (con un rol, Discord deja de exigir la verificación que subió el anti-raid).
+// Quien entre o acepte las reglas durante el raid no recibe el rol después: el staff se lo da a mano.
+function skipDuringRaid(member: GuildMember, what: string): boolean {
+  if (!isGuildLocked(member.guild.id)) return false;
+  console.warn(`[BIENVENIDA] Modo anti-raid activo en ${member.guild.name}: se omite ${what} de ${member.user.tag}.`);
+  return true;
+}
+
 // Se llama desde GuildMemberAdd: mensaje de bienvenida + rol automático
 export async function handleMemberWelcome(member: GuildMember): Promise<void> {
   if (member.user.bot) return;
 
   const settings = await storage.getGuild(member.guild.id);
   if (!settings) return;
+  if ((settings.welcomeEnabled || settings.welcomeRoleId) && skipDuringRaid(member, 'la bienvenida y el rol automático')) return;
 
   if (settings.welcomeEnabled) {
     try {
@@ -178,7 +189,7 @@ export async function handleMemberWelcome(member: GuildMember): Promise<void> {
 export async function handleMemberPassedScreening(member: GuildMember): Promise<void> {
   if (member.user.bot) return;
   const settings = await storage.getGuild(member.guild.id);
-  if (settings?.welcomeRoleId) {
+  if (settings?.welcomeRoleId && !skipDuringRaid(member, 'el rol automático')) {
     await assignWelcomeRole(member, settings.welcomeRoleId);
   }
 }
@@ -195,7 +206,7 @@ export async function handleMemberAvailable(member: GuildMember): Promise<void> 
   if (!joinedAt || Date.now() - joinedAt > PENDING_ROLE_WINDOW_MS) return;
 
   const settings = await storage.getGuild(member.guild.id);
-  if (settings?.welcomeRoleId && !member.roles.cache.has(settings.welcomeRoleId)) {
+  if (settings?.welcomeRoleId && !member.roles.cache.has(settings.welcomeRoleId) && !skipDuringRaid(member, 'el rol automático')) {
     await assignWelcomeRole(member, settings.welcomeRoleId);
   }
 }

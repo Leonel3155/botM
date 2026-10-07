@@ -94,6 +94,14 @@ export function renderCustomCommand(template: string, message: Message<true>): s
   return text.length <= MAX_MESSAGE_LENGTH ? text : `${text.slice(0, MAX_MESSAGE_LENGTH - 1)}…`;
 }
 
+// Usuarios que la respuesta puede mencionar: quien usó el comando ({usuario}) y los <@id> escritos en el texto
+// guardado. Discord acepta como máximo 100.
+function allowedMentionIds(template: string, authorId: string): string[] {
+  const ids = new Set<string>([authorId]);
+  for (const match of template.matchAll(/<@!?(\d{17,20})>/g)) ids.add(match[1]);
+  return Array.from(ids).slice(0, 100);
+}
+
 // Una respuesta cada pocos segundos por persona (en ese servidor)
 function onCooldown(guildId: string, userId: string): boolean {
   const key = `${guildId}:${userId}`;
@@ -133,8 +141,10 @@ async function handleMessage(message: Message): Promise<void> {
 
   await message.channel.send({
     content: renderCustomCommand(command.response, message),
-    // Solo menciones de usuarios: nunca @everyone, @here ni roles
-    allowedMentions: { parse: ['users'] },
+    // Solo menciones de usuarios, y solo las que puso quien escribió el comando en el panel (más
+    // {usuario}): un apodo como "<@id>" metido con {nombre} no hace que el bot mencione a nadie.
+    // Nunca @everyone, @here ni roles.
+    allowedMentions: { users: allowedMentionIds(command.response, message.author.id) },
   });
 
   storage.incrementCustomCommandUses(command.id).catch((error) => {

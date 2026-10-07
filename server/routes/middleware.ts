@@ -1,5 +1,5 @@
 import type { NextFunction, Request, Response } from "express";
-import type { IncomingHttpHeaders } from "http";
+import type { IncomingHttpHeaders, IncomingMessage } from "http";
 import type { Session, SessionData } from "express-session";
 import type { Guild as DiscordGuild, GuildBasedChannel } from "discord.js";
 import { z } from "zod";
@@ -56,6 +56,36 @@ export function isDevSession(session: Partial<SessionData> | null | undefined): 
 }
 
 // =============================================
+// Acceso de desarrollo: solo desde este mismo equipo
+// =============================================
+const LOOPBACK_ADDRESSES = new Set(["127.0.0.1", "::1", "::ffff:127.0.0.1"]);
+const LOCAL_HOSTNAMES = new Set(["localhost", "127.0.0.1", "[::1]"]);
+
+type RequestLike = Pick<IncomingMessage, "socket" | "headers">;
+
+/**
+ * ¿La petición sale de este mismo equipo y va a localhost? Se mira la dirección real del socket
+ * (no req.ip: con "trust proxy" se puede falsear con X-Forwarded-For) y el Host (así una web que
+ * apunte su dominio a 127.0.0.1, "DNS rebinding", tampoco pasa).
+ */
+export function isLoopbackRequest(req: RequestLike): boolean {
+  if (!LOOPBACK_ADDRESSES.has(req.socket?.remoteAddress ?? "")) return false;
+  const host = req.headers.host;
+  if (!host) return false;
+  try {
+    return LOCAL_HOSTNAMES.has(new URL(`http://${host}`).hostname);
+  } catch {
+    return false;
+  }
+}
+
+/** Igual que isSessionAuthenticated, pero una sesión de desarrollo solo vale desde este mismo equipo. */
+export function isRequestAuthenticated(req: RequestLike & { session?: Partial<SessionData> | null }): boolean {
+  if (!isSessionAuthenticated(req.session)) return false;
+  return !req.session?.devBypass || isLoopbackRequest(req);
+}
+
+// =============================================
 // Fin de una sesión (logout, nuevo login, token caducado o revocado)
 // =============================================
 type SessionEndedListener = (sessionId: string) => void;
@@ -104,7 +134,7 @@ export function authRequiredBody(error = "Necesitas iniciar sesión con Discord 
 // requireAuth
 // =============================================
 export function requireAuth(req: Request, res: Response, next: NextFunction) {
-  if (isSessionAuthenticated(req.session)) {
+  if (isRequestAuthenticated(req)) {
     return next();
   }
   // Sesión que estaba logueada pero ya no es válida: la limpiamos
@@ -402,7 +432,9 @@ function hostOf(url: string | undefined): string | null {
 
 /**
  * Sin cabecera Origin (curl, navegación normal) se permite; si viene, tiene que
- * ser el propio panel (APP_URL, FRONTEND_URL o el mismo host de la petición).
+ * ser el propio panel: APP_URL / FRONTEND_URL. Solo si no hay ninguna configurada
+ * se acepta el mismo host de la petición (la cabecera Host la elige quien la envía:
+ * una web con "DNS rebinding" pondría la suya).
  */
 export function isAllowedOrigin(origin: string | undefined, headers: IncomingHttpHeaders): boolean {
   if (!origin) return true;
@@ -414,10 +446,12 @@ export function isAllowedOrigin(origin: string | undefined, headers: IncomingHtt
     const host = hostOf(url);
     if (host) allowed.add(host);
   }
-  if (headers.host) allowed.add(headers.host);
-  const forwardedHost = headers["x-forwarded-host"];
-  if (typeof forwardedHost === "string" && forwardedHost) {
-    allowed.add(forwardedHost.split(",")[0].trim());
+  if (allowed.size === 0) {
+    if (headers.host) allowed.add(headers.host);
+    const forwardedHost = headers["x-forwarded-host"];
+    if (typeof forwardedHost === "string" && forwardedHost) {
+      allowed.add(forwardedHost.split(",")[0].trim());
+    }
   }
 
   return allowed.has(originHost);

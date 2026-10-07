@@ -20,10 +20,12 @@ export function log(message: string, source = "express") {
 }
 
 export async function setupVite(app: Express, server: Server) {
+  // Se conserva lo de vite.config.ts (fs.allow / fs.deny: que no se sirvan .git, .env ni el
+  // código del servidor). Sin allowedHosts: true, Vite rechaza Hosts raros (DNS rebinding).
   const serverOptions = {
+    ...viteConfig.server,
     middlewareMode: true,
     hmr: { server },
-    allowedHosts: true as const,
   };
 
   const vite = await createViteServer({

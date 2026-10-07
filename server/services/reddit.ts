@@ -74,21 +74,22 @@ export class RedditService {
     }
   }
 
-  async getRandomMeme(subreddits: string[] = ['memes', 'dankmemes', 'ProgrammerHumor', 'gaming']): Promise<RedditPost | null> {
-    const randomSubreddit = subreddits[Math.floor(Math.random() * subreddits.length)];
-    const posts = await this.getHotPosts(randomSubreddit, 50);
-    
-    // Filter for image posts (never NSFW: these go to regular server channels)
-    const imagePosts = posts.filter(post =>
+  // Publicaciones con imagen de "hot" (nunca NSFW: van a canales normales del servidor)
+  async getImagePosts(subreddit: string): Promise<RedditPost[]> {
+    const posts = await this.getHotPosts(subreddit, 50);
+    return posts.filter(post =>
       !post.over_18 && (
         post.url.match(/\.(jpg|jpeg|png|gif|webp)$/i) ||
         post.url.includes('i.redd.it') ||
         post.url.includes('imgur.com')
       )
     );
+  }
 
+  async getRandomMeme(subreddits: string[] = ['memes', 'dankmemes', 'ProgrammerHumor', 'gaming']): Promise<RedditPost | null> {
+    const randomSubreddit = subreddits[Math.floor(Math.random() * subreddits.length)];
+    const imagePosts = await this.getImagePosts(randomSubreddit);
     if (imagePosts.length === 0) return null;
-    
     return imagePosts[Math.floor(Math.random() * imagePosts.length)];
   }
 

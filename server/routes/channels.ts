@@ -1,5 +1,5 @@
 import type { Express, Request, Response } from "express";
-import { ChannelType, type GuildBasedChannel } from "discord.js";
+import { ChannelType, PermissionFlagsBits, type GuildBasedChannel } from "discord.js";
 import { z } from "zod";
 import type {
   ChannelConfigResponse,
@@ -19,6 +19,9 @@ import {
   parseBody,
   snowflakeSchema
 } from "./middleware";
+import { checkPanelUserCanUseChannel, fetchSessionMember, isDevRequest } from "./helpers";
+
+type Broadcast = (guildId: string, message: Record<string, unknown>) => void;
 
 // Canal opcional: un ID de Discord, o null / "" para desactivarlo
 const optionalChannelId = z
@@ -40,7 +43,7 @@ const CHANNEL_KINDS: Partial<Record<ChannelType, DiscordChannelKind>> = {
   [ChannelType.GuildVoice]: 'voice'
 };
 
-export function setupChannelRoutes(app: Express) {
+export function setupChannelRoutes(app: Express, { broadcast }: { broadcast: Broadcast }) {
   // Get guild channel configuration
   app.get('/api/guild/:guildId/channels', requireAuth, requireGuildAdmin, async (req: Request, res: Response) => {
     try {
@@ -92,6 +95,17 @@ export function setupChannelRoutes(app: Express) {
         }
       }
 
+      // Y quien cambia un canal tiene que poder escribir en el nuevo
+      const current = await storage.getGuild(guildId);
+      for (const [field, label] of channelFields) {
+        const channelId = body[field];
+        if (!channelId || channelId === current?.[field]) continue;
+        const userProblem = await checkPanelUserCanUseChannel(req, botGuild, channelId);
+        if (userProblem) {
+          return res.status(403).json({ error: `Canal de ${label}: ${userProblem}` });
+        }
+      }
+
       const updates: {
         contentChannelId?: string | null;
         moderationChannelId?: string | null;
@@ -113,6 +127,7 @@ export function setupChannelRoutes(app: Express) {
       await storage.updateGuild(guildId, updates);
 
       console.log(`[CHANNELS-UPDATE-003] Successfully updated channel configuration`);
+      broadcast(guildId, { type: 'settingsUpdated' });
       const result: SuccessResponse = { success: true };
       res.json(result);
 
@@ -136,8 +151,16 @@ export function setupChannelRoutes(app: Express) {
         channel.parent?.rawPosition ?? -1,
         'rawPosition' in channel ? channel.rawPosition : 0
       ];
-      const formattedChannels: DiscordChannelsResponse = getBotGuild(res).channels.cache
+      // Solo los canales que la persona puede ver en Discord (no se revelan nombres de canales privados)
+      const guild = getBotGuild(res);
+      const devSession = isDevRequest(req);
+      const member = devSession ? null : await fetchSessionMember(req, guild);
+      if (!devSession && !member) {
+        return res.status(403).json({ error: 'No te encontré como miembro de este servidor.' });
+      }
+      const formattedChannels: DiscordChannelsResponse = guild.channels.cache
         .filter((channel) => CHANNEL_KINDS[channel.type] !== undefined)
+        .filter((channel) => !member || (channel.permissionsFor(member)?.has(PermissionFlagsBits.ViewChannel) ?? false))
         .sort((a, b) => {
           const [parentA, positionA] = sortKey(a);
           const [parentB, positionB] = sortKey(b);

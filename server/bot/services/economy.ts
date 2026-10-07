@@ -1,8 +1,8 @@
-import { and, desc, eq, inArray, sql } from 'drizzle-orm';
+import { and, desc, eq, inArray, lt, sql } from 'drizzle-orm';
 import type { Guild, User } from 'discord.js';
 import { db } from '../../db';
 import { storage } from '../../storage';
-import { userEconomy, userLevels } from '@shared/schema';
+import { pendingBets, userEconomy, userLevels } from '@shared/schema';
 import { globalQueue, economyQueueFor } from './queues';
 import { lockForUser } from './locks';
 
@@ -439,8 +439,10 @@ export async function playInstantBet<T>(
 }
 
 // Juegos con varios pasos (blackjack): primero se retiene la apuesta…
+// La retención queda apuntada en pending_bets en la misma transacción: si el bot se apaga a mitad
+// de la partida, refundPendingBets la devuelve a la cartera al volver.
 export async function holdBet(guildId: string, userId: string, request: AmountRequest): Promise<
-  { ok: true; bet: number; balance: number } | { ok: false; reason: 'empty' | 'insufficient'; available: number }
+  { ok: true; bet: number; balance: number; holdId: string } | { ok: false; reason: 'empty' | 'insufficient'; available: number }
 > {
   return db.transaction(async (tx) => {
     const row = await lockAccount(tx, guildId, userId);
@@ -449,8 +451,45 @@ export async function holdBet(guildId: string, userId: string, request: AmountRe
     if (wallet <= 0) return { ok: false as const, reason: 'empty' as const, available: wallet };
     if (bet > wallet) return { ok: false as const, reason: 'insufficient' as const, available: wallet };
     await saveAccount(tx, row, { balance: wallet - bet, gambled: bet });
-    return { ok: true as const, bet, balance: wallet - bet };
+    const [hold] = await tx
+      .insert(pendingBets)
+      .values({ guildId, userId, amount: String(bet), createdAt: new Date() })
+      .returning({ id: pendingBets.id });
+    return { ok: true as const, bet, balance: wallet - bet, holdId: hold.id };
   });
+}
+
+// Momento en que arrancó este proceso: las retenciones de antes son de partidas que se cortaron
+const BOOTED_AT = new Date();
+
+// Al arrancar el bot: devuelve las apuestas retenidas de partidas que quedaron a medias
+export async function refundPendingBets(): Promise<void> {
+  let holds: (typeof pendingBets.$inferSelect)[];
+  try {
+    holds = await db.select().from(pendingBets).where(lt(pendingBets.createdAt, BOOTED_AT));
+  } catch (error) {
+    console.error('[ECONOMÍA] No se pudieron revisar las apuestas pendientes:', error);
+    return;
+  }
+
+  for (const hold of holds) {
+    try {
+      const refunded = await economyTask(hold.guildId, hold.userId, () => db.transaction(async (tx) => {
+        // Borrarla y devolverla van juntas: si ya no está, alguien la pagó o devolvió antes
+        const [removed] = await tx.delete(pendingBets).where(eq(pendingBets.id, hold.id)).returning({ amount: pendingBets.amount });
+        if (!removed) return 0;
+        const row = await lockAccount(tx, hold.guildId, hold.userId);
+        const amount = toCoins(removed.amount);
+        await saveAccount(tx, row, { balance: toCoins(row.balance) + amount });
+        return amount;
+      }));
+      if (refunded > 0) {
+        console.log(`[ECONOMÍA] Devolví ${formatCoins(refunded)} de una partida de blackjack cortada a ${hold.userId} en ${hold.guildId}.`);
+      }
+    } catch (error) {
+      console.error(`[ECONOMÍA] No se pudo devolver la apuesta pendiente ${hold.id}:`, error);
+    }
+  }
 }
 
 // Falla al pagar una apuesta retenida. safeToRetry = true solo cuando es seguro que no se guardó nada.
@@ -472,10 +511,12 @@ function isStatementRejected(error: unknown): boolean {
 //  - si el cuerpo de la transacción no terminó, nunca se envió COMMIT (drizzle hace ROLLBACK): no se aplicó;
 //  - si el cuerpo terminó, el fallo vino del COMMIT: solo es seguro si PostgreSQL lo rechazó con un ERROR.
 //    Un corte de conexión en ese momento deja la duda (pudo confirmarse), así que no se reintenta.
-export async function settleBet(guildId: string, userId: string, bet: number, payout: number): Promise<number> {
+export async function settleBet(guildId: string, userId: string, bet: number, payout: number, holdId?: string): Promise<number> {
   let bodyDone = false;
   try {
     return await db.transaction(async (tx) => {
+      // La apuesta deja de estar retenida en el mismo momento en que se paga
+      if (holdId) await tx.delete(pendingBets).where(eq(pendingBets.id, holdId));
       const row = await lockAccount(tx, guildId, userId);
       const wallet = toCoins(row.balance);
       const paid = Math.min(Math.max(Math.floor(payout), 0), MAX_COINS - wallet);

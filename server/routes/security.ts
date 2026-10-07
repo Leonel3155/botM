@@ -32,6 +32,7 @@ import {
 import {
   decodeCursor,
   encodeCursor,
+  checkPanelUserCanUseChannel,
   findPostableChannel,
   isActiveRaidEvent,
   isRowId,
@@ -124,6 +125,13 @@ export function setupSecurityRoutes(app: Express, { broadcast }: { broadcast: Br
       if (body.logChannelId) {
         if (!findPostableChannel(guild, body.logChannelId)) {
           return res.status(400).json({ error: "El canal de alertas no existe en este servidor o no es un canal de texto." });
+        }
+        const current = await storage.getAntiRaidConfig(guildId);
+        if (body.logChannelId !== current.logChannelId) {
+          const userProblem = await checkPanelUserCanUseChannel(req, guild, body.logChannelId);
+          if (userProblem) {
+            return res.status(403).json({ error: `Canal de alertas: ${userProblem}` });
+          }
         }
         const check = resolveSendableChannel(guild, body.logChannelId);
         if (!check.ok) {

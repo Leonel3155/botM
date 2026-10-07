@@ -14,6 +14,7 @@ import { bot } from "../bot/index";
 import { DEFAULT_DAILY_QUESTION_HOUR } from "../bot/services/dailyQuestion";
 import { getLocalDateString, getZonedParts, resolveTimezone, zonedTimeToDate } from "../bot/services/timezone";
 import { getActiveRaid } from "../bot/middleware/antiRaid";
+import { checkMemberCanPost } from "../bot/services/channels";
 import { isDevSession, isSnowflake } from "./middleware";
 
 // =============================================
@@ -149,6 +150,21 @@ export function isDevRequest(req: Request): boolean {
   return isDevSession(req.session);
 }
 
+/**
+ * Canales que se eligen en el panel (bienvenida, pregunta del día, feeds, alertas): igual que con
+ * /anuncio, quien los elige también debe poder ver el canal y escribir en él, para que nadie use
+ * al bot para publicar donde no puede. Devuelve el motivo si no puede, o null si sí.
+ */
+export async function checkPanelUserCanUseChannel(req: Request, guild: DiscordGuild, channelId: string): Promise<string | null> {
+  if (isDevRequest(req)) return null;
+  const channel = guild.channels.cache.get(channelId);
+  if (!channel?.isTextBased()) return null; // quien llama ya comprobó que exista y sea de texto
+  const member = await fetchSessionMember(req, guild);
+  if (!member) return "No te encontré como miembro de este servidor.";
+  const check = checkMemberCanPost(member, channel);
+  return check.ok ? null : `Solo puedes elegir canales donde tú puedes escribir. ${plainDiscordText(guild, check.reason)}`;
+}
+
 // =============================================
 // Pregunta del día: cuándo sale la siguiente
 // =============================================
@@ -184,6 +200,18 @@ export function nextDailyQuestionAt(row: GuildRow | null | undefined, now: Date 
 // Conversión a los tipos de shared/api.ts
 // =============================================
 
+/**
+ * ¿Sigue vigente? Un mute es un aislamiento de Discord que se quita solo al pasar su duración
+ * (Discord no avisa al bot), así que desde entonces cuenta como terminado.
+ */
+function isActionActive(action: ModerationActionWithUsers["action"], now = Date.now()): boolean {
+  if (!action.active) return false;
+  if (action.type === "mute" && action.duration && action.createdAt) {
+    return action.createdAt.getTime() + action.duration * 60_000 > now;
+  }
+  return true;
+}
+
 export function toModerationActionItem(row: ModerationActionWithUsers): ModerationActionItem {
   const { action } = row;
   return {
@@ -191,7 +219,7 @@ export function toModerationActionItem(row: ModerationActionWithUsers): Moderati
     type: action.type,
     reason: action.reason ?? null,
     duration: action.duration ?? null,
-    active: action.active ?? false,
+    active: isActionActive(action),
     createdAt: toIso(action.createdAt),
     user: row.user,
     moderator: row.moderator,

@@ -108,14 +108,33 @@ export class ContentScheduler {
         return;
       }
 
-      const content = await redditService.getRandomMeme([subreddit]);
-      if (!content) {
+      const posts = await redditService.getImagePosts(subreddit);
+      if (posts.length === 0) {
         console.warn(`[FEEDS] ${label}: Reddit no devolvió ninguna imagen de r/${subreddit}; lo vuelvo a intentar en ${feed.postInterval} min.`);
         return;
       }
 
-      await check.channel.send(redditService.formatPostForDiscord(content));
+      // Nada que ya haya salido en este feed (posted_content)
+      const alreadyPosted = await storage.getPostedSourceIds(feed.id, posts.map(post => post.id));
+      const fresh = posts.filter(post => !alreadyPosted.has(post.id));
+      if (fresh.length === 0) {
+        console.log(`[FEEDS] ${label}: ya publiqué todas las imágenes que hay ahora en r/${subreddit}; espero a que salgan nuevas (${feed.postInterval} min).`);
+        return;
+      }
+      const content = fresh[Math.floor(Math.random() * fresh.length)];
+
+      const sent = await check.channel.send(redditService.formatPostForDiscord(content));
       console.log(`[FEEDS] Publiqué contenido de r/${subreddit} en ${guild.name}.`);
+
+      await storage.recordPostedContent({
+        feedId: feed.id,
+        sourceId: content.id,
+        messageId: sent.id,
+        title: content.title.slice(0, 300),
+        url: `https://reddit.com${content.permalink}`,
+      }).catch((error) => {
+        console.error(`[FEEDS] ${label}: no se pudo apuntar la publicación (podría repetirse):`, error);
+      });
     } catch (error) {
       console.error(`[FEEDS] ${label}: no se pudo publicar; lo vuelvo a intentar en ${feed.postInterval} min.`, error);
     }

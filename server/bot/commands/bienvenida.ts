@@ -9,6 +9,7 @@ import {
 import { DiscordBot } from '../index';
 import { storage } from '../../storage';
 import {
+  checkMemberCanPost,
   ensureMemberPermission,
   replyGuildOnly,
   resolveSendableChannel,
@@ -102,6 +103,15 @@ export const bienvenidaCommands = [
         switch (subcommand) {
           case 'canal': {
             const channelId = interaction.options.getChannel('canal', true, [...TEXT_CHANNEL_TYPES]).id;
+
+            // Quien elige el canal también debe poder escribir en él (igual que con /anuncio)
+            const channel = guild.channels.cache.get(channelId);
+            const memberCheck = channel?.isTextBased() ? checkMemberCanPost(interaction.member, channel) : null;
+            if (memberCheck && !memberCheck.ok) {
+              await interaction.editReply(`⛔ Solo puedes elegir un canal donde tú puedes escribir. ${memberCheck.reason}`);
+              break;
+            }
+
             await storage.updateEngagementSettings(guild.id, { welcomeChannelId: channelId });
 
             const check = resolveSendableChannel(guild, channelId);

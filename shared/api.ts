@@ -92,6 +92,11 @@ export interface UserGuildItem {
   owner: boolean;
   permissions: string;
   botInGuild: boolean;
+  /**
+   * El bot está conectado a Discord ahora mismo. Si es false no se sabe en qué servidores está
+   * (botInGuild llega en false): el panel debe decir "bot desconectado", no "invita al bot".
+   */
+  botOnline: boolean;
 }
 export type UserGuildsResponse = UserGuildItem[];
 

@@ -29,14 +29,14 @@ const MODERATION_COMMANDS: CommandHelp[] = [
   {
     usage: "/mute usuario minutos",
     logsAs: "mute",
-    description: "Silencia a alguien de 1 minuto a 1 semana con el rol «Muteado»: no puede escribir, reaccionar ni entrar a hablar en voz. El silencio se quita solo al terminar el tiempo.",
-    permission: "Gestionar roles",
+    description: "Aísla a alguien de 1 minuto a 1 semana (el aislamiento de Discord): no puede escribir, reaccionar ni hablar en voz. Discord se lo quita solo al terminar el tiempo, aunque el bot se reinicie o la persona salga y vuelva a entrar.",
+    permission: "Moderar miembros",
   },
   {
     usage: "/unmute usuario",
     logsAs: "unmute",
     description: "Quita el silencio antes de tiempo.",
-    permission: "Gestionar roles",
+    permission: "Moderar miembros",
   },
   {
     usage: "/kick usuario [razon]",

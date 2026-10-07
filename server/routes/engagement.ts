@@ -14,7 +14,7 @@ import { storage } from "../storage";
 import { PREGUNTAS_DEL_DIA } from "../bot/data/preguntasDelDia";
 import { buildWelcomeMessage, checkWelcomeRole, DEFAULT_WELCOME_MESSAGE } from "../bot/services/welcome";
 import { DEFAULT_DAILY_QUESTION_HOUR, dailyQuestions, remainingDailyQuestions } from "../bot/services/dailyQuestion";
-import { canCreateThreads, resolveSendableChannel } from "../bot/services/channels";
+import { canCreateThreads, checkMemberCanPost, resolveSendableChannel } from "../bot/services/channels";
 import { normalizeTimezone, resolveTimezone } from "../bot/services/timezone";
 import {
   requireAuth,
@@ -27,6 +27,7 @@ import {
 } from "./middleware";
 import {
   checkMemberCanAssignRole,
+  checkPanelUserCanUseChannel,
   fetchSessionMember,
   findPostableChannel,
   getCachedBotGuild,
@@ -170,6 +171,10 @@ export function setupEngagementRoutes(app: Express, { broadcast }: { broadcast: 
           if (welcome.channelId && !findPostableChannel(guild, welcome.channelId)) {
             return badRequest(res, "El canal de bienvenida no existe en este servidor o no es un canal de texto o de anuncios.");
           }
+          const userProblem = welcome.channelId ? await checkPanelUserCanUseChannel(req, guild, welcome.channelId) : null;
+          if (userProblem) {
+            return res.status(403).json({ error: `Canal de bienvenida: ${userProblem}` });
+          }
           updates.welcomeChannelId = welcome.channelId;
         }
 
@@ -218,6 +223,10 @@ export function setupEngagementRoutes(app: Express, { broadcast }: { broadcast: 
         if (question.channelId !== undefined && question.channelId !== current.dailyQuestionChannelId) {
           if (question.channelId && !findPostableChannel(guild, question.channelId)) {
             return badRequest(res, "El canal de la pregunta del día no existe en este servidor o no es un canal de texto o de anuncios.");
+          }
+          const userProblem = question.channelId ? await checkPanelUserCanUseChannel(req, guild, question.channelId) : null;
+          if (userProblem) {
+            return res.status(403).json({ error: `Canal de la pregunta del día: ${userProblem}` });
           }
           updates.dailyQuestionChannelId = question.channelId;
         }
@@ -304,6 +313,13 @@ export function setupEngagementRoutes(app: Express, { broadcast }: { broadcast: 
       const member = await fetchSessionMember(req, guild);
       if (!member) {
         return badRequest(res, "Para probar la bienvenida tienes que ser miembro del servidor (la prueba se hace contigo).");
+      }
+      // La prueba publica el texto de bienvenida del panel: solo en un canal donde tú también puedes escribir
+      const memberCheck = checkMemberCanPost(member, target.channel);
+      if (!memberCheck.ok) {
+        return res.status(403).json({
+          error: `Solo puedes probar la bienvenida en un canal donde tú puedes escribir. ${plainDiscordText(guild, memberCheck.reason)}`,
+        });
       }
 
       if (!takeActionSlot(res, slot, TEST_WELCOME_COOLDOWN_MS, "Acabas de publicar una prueba.")) return;

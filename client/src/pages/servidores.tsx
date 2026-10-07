@@ -43,7 +43,7 @@ function ServerCard({
           <Badge className="shrink-0">Bot activo</Badge>
         ) : (
           <Badge variant="outline" className="shrink-0 text-muted-foreground">
-            Sin bot
+            {guild.botOnline ? "Sin bot" : "Bot desconectado"}
           </Badge>
         )}
       </CardHeader>
@@ -62,7 +62,7 @@ function ServerCard({
           )}
         </div>
         <div className="flex flex-wrap gap-2">
-          {guild.botInGuild ? (
+          {guild.botInGuild || !guild.botOnline ? (
             selected ? (
               <Button variant="secondary" onClick={onConfigure} data-testid={`button-configure-${guild.id}`}>
                 <Check />
@@ -96,6 +96,8 @@ export default function Servidores() {
 
   const withBot = guilds.filter((g) => g.botInGuild).length;
   const withoutBot = guilds.length - withBot;
+  // Con el bot desconectado no se sabe en qué servidores está
+  const botOffline = guilds.some((g) => !g.botOnline);
 
   const header = (
     <PageHeader
@@ -156,11 +158,22 @@ export default function Servidores() {
 
       <div className="grid grid-cols-1 gap-6 sm:grid-cols-3">
         <StatCard title="Tus servidores" value={guilds.length} icon={Server} subtitle="Que puedes administrar" testId="stat-total-servers" />
-        <StatCard title="Con el bot" value={withBot} icon={Bot} subtitle="Listos para configurar" testId="stat-with-bot" />
-        <StatCard title="Sin el bot" value={withoutBot} icon={UserPlus} subtitle="Invítalo para empezar" testId="stat-without-bot" />
+        <StatCard title="Con el bot" value={botOffline ? "—" : withBot} icon={Bot} subtitle="Listos para configurar" testId="stat-with-bot" />
+        <StatCard title="Sin el bot" value={botOffline ? "—" : withoutBot} icon={UserPlus} subtitle="Invítalo para empezar" testId="stat-without-bot" />
       </div>
 
-      {withoutBot > 0 && !canBuildInviteUrl() && (
+      {botOffline && (
+        <Alert>
+          <Bot className="h-4 w-4" />
+          <AlertTitle>El bot está desconectado de Discord</AlertTitle>
+          <AlertDescription>
+            Mientras no se conecte no se puede saber en qué servidores está. Lo intenta de nuevo solo; si sigue así, revisa la
+            consola donde corre el bot.
+          </AlertDescription>
+        </Alert>
+      )}
+
+      {!botOffline && withoutBot > 0 && !canBuildInviteUrl() && (
         <Alert>
           <UserPlus className="h-4 w-4" />
           <AlertTitle>Falta configurar el enlace de invitación</AlertTitle>
@@ -204,7 +217,7 @@ export default function Servidores() {
         <EmptyState icon={Search} title="Ningún servidor coincide" description="Prueba con otro nombre o ID." />
       )}
 
-      {withoutBot > 0 && (
+      {!botOffline && withoutBot > 0 && (
         <p className="text-xs text-muted-foreground">
           Después de invitar al bot, vuelve a esta pestaña o pulsa Actualizar para verlo como "Bot activo".
         </p>

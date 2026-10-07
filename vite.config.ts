@@ -31,7 +31,17 @@ export default defineConfig({
   server: {
     fs: {
       strict: true,
-      deny: ["**/.*"],
+      // El servidor de desarrollo solo sirve lo que usa el panel: nada de la raíz del proyecto
+      // (.git, .env, server/, package.json...)
+      allow: [
+        path.resolve(import.meta.dirname, "client"),
+        path.resolve(import.meta.dirname, "shared"),
+        path.resolve(import.meta.dirname, "attached_assets"),
+        path.resolve(import.meta.dirname, "node_modules"),
+      ],
+      // Los de Vite por defecto, más cualquier archivo que empiece por punto y las carpetas .git.
+      // (No "**/.*/**": bloquearía todo si el proyecto está dentro de una carpeta con punto.)
+      deny: [".env", ".env.*", "*.{crt,pem}", "**/.*", "**/.git/**"],
     },
   },
 });

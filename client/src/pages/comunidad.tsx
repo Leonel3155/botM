@@ -250,7 +250,7 @@ function EngagementEditor({ guildId, saved, refreshing, onRefresh }: EngagementE
 
   // El bot está en el servidor (según la lista de servidores) pero no respondió: probablemente reiniciando.
   // Si no está en el servidor, el aviso con "Invitar bot" ya lo muestra el panel arriba.
-  const botOffline = !saved.botInGuild && guild?.botInGuild !== false;
+  const botOffline = !saved.botInGuild && (guild?.botInGuild !== false || guild?.botOnline === false);
 
   return (
     <Form {...form}>
