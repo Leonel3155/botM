@@ -1,421 +1,303 @@
-import { useQuery, useMutation, useQueryClient } from "@tanstack/react-query";
-import { useSelectedGuild } from "@/lib/guild";
-import Layout from "@/components/layout";
-import FeaturePanel from "@/components/feature-panel";
-import { Card } from "@/components/ui/card";
+import { useMemo, useState } from "react";
+import { Link } from "wouter";
+import { AlertTriangle, Info, Plus, RefreshCw, Rss, Share2, Twitter } from "lucide-react";
 import { Button } from "@/components/ui/button";
-import { Switch } from "@/components/ui/switch";
-import { Input } from "@/components/ui/input";
-import { Badge } from "@/components/ui/badge";
-import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
-import { useToast } from "@/hooks/use-toast";
-import { apiRequest } from "@/lib/queryClient";
-import { 
-  Share2, 
-  Plus, 
-  Calendar, 
-  ExternalLink,
-  Vote,
-  Twitter,
-  Clock,
-  TrendingUp,
-  Eye,
-  Hash
-} from "lucide-react";
-import type { ContentFeedResponse, NewContentFeed } from "@/lib/api-types";
+import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
+import { Skeleton } from "@/components/ui/skeleton";
+import { Tooltip, TooltipContent, TooltipTrigger } from "@/components/ui/tooltip";
+import { ApiErrorState } from "@/components/api-error-state";
+import { EmptyState } from "@/components/empty-state";
+import { InviteBotButton } from "@/components/invite-bot-button";
+import { PageHeader } from "@/components/page-header";
+import { StatCard } from "@/components/stat-card";
+import { useChannelConfig, useContentFeeds, useDiscordChannels, useNow } from "@/components/canales-redes/api";
+import { channelLabel } from "@/components/canales-redes/channel-picker";
+import { FeedCard } from "@/components/canales-redes/feed-card";
+import { FeedFormDialog, usableDefaultChannel, type FeedDialogMode } from "@/components/canales-redes/feed-form-dialog";
+import { CONTENT_FEED_LIMITS, feedKind, sortFeeds } from "@/components/canales-redes/feed-utils";
+import { useSelectedGuild } from "@/lib/guild";
+import { getApiErrorInfo, isApiError } from "@/lib/queryClient";
+import { cn } from "@/lib/utils";
+
+const MAX_FEEDS = CONTENT_FEED_LIMITS.maxPerGuild;
+
+function FeedsSkeleton() {
+  return (
+    <div className="grid grid-cols-1 gap-4 lg:grid-cols-2" aria-busy="true" aria-label="Cargando feeds">
+      {[0, 1].map((i) => (
+        <Card key={i}>
+          <CardContent className="space-y-4 p-6">
+            <div className="flex items-center gap-3">
+              <Skeleton className="h-10 w-10 rounded-md" />
+              <div className="flex-1 space-y-2">
+                <Skeleton className="h-5 w-32" />
+                <Skeleton className="h-4 w-16" />
+              </div>
+              <Skeleton className="h-6 w-11 rounded-full" />
+            </div>
+            <div className="grid grid-cols-2 gap-3">
+              {[0, 1, 2, 3].map((j) => (
+                <Skeleton key={j} className="h-9 w-full" />
+              ))}
+            </div>
+          </CardContent>
+        </Card>
+      ))}
+    </div>
+  );
+}
 
 export default function Social() {
   const { guildId } = useSelectedGuild();
-  const queryClient = useQueryClient();
-  const { toast } = useToast();
+  const feedsQuery = useContentFeeds(guildId);
+  const channelsQuery = useDiscordChannels(guildId);
+  const configQuery = useChannelConfig(guildId);
+  const now = useNow();
+  const [dialog, setDialog] = useState<FeedDialogMode | null>(null);
 
-  const { data: contentFeeds, isLoading } = useQuery<ContentFeedResponse[]>({
-    queryKey: [`/api/social/${guildId}/feeds`],
-    staleTime: 60000,
-  });
+  const feeds = useMemo(() => sortFeeds(feedsQuery.data ?? []), [feedsQuery.data]);
+  const total = feeds.length;
+  const atLimit = total >= MAX_FEEDS;
+  const activeCount = feeds.filter((feed) => feedKind(feed) === "reddit" && feed.enabled).length;
+  const legacyCount = feeds.filter((feed) => feedKind(feed) !== "reddit").length;
 
-  const createFeedMutation = useMutation({
-    mutationFn: async (feedData: NewContentFeed) => {
-      const response = await apiRequest('POST', `/api/social/${guildId}/feeds`, feedData);
-      return response.json();
-    },
-    onSuccess: () => {
-      queryClient.invalidateQueries({ queryKey: [`/api/social/${guildId}/feeds`] });
-      toast({
-        title: "Feed Created",
-        description: "Content feed has been created successfully",
-      });
-    },
-    onError: () => {
-      toast({
-        title: "Error",
-        description: "Failed to create content feed",
-        variant: "destructive",
-      });
-    },
-  });
+  const channels = channelsQuery.data;
+  const channelsErrorKind = isApiError(channelsQuery.error) ? channelsQuery.error.kind : null;
+  const botMissing = channelsErrorKind === "botMissing";
+  // Crear o editar necesita al bot en el servidor (la API revisa el canal con él)
+  const canEdit = channelsQuery.isSuccess;
+  // Canal de contenido (página Canales): se propone al crear un feed si el bot puede publicar ahí
+  const proposedChannelId = usableDefaultChannel(channels, configQuery.data?.contentChannelId);
+  const contentChannel = channelLabel(channels, proposedChannelId);
 
-  if (isLoading) {
-    return (
-      <Layout>
-        <div className="flex items-center justify-center h-64">
-          <div className="text-discord-muted">Loading social content system...</div>
-        </div>
-      </Layout>
+  const createBlockedReason = atLimit
+    ? `Llegaste al máximo de ${MAX_FEEDS} feeds. Borra alguno para crear otro.`
+    : botMissing
+      ? "El bot tiene que estar en el servidor para crear feeds."
+      : channelsQuery.isError
+        ? "No pudimos cargar los canales del servidor."
+        : feedsQuery.isError
+          ? "No pudimos cargar tus feeds."
+          : null;
+  const createDisabled = !!createBlockedReason || feedsQuery.isLoading;
+
+  const openCreate = () => setDialog({ kind: "create", defaultChannelId: proposedChannelId });
+
+  const refreshAll = () => {
+    void feedsQuery.refetch();
+    void channelsQuery.refetch();
+    void configQuery.refetch();
+  };
+
+  const createButton = (label: string, testId: string) => {
+    const button = (
+      <Button onClick={openCreate} disabled={createDisabled} data-testid={testId}>
+        <Plus aria-hidden="true" />
+        {label}
+      </Button>
     );
-  }
-
-  const handleCreateFeed = () => {
-    const feedData: NewContentFeed = {
-      // TODO(páginas): elegir el canal en un formulario (antes iba un ID inventado)
-      channelId: "",
-      source: "reddit",
-      sourceConfig: {
-        subreddit: "memes",
-        filterNSFW: true
-      },
-      postInterval: 30
-    };
-    createFeedMutation.mutate(feedData);
+    if (!createBlockedReason) return button;
+    return (
+      <Tooltip>
+        <TooltipTrigger asChild>
+          {/* span: un botón deshabilitado no recibe el hover del tooltip */}
+          <span tabIndex={0} className="inline-flex">
+            {button}
+          </span>
+        </TooltipTrigger>
+        <TooltipContent className="max-w-xs">{createBlockedReason}</TooltipContent>
+      </Tooltip>
+    );
   };
 
   return (
-    <Layout>
-      <div className="space-y-8">
-        {/* Content Feeds Overview */}
-        <div className="grid grid-cols-1 md:grid-cols-3 gap-6">
-          <Card className="discord-card p-6">
-            <div className="flex items-center justify-between">
-              <div>
-                <p className="text-discord-muted text-sm font-medium">Active Feeds</p>
-                <p className="text-2xl font-bold text-white mt-1" data-testid="text-active-feeds">
-                  {contentFeeds?.filter((feed) => feed.enabled).length || 0}
-                </p>
-              </div>
-              <Share2 className="w-8 h-8 text-discord-primary" />
-            </div>
-          </Card>
+    <div className="space-y-6">
+      <PageHeader
+        title="Redes sociales"
+        description="Comparte memes e imágenes de Reddit en tus canales para que siempre haya algo nuevo de qué hablar."
+        actions={
+          <>
+            <Button
+              variant="outline"
+              onClick={refreshAll}
+              disabled={feedsQuery.isFetching}
+              data-testid="button-refresh-feeds"
+            >
+              <RefreshCw className={cn(feedsQuery.isFetching && "animate-spin")} aria-hidden="true" />
+              Actualizar
+            </Button>
+            {createButton("Nuevo feed", "button-new-feed")}
+          </>
+        }
+      />
 
-          <Card className="discord-card p-6">
-            <div className="flex items-center justify-between">
-              <div>
-                <p className="text-discord-muted text-sm font-medium">Posts Today</p>
-                <p className="text-2xl font-bold text-white mt-1" data-testid="text-posts-today">
-                  24
-                </p>
-              </div>
-              <Calendar className="w-8 h-8 text-discord-success" />
-            </div>
-          </Card>
-
-          <Card className="discord-card p-6">
-            <div className="flex items-center justify-between">
-              <div>
-                <p className="text-discord-muted text-sm font-medium">Avg Engagement</p>
-                <p className="text-2xl font-bold text-white mt-1" data-testid="text-avg-engagement">
-                  87%
-                </p>
-              </div>
-              <TrendingUp className="w-8 h-8 text-discord-warning" />
-            </div>
-          </Card>
-        </div>
-
-        {/* Create New Feed */}
-        <FeaturePanel
-          title="Create Content Feed"
-          description="Set up automated content posting from social media"
-          data-testid="panel-create-feed"
-        >
-          <div className="grid grid-cols-1 md:grid-cols-2 gap-6">
-            <div className="space-y-4">
-              <div className="space-y-2">
-                <label className="text-white font-medium">Source Platform</label>
-                <Select data-testid="select-source-platform">
-                  <SelectTrigger className="discord-input">
-                    <SelectValue placeholder="Select platform" />
-                  </SelectTrigger>
-                  <SelectContent className="bg-discord-grey border-discord-grey">
-                    <SelectItem value="reddit" className="text-white">
-                      <div className="flex items-center space-x-2">
-                        <Vote className="w-4 h-4" />
-                        <span>Vote</span>
-                      </div>
-                    </SelectItem>
-                    <SelectItem value="twitter" className="text-white">
-                      <div className="flex items-center space-x-2">
-                        <Twitter className="w-4 h-4" />
-                        <span>Twitter/X</span>
-                      </div>
-                    </SelectItem>
-                  </SelectContent>
-                </Select>
-              </div>
-
-              <div className="space-y-2">
-                <label className="text-white font-medium">Target Channel</label>
-                <Select data-testid="select-target-channel">
-                  <SelectTrigger className="discord-input">
-                    <SelectValue placeholder="Select channel" />
-                  </SelectTrigger>
-                  <SelectContent className="bg-discord-grey border-discord-grey">
-                    <SelectItem value="memes" className="text-white">#memes</SelectItem>
-                    <SelectItem value="funny" className="text-white">#funny</SelectItem>
-                    <SelectItem value="general" className="text-white">#general</SelectItem>
-                  </SelectContent>
-                </Select>
-              </div>
-
-              <div className="space-y-2">
-                <label className="text-white font-medium">Subreddit/Username</label>
-                <Input 
-                  placeholder="e.g., memes, dankmemes, @username" 
-                  className="discord-input"
-                  data-testid="input-source-config"
-                />
-              </div>
-            </div>
-
-            <div className="space-y-4">
-              <div className="space-y-2">
-                <label className="text-white font-medium">Post Interval (minutes)</label>
-                <Input 
-                  type="number"
-                  defaultValue="30" 
-                  min="5"
-                  max="1440"
-                  className="discord-input"
-                  data-testid="input-post-interval"
-                />
-              </div>
-
-              <div className="space-y-2">
-                <label className="text-white font-medium">Content Filter</label>
-                <Select data-testid="select-content-filter">
-                  <SelectTrigger className="discord-input">
-                    <SelectValue placeholder="Select filter" />
-                  </SelectTrigger>
-                  <SelectContent className="bg-discord-grey border-discord-grey">
-                    <SelectItem value="hot" className="text-white">Hot Posts</SelectItem>
-                    <SelectItem value="top" className="text-white">Top Posts</SelectItem>
-                    <SelectItem value="new" className="text-white">New Posts</SelectItem>
-                  </SelectContent>
-                </Select>
-              </div>
-
-              <div className="flex items-center justify-between">
-                <div>
-                  <label className="text-white font-medium">Filter NSFW</label>
-                  <p className="text-discord-muted text-sm">Block NSFW content</p>
-                </div>
-                <Switch defaultChecked data-testid="switch-filter-nsfw" />
-              </div>
-
-              <div className="flex items-center justify-between">
-                <div>
-                  <label className="text-white font-medium">Enable Feed</label>
-                  <p className="text-discord-muted text-sm">Start posting immediately</p>
-                </div>
-                <Switch defaultChecked data-testid="switch-enable-feed" />
-              </div>
-            </div>
-          </div>
-
-          <div className="mt-6 pt-6 border-t border-discord-grey">
-            <div className="flex space-x-4">
-              <Button 
-                className="discord-button" 
-                onClick={handleCreateFeed}
-                disabled={createFeedMutation.isPending}
-                data-testid="button-create-feed"
-              >
-                <Plus className="w-4 h-4 mr-2" />
-                {createFeedMutation.isPending ? "Creating..." : "Create Feed"}
-              </Button>
-              <Button variant="outline" data-testid="button-test-feed">
-                Test Feed
-              </Button>
-            </div>
-          </div>
-        </FeaturePanel>
-
-        {/* Active Content Feeds */}
-        <Card className="discord-card">
-          <div className="p-6 border-b border-discord-grey">
-            <div className="flex items-center justify-between">
-              <div className="flex items-center space-x-3">
-                <Eye className="w-6 h-6 text-discord-primary" />
-                <h3 className="text-lg font-semibold text-white">Active Content Feeds</h3>
-              </div>
-              <Button variant="outline" size="sm" data-testid="button-refresh-feeds">
-                Refresh
-              </Button>
-            </div>
-          </div>
-          <div className="p-6">
-            <div className="space-y-4">
-              {contentFeeds && contentFeeds.length > 0 ? contentFeeds.map((feed, index) => (
-                <div 
-                  key={feed.id} 
-                  className="flex items-center justify-between p-4 bg-discord-grey rounded-lg"
-                  data-testid={`row-feed-${index}`}
-                >
-                  <div className="flex items-center space-x-4">
-                    {feed.source === 'reddit' ? 
-                      <Vote className="w-6 h-6 text-orange-500" /> : 
-                      <Twitter className="w-6 h-6 text-blue-500" />
-                    }
-                    <div>
-                      <div className="flex items-center space-x-2">
-                        <h4 className="text-white font-medium" data-testid={`text-feed-title-${index}`}>
-                          {feed.source === 'reddit' ? `r/${feed.sourceConfig?.subreddit || 'unknown'}` : '@username'}
-                        </h4>
-                        <Badge variant={feed.enabled ? "default" : "secondary"}>
-                          {feed.enabled ? "Active" : "Disabled"}
-                        </Badge>
-                      </div>
-                      <p className="text-discord-muted text-sm" data-testid={`text-feed-details-${index}`}>
-                        {feed.channelId ? `#${feed.channelId.slice(-4)}` : 'Sin canal'} • Every {feed.postInterval ?? 30} minutes
-                      </p>
-                    </div>
-                  </div>
-                  <div className="flex items-center space-x-2">
-                    <Button variant="ghost" size="sm" data-testid={`button-edit-feed-${index}`}>
-                      Edit
-                    </Button>
-                    <Button variant="ghost" size="sm" data-testid={`button-delete-feed-${index}`}>
-                      Delete
-                    </Button>
-                  </div>
-                </div>
-              )) : (
-                <div className="text-center py-8">
-                  <Share2 className="w-12 h-12 text-discord-muted mx-auto mb-4" />
-                  <p className="text-discord-muted">No content feeds configured</p>
-                  <p className="text-discord-muted text-sm">Create your first feed to start posting content</p>
-                </div>
-              )}
-            </div>
-          </div>
-        </Card>
-
-        {/* Recent Posts */}
-        <Card className="discord-card">
-          <div className="p-6 border-b border-discord-grey">
-            <div className="flex items-center justify-between">
-              <div className="flex items-center space-x-3">
-                <Clock className="w-6 h-6 text-discord-success" />
-                <h3 className="text-lg font-semibold text-white">Recent Posts</h3>
-              </div>
-              <Button variant="outline" size="sm" data-testid="button-view-all-posts">
-                View All
-              </Button>
-            </div>
-          </div>
-          <div className="p-6">
-            <div className="space-y-4">
-              {[
-                { title: "Funny Programming Meme", source: "reddit", subreddit: "ProgrammerHumor", time: "5m ago", engagement: "12 reactions" },
-                { title: "Gaming Achievement", source: "reddit", subreddit: "gaming", time: "15m ago", engagement: "8 reactions" },
-                { title: "Tech News Update", source: "twitter", user: "@technews", time: "30m ago", engagement: "15 reactions" },
-                { title: "Motivational Quote", source: "reddit", subreddit: "GetMotivated", time: "45m ago", engagement: "6 reactions" }
-              ].map((post, index) => (
-                <div 
-                  key={index} 
-                  className="flex items-center justify-between p-4 bg-discord-grey rounded-lg"
-                  data-testid={`row-recent-post-${index}`}
-                >
-                  <div className="flex items-center space-x-4">
-                    {post.source === 'reddit' ? 
-                      <Vote className="w-5 h-5 text-orange-500" /> : 
-                      <Twitter className="w-5 h-5 text-blue-500" />
-                    }
-                    <div>
-                      <h4 className="text-white font-medium" data-testid={`text-post-title-${index}`}>
-                        {post.title}
-                      </h4>
-                      <p className="text-discord-muted text-sm" data-testid={`text-post-source-${index}`}>
-                        {post.source === 'reddit' ? `r/${post.subreddit}` : post.user} • {post.time}
-                      </p>
-                    </div>
-                  </div>
-                  <div className="text-right">
-                    <p className="text-discord-light-grey text-sm" data-testid={`text-post-engagement-${index}`}>
-                      {post.engagement}
-                    </p>
-                    <Button variant="ghost" size="sm" data-testid={`button-view-post-${index}`}>
-                      <ExternalLink className="w-4 h-4" />
-                    </Button>
-                  </div>
-                </div>
-              ))}
-            </div>
-          </div>
-        </Card>
-
-        {/* Content Performance */}
-        <div className="grid grid-cols-1 lg:grid-cols-2 gap-8">
-          <Card className="discord-card">
-            <div className="p-6 border-b border-discord-grey">
-              <h3 className="text-lg font-semibold text-white">Top Performing Content</h3>
-              <p className="text-discord-muted text-sm mt-1">Most engaged posts this week</p>
-            </div>
-            <div className="p-6 space-y-4">
-              {[
-                { title: "Epic Gaming Moment", reactions: 45, source: "reddit" },
-                { title: "Programming Joke", reactions: 38, source: "reddit" },
-                { title: "Tech Announcement", reactions: 32, source: "twitter" }
-              ].map((content, index) => (
-                <div key={index} className="flex items-center justify-between">
-                  <div className="flex items-center space-x-3">
-                    {content.source === 'reddit' ? 
-                      <Vote className="w-4 h-4 text-orange-500" /> : 
-                      <Twitter className="w-4 h-4 text-blue-500" />
-                    }
-                    <span className="text-white text-sm" data-testid={`text-top-content-${index}`}>
-                      {content.title}
-                    </span>
-                  </div>
-                  <span className="text-discord-primary font-medium" data-testid={`text-top-reactions-${index}`}>
-                    {content.reactions} reactions
-                  </span>
-                </div>
-              ))}
-            </div>
-          </Card>
-
-          <Card className="discord-card">
-            <div className="p-6 border-b border-discord-grey">
-              <h3 className="text-lg font-semibold text-white">Source Statistics</h3>
-              <p className="text-discord-muted text-sm mt-1">Content sources breakdown</p>
-            </div>
-            <div className="p-6 space-y-4">
-              {[
-                { source: "Vote", posts: 18, percentage: 75 },
-                { source: "Twitter", posts: 6, percentage: 25 }
-              ].map((stat, index) => (
-                <div key={index} className="space-y-2">
-                  <div className="flex justify-between">
-                    <span className="text-white" data-testid={`text-source-name-${index}`}>
-                      {stat.source}
-                    </span>
-                    <span className="text-discord-muted" data-testid={`text-source-posts-${index}`}>
-                      {stat.posts} posts
-                    </span>
-                  </div>
-                  <div className="w-full bg-discord-dark rounded-full h-2">
-                    <div 
-                      className="bg-discord-primary h-2 rounded-full" 
-                      style={{ width: `${stat.percentage}%` }}
-                      data-testid={`progress-source-${index}`}
-                    ></div>
-                  </div>
-                </div>
-              ))}
-            </div>
-          </Card>
-        </div>
+      {/* Cifras reales de la API */}
+      <div className="grid grid-cols-1 gap-4 sm:grid-cols-2">
+        <StatCard
+          title="Feeds activos"
+          icon={Rss}
+          loading={feedsQuery.isLoading}
+          value={feedsQuery.isError ? "—" : activeCount}
+          subtitle={
+            feedsQuery.isSuccess
+              ? activeCount > 0
+                ? "Cada uno publica con su propio intervalo"
+                : "Ninguno está publicando ahora"
+              : undefined
+          }
+          testId="stat-active-feeds"
+        />
+        <StatCard
+          title="Feeds creados"
+          icon={Share2}
+          loading={feedsQuery.isLoading}
+          value={feedsQuery.isError ? "—" : `${total} / ${MAX_FEEDS}`}
+          subtitle={
+            !feedsQuery.isSuccess
+              ? undefined
+              : atLimit
+                ? "Llegaste al máximo: borra uno para crear otro"
+                : `Puedes crear ${MAX_FEEDS - total} más en este servidor`
+          }
+          testId="stat-total-feeds"
+        />
       </div>
-    </Layout>
+
+      {/* Cómo funciona (lo que hace el bot de verdad) */}
+      <Card>
+        <CardHeader className="pb-3">
+          <CardTitle className="flex items-center gap-2 text-base">
+            <Info className="h-5 w-5 text-primary" aria-hidden="true" />
+            Cómo funciona
+          </CardTitle>
+        </CardHeader>
+        <CardContent className="space-y-3 text-sm text-muted-foreground">
+          <ul className="list-disc space-y-1.5 pl-5">
+            <li>
+              Cuando le toca a un feed, el bot mira lo más popular del subreddit y publica una imagen al azar en el
+              canal que elegiste.
+            </li>
+            <li>
+              Usa la API pública de Reddit, sin cuenta. Reddit puede limitar o bloquear esas consultas: si no responde
+              o no hay imágenes, ese turno no se publica nada.
+            </li>
+            <li>Solo comparte posts con imagen y nunca contenido para adultos (NSFW).</li>
+            <li>
+              Solo publica mientras el bot está conectado. «Último intento» se marca cada vez que pasa por el feed,
+              aunque esa vez no haya publicado nada.
+            </li>
+          </ul>
+          <p>
+            {contentChannel ? (
+              <>
+                Al crear un feed te proponemos tu canal de contenido, <span className="text-foreground">{contentChannel}</span>.
+                Puedes cambiarlo en{" "}
+              </>
+            ) : (
+              <>¿Tienes un canal para memes? Elígelo como canal de contenido en </>
+            )}
+            <Link href="/canales" className="text-primary underline-offset-4 hover:underline">
+              Canales
+            </Link>
+            {contentChannel ? "." : " y lo propondremos al crear cada feed."}
+          </p>
+          <p className="flex items-start gap-2">
+            <Twitter className="mt-0.5 h-4 w-4 shrink-0" aria-hidden="true" />
+            <span>Twitter/X ya no está disponible: por ahora el bot solo publica desde Reddit.</span>
+          </p>
+        </CardContent>
+      </Card>
+
+      {/* Avisos que bloquean crear o editar */}
+      {botMissing ? (
+        <Card className="border-status-warning/40">
+          <CardContent className="flex flex-col gap-3 p-4 sm:flex-row sm:items-center sm:justify-between">
+            <p className="flex items-start gap-2 text-sm text-foreground">
+              <AlertTriangle className="mt-0.5 h-4 w-4 shrink-0 text-status-warning" aria-hidden="true" />
+              <span>Para crear, editar o pausar feeds, el bot tiene que estar en el servidor.</span>
+            </p>
+            <InviteBotButton guildId={guildId} size="sm" className="shrink-0" />
+          </CardContent>
+        </Card>
+      ) : channelsQuery.isError ? (
+        <Card className="border-status-warning/40">
+          <CardContent className="flex flex-col gap-3 p-4 sm:flex-row sm:items-center sm:justify-between">
+            <div className="flex items-start gap-2 text-sm">
+              <AlertTriangle className="mt-0.5 h-4 w-4 shrink-0 text-status-warning" aria-hidden="true" />
+              <div>
+                <p className="font-medium text-foreground">{getApiErrorInfo(channelsQuery.error).title}</p>
+                <p className="text-muted-foreground">
+                  Sin la lista de canales no se pueden crear ni editar feeds por ahora.
+                </p>
+              </div>
+            </div>
+            <Button
+              variant="outline"
+              size="sm"
+              className="shrink-0"
+              onClick={() => void channelsQuery.refetch()}
+              disabled={channelsQuery.isFetching}
+            >
+              <RefreshCw className={cn(channelsQuery.isFetching && "animate-spin")} aria-hidden="true" />
+              Reintentar
+            </Button>
+          </CardContent>
+        </Card>
+      ) : null}
+
+      {atLimit && !feedsQuery.isError && (
+        <p className="flex items-start gap-2 text-sm text-status-warning" role="status">
+          <AlertTriangle className="mt-0.5 h-4 w-4 shrink-0" aria-hidden="true" />
+          <span>
+            Llegaste al máximo de {MAX_FEEDS} feeds en este servidor. Borra alguno para crear otro.
+            {legacyCount > 0 && " Los feeds viejos de Twitter/X también cuentan."}
+          </span>
+        </p>
+      )}
+
+      {/* Lista de feeds */}
+      <section className="space-y-4" aria-labelledby="titulo-feeds">
+        <h2 id="titulo-feeds" className="text-lg font-semibold text-foreground">
+          Tus feeds
+        </h2>
+        {feedsQuery.isLoading ? (
+          <FeedsSkeleton />
+        ) : feedsQuery.isError ? (
+          <ApiErrorState error={feedsQuery.error} onRetry={() => void feedsQuery.refetch()} />
+        ) : feeds.length === 0 ? (
+          <EmptyState
+            icon={Rss}
+            title="Aún no tienes feeds de Reddit"
+            description="Crea uno y el bot compartirá imágenes de tu subreddit favorito cada cierto tiempo. Así el chat siempre tiene algo nuevo, aunque nadie haya escrito todavía."
+            action={createButton("Crear mi primer feed", "button-first-feed")}
+            testId="state-no-feeds"
+          />
+        ) : (
+          <div className="grid grid-cols-1 gap-4 lg:grid-cols-2" data-testid="list-feeds">
+            {feeds.map((feed) => (
+              <FeedCard
+                key={feed.id}
+                guildId={guildId}
+                feed={feed}
+                channels={channels}
+                canEdit={canEdit}
+                now={now}
+                onEdit={() => setDialog({ kind: "edit", feed })}
+              />
+            ))}
+          </div>
+        )}
+      </section>
+
+      {dialog && (
+        <FeedFormDialog
+          key={dialog.kind === "edit" ? dialog.feed.id : "nuevo"}
+          guildId={guildId}
+          mode={dialog}
+          existingFeeds={feeds}
+          onClose={() => setDialog(null)}
+        />
+      )}
+    </div>
   );
 }
