@@ -569,7 +569,6 @@ botM/
 ├── shared/
 │   ├── schema.ts            Tablas de la base de datos
 │   └── api.ts               Tipos que comparten el panel y el servidor
-├── _ref/                    Copia de referencia de un panel anterior (no se usa)
 ├── .env                     Tus llaves (lo creas tú; nunca lo compartas)
 └── .env.example             Plantilla del .env
 ```

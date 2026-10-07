@@ -103,17 +103,18 @@ export function raidEventTitle(type: string): string {
 /**
  * Estado real de un raid. En el servidor `resolved` significa "ya no está abierto": el bot lo pone
  * al terminar el modo raid (al cumplirse el tiempo, con /antiraid levantar, desde el panel o al
- * reiniciarse). Solo `details.resolvedAt` indica que alguien lo marcó como revisado en el panel.
+ * reiniciarse). `reviewed` indica que alguien del staff lo marcó como revisado en el panel.
  * - active: el modo raid sigue en curso
  * - reviewed: alguien lo marcó como revisado desde el panel
- * - ended: el modo raid terminó (nadie tuvo que revisarlo)
+ * - ended: el modo raid terminó y nadie lo ha revisado todavía
  * - pending: quedó abierto sin modo raid activo (p. ej. el bot se reinició y no lo cerró)
  */
 export type RaidEventStatus = "active" | "reviewed" | "ended" | "pending";
 
-export function raidEventStatus(event: Pick<RaidEventItem, "isActive" | "resolved" | "details">): RaidEventStatus {
+export function raidEventStatus(event: Pick<RaidEventItem, "isActive" | "resolved" | "reviewed">): RaidEventStatus {
   if (event.isActive) return "active";
-  if (event.resolved) return typeof event.details.resolvedAt === "number" ? "reviewed" : "ended";
+  if (event.reviewed) return "reviewed";
+  if (event.resolved) return "ended";
   return "pending";
 }
 

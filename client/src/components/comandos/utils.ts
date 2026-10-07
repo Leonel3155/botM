@@ -11,9 +11,8 @@ export const DEFAULT_PREFIX = "&";
 
 /**
  * Clave de react-query de GET /api/custom-commands/:guildId (la URL sale de la clave:
- * /api/custom-commands/<guildId>). Es la que shared/api.ts indica para el aviso en vivo
- * "customCommandsUpdated", pero lib/websocket.ts todavía no atiende ese aviso: por ahora la
- * lista se pone al día al volver a la pestaña, con "Actualizar" o tras cada cambio desde aquí.
+ * /api/custom-commands/<guildId>). lib/websocket.ts la refresca con el aviso en vivo
+ * "customCommandsUpdated" (y con "settingsUpdated", porque la lista también trae el prefijo).
  */
 export function customCommandsKey(guildId: string) {
   return ["/api/custom-commands", guildId] as const;

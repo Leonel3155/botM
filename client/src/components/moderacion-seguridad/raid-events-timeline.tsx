@@ -1,7 +1,7 @@
 import { useMemo, useState, type ReactNode } from "react";
 import { useInfiniteQuery } from "@tanstack/react-query";
 import { CheckCheck, History, Loader2, ShieldCheck } from "lucide-react";
-import type { RaidEventItem as RaidEvent, RaidEventsResponse } from "@shared/api";
+import { RAID_EVENT_STATUS_FILTERS, type RaidEventItem as RaidEvent, type RaidEventsResponse, type RaidEventStatusFilter } from "@shared/api";
 import { Button } from "@/components/ui/button";
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card";
 import { Skeleton } from "@/components/ui/skeleton";
@@ -20,13 +20,14 @@ import { describeMutationError, numberFormat, useNow } from "./utils";
 
 const PAGE_SIZE = 10;
 
-type StatusFilter = "all" | "open" | "resolved";
+type StatusFilter = RaidEventStatusFilter;
 
-// El filtro del servidor separa por `resolved`: abiertos = en curso o pendientes de cerrar;
-// terminados = el modo raid ya acabó (solo o a mano) o alguien lo marcó como revisado.
+// Abiertos = en curso o pendientes de cerrar; terminados = el modo raid ya acabó (solo o a mano);
+// sin revisar = nadie del staff lo ha marcado como revisado, esté cerrado o no.
 const STATUS_TABS: { value: StatusFilter; label: string }[] = [
   { value: "all", label: "Todos" },
   { value: "open", label: "Abiertos" },
+  { value: "unreviewed", label: "Sin revisar" },
   { value: "resolved", label: "Terminados" },
 ];
 
@@ -40,6 +41,10 @@ const EMPTY_TEXT: Record<StatusFilter, { title: string; description: string }> =
     title: "No hay raids abiertos",
     description: "No hay ningún modo raid en curso ni raids que hayan quedado sin cerrar.",
   },
+  unreviewed: {
+    title: "Todo está revisado",
+    description: "No queda ningún raid sin revisar. Los nuevos aparecerán aquí hasta que alguien los marque como revisados.",
+  },
   resolved: {
     title: "Aún no hay raids terminados",
     description:
@@ -48,7 +53,7 @@ const EMPTY_TEXT: Record<StatusFilter, { title: string; description: string }> =
 };
 
 function isStatusFilter(value: string): value is StatusFilter {
-  return value === "all" || value === "open" || value === "resolved";
+  return (RAID_EVENT_STATUS_FILTERS as readonly string[]).includes(value);
 }
 
 interface RaidEventsTimelineProps {
@@ -144,7 +149,7 @@ export function RaidEventsTimeline({ guildId, actions }: RaidEventsTimelineProps
     body = (
       <EmptyState
         bare
-        icon={status === "open" ? CheckCheck : ShieldCheck}
+        icon={status === "open" || status === "unreviewed" ? CheckCheck : ShieldCheck}
         title={empty.title}
         description={empty.description}
         testId={`state-raid-events-empty-${status}`}
@@ -182,7 +187,7 @@ export function RaidEventsTimeline({ guildId, actions }: RaidEventsTimelineProps
           </CardDescription>
         </div>
         <Tabs value={status} onValueChange={(value) => isStatusFilter(value) && setStatus(value)}>
-          <TabsList className="grid w-full grid-cols-3 sm:inline-flex sm:w-auto" aria-label="Filtrar raids por estado">
+          <TabsList className="grid h-auto w-full grid-cols-2 sm:inline-flex sm:h-10 sm:w-auto" aria-label="Filtrar raids por estado">
             {STATUS_TABS.map((tab) => (
               <TabsTrigger key={tab.value} value={tab.value} data-testid={`tab-raid-status-${tab.value}`}>
                 {tab.label}

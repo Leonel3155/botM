@@ -687,10 +687,8 @@ export interface WsJoinMessage {
 }
 
 /**
- * Avisos del servidor. Al recibirlos, invalida en react-query:
- * - settingsUpdated → ["/api/guilds", guildId] (config, actividad, anti-raid, eventos de raid)
- * - feedCreated / feedsUpdated → ["/api/social", guildId, "feeds"]
- * - customCommandsUpdated → ["/api/custom-commands", guildId]
+ * Avisos del servidor para el servidor de Discord al que el cliente se unió con "join".
+ * Qué consultas refresca cada uno lo decide GUILD_INVALIDATIONS en client/src/lib/websocket.ts.
  */
 export type WsServerMessage =
   | { type: "joined"; guildId: string }

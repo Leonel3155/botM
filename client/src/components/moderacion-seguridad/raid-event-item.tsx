@@ -82,9 +82,9 @@ export function RaidEventItem({ event, actionLabels, currentUserId, now, resolvi
 
   const liftedAt = parseDate(typeof d.liftedAt === "number" ? d.liftedAt : null);
   const liftAt = parseDate(typeof d.liftAt === "number" ? d.liftAt : null);
-  const resolvedAt = parseDate(typeof d.resolvedAt === "number" ? d.resolvedAt : null);
+  const reviewedAt = event.reviewed ? parseDate(event.reviewedAt) : null;
   const liftedBy = describeLiftedBy(typeof d.liftedBy === "string" ? d.liftedBy : undefined, currentUserId);
-  const resolvedBy = describeResolvedBy(typeof d.resolvedBy === "string" ? d.resolvedBy : undefined, currentUserId);
+  const reviewedBy = describeResolvedBy(event.reviewedBy ?? undefined, currentUserId);
 
   let summary: string;
   if (joins !== null && windowSeconds !== null) {
@@ -174,23 +174,23 @@ export function RaidEventItem({ event, actionLabels, currentUserId, now, resolvi
           )}
         </dl>
 
-        {(ending || resolvedAt) && (
+        {(ending || reviewedAt) && (
           <div className="space-y-0.5 text-xs text-muted-foreground">
             {ending && <p>{ending}</p>}
-            {resolvedAt && (
+            {reviewedAt && (
               <p>
-                Marcado como revisado {formatRelative(resolvedAt, now)}
-                {resolvedBy ? ` ${resolvedBy}` : ""}.
+                Marcado como revisado {formatRelative(reviewedAt, now)}
+                {reviewedBy ? ` ${reviewedBy}` : ""}.
               </p>
             )}
           </div>
         )}
 
         <div className="flex flex-col gap-2 sm:flex-row sm:flex-wrap sm:items-center">
-          {(status === "active" || status === "pending") && (
+          {status !== "reviewed" && (
             <Button
               size="sm"
-              variant={status === "active" ? "destructive" : "default"}
+              variant={status === "active" ? "destructive" : status === "pending" ? "default" : "outline"}
               onClick={() => onResolve(event)}
               disabled={busy || resolving}
               data-testid={`button-resolve-${event.id}`}
