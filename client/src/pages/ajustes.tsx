@@ -23,7 +23,13 @@ import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/com
 import { Skeleton } from "@/components/ui/skeleton";
 import { InviteBotButton } from "@/components/invite-bot-button";
 import { PageHeader } from "@/components/page-header";
-import { BotDetailRows, DetailRow, getBotStatus, useDashboardStats } from "@/components/ajustes-resumen/bot-status";
+import {
+  BotDetailRows,
+  DetailRow,
+  getBotPresence,
+  getBotStatus,
+  useDashboardStats,
+} from "@/components/ajustes-resumen/bot-status";
 import { formatDurationLong } from "@/components/ajustes-resumen/format";
 import { guildConfigKey, PrefixCard } from "@/components/ajustes-resumen/prefix-card";
 import { useToast } from "@/hooks/use-toast";
@@ -327,6 +333,13 @@ function BotCard({ guildId, guild }: { guildId: string; guild: UserGuild | null 
 
 export default function Ajustes() {
   const { guildId, guild } = useSelectedGuild();
+  // Misma consulta que la tarjeta del bot (una sola petición en caché): dice si el bot está
+  // desconectado de Discord, cosa que la lista de servidores no distingue de "no está aquí"
+  const statsQuery = useDashboardStats(guildId);
+  const botPresence = getBotPresence(statsQuery.data, {
+    loading: statsQuery.isLoading,
+    listBotInGuild: guild?.botInGuild ?? false,
+  });
 
   return (
     <div className="space-y-6">
@@ -334,7 +347,7 @@ export default function Ajustes() {
 
       <div className="grid grid-cols-1 gap-6 lg:grid-cols-3">
         <div className="min-w-0 space-y-6 lg:col-span-2">
-          <PrefixCard guildId={guildId} botInGuild={guild?.botInGuild ?? false} />
+          <PrefixCard guildId={guildId} botPresence={botPresence} />
           <OtherSettingsCard guildId={guildId} />
         </div>
         <div className="min-w-0 space-y-6">

@@ -8,7 +8,8 @@ import { formatCompact, formatDay, formatNumber, moderationLabel, plural, userNa
 // Gráficas de Estadísticas (recharts). Una sola serie por gráfica, en el amarillo del tema:
 // rejilla horizontal fina, ejes en gris, barras de ≤24 px con la punta redondeada.
 
-const AXIS_TICK = { fontSize: 11 };
+const AXIS_FONT_SIZE = 11;
+const AXIS_TICK = { fontSize: AXIS_FONT_SIZE };
 
 function capitalize(text: string): string {
   return text.charAt(0).toUpperCase() + text.slice(1);
@@ -33,12 +34,59 @@ function bucketTitle(bucket: LevelBucket): string {
 
 const levelConfig = { users: { label: "Personas", color: CHART_COLOR } } satisfies ChartConfig;
 
+/** Ancho aproximado (px) de un carácter del eje a 11 px, con algo de margen. */
+const AXIS_CHAR_WIDTH = 7;
+/** Espacio mínimo (px) entre dos etiquetas vecinas. */
+const AXIS_LABEL_GAP = 6;
+
+/** Props que recharts le pasa a cada etiqueta del eje X (width = ancho del eje). */
+interface AxisTickProps {
+  x?: number;
+  y?: number;
+  width?: number;
+  visibleTicksCount?: number;
+  payload?: { value?: unknown };
+}
+
+/**
+ * Etiqueta del eje de niveles: "20-29" en una línea si cabe en su hueco; si no
+ * (celular, o dos gráficas lado a lado), en dos líneas: "20" y "a 29". Así las
+ * 8 etiquetas nunca se pisan.
+ */
+function LevelAxisTick({ x = 0, y = 0, width = 0, visibleTicksCount = 1, payload }: AxisTickProps) {
+  const label = String(payload?.value ?? "");
+  const slot = width / Math.max(1, visibleTicksCount);
+  const [from, to] = label.split("-");
+  const stacked = to !== undefined && label.length * AXIS_CHAR_WIDTH + AXIS_LABEL_GAP > slot;
+  return (
+    <text x={x} y={y} textAnchor="middle" fontSize={AXIS_FONT_SIZE}>
+      <tspan x={x} dy="0.71em">
+        {stacked ? from : label}
+      </tspan>
+      {stacked && (
+        <tspan x={x} dy="1.2em">
+          a {to}
+        </tspan>
+      )}
+    </text>
+  );
+}
+
 export function LevelDistributionChart({ buckets }: { buckets: LevelBucket[] }) {
   return (
     <ChartContainer config={levelConfig} className="aspect-auto h-64 w-full" data-testid="chart-levels">
       <BarChart data={buckets} margin={{ top: 20, right: 4, left: 0, bottom: 0 }} accessibilityLayer>
         <CartesianGrid vertical={false} />
-        <XAxis dataKey="label" tickLine={false} axisLine={false} tickMargin={8} interval={0} tick={AXIS_TICK} />
+        {/* Alto para dos líneas de etiqueta (ver LevelAxisTick) */}
+        <XAxis
+          dataKey="label"
+          tickLine={false}
+          axisLine={false}
+          tickMargin={8}
+          interval={0}
+          height={40}
+          tick={(props: AxisTickProps) => <LevelAxisTick {...props} />}
+        />
         <YAxis allowDecimals={false} tickLine={false} axisLine={false} width={36} tick={AXIS_TICK} tickFormatter={formatCompact} />
         <ChartTooltip
           cursor={{ fillOpacity: 0.5 }}

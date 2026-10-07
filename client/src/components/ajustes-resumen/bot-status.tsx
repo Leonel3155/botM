@@ -58,6 +58,29 @@ export function getBotStatus(
   return { status: "online", label: "En línea", hint: null };
 }
 
+/**
+ * ¿Puede el bot recibir cambios de configuración ahora? Las rutas que guardan
+ * necesitan al bot conectado (si no, 503) y dentro del servidor (si no, 404).
+ * - ready: conectado y en el servidor
+ * - offline: desconectado de Discord (p. ej. reiniciándose): no sabemos si está en el servidor
+ * - missing: hay que invitarlo
+ * - checking: aún no lo sabemos
+ */
+export type BotPresence = "ready" | "offline" | "missing" | "checking";
+
+export function getBotPresence(
+  stats: DashboardStatsResponse | undefined,
+  { loading, listBotInGuild }: { loading: boolean; listBotInGuild: boolean },
+): BotPresence {
+  if (stats) {
+    if (!stats.bot.online) return "offline";
+    return stats.bot.inGuild ? "ready" : "missing";
+  }
+  // Sin el resumen usamos la lista de servidores (dice false también si el bot está desconectado)
+  if (listBotInGuild) return "ready";
+  return loading ? "checking" : "missing";
+}
+
 /** Qué tan buena es la latencia con Discord. */
 export function pingQuality(ms: number): { status: StatusKind; label: string } {
   if (ms < 250) return { status: "success", label: "buena" };
