@@ -1,11 +1,11 @@
-import { Client, GatewayIntentBits, Collection, MessageFlags, Events, DiscordjsErrorCodes } from 'discord.js';
+import { Client, GatewayIntentBits, Collection, MessageFlags, Events, DiscordjsErrorCodes, DiscordAPIError, HTTPError } from 'discord.js';
 import { setupCommands } from './commands';
 import { setupEvents } from './events';
 import { setupAntiRaid } from './middleware/antiRaid';
 import { setupCustomCommands } from './customCommands';
 import { migrateLegacyMutes } from './commands/moderation';
 import { refundPendingBets } from './services/economy';
-import { installProcessErrorHandlers } from './utils/processErrors';
+import { installProcessErrorHandlers, isTransientError } from './utils/processErrors';
 
 // Un error suelto (p. ej. Discord caído un momento) no debe tumbar el bot ni el panel
 installProcessErrorHandlers();
@@ -13,18 +13,20 @@ installProcessErrorHandlers();
 const LOGIN_RETRY_MIN_MS = 5_000;
 const LOGIN_RETRY_MAX_MS = 5 * 60_000;
 
-// Errores al conectar que no se arreglan reintentando: hay que corregir algo y reiniciar
-function fatalLoginProblem(error: unknown): string | null {
-  if (!process.env.DISCORD_TOKEN) return 'falta DISCORD_TOKEN en el archivo .env.';
+class MissingDiscordTokenError extends Error {
+  constructor() {
+    super('Falta la variable de entorno DISCORD_TOKEN');
+    this.name = 'MissingDiscordTokenError';
+  }
+}
+
+// Errores al conectar que no se arreglan reintentando: hay que corregir el .env o el Developer Portal y reiniciar
+function isFatalLoginError(error: unknown): boolean {
+  if (error instanceof MissingDiscordTokenError) return true;
   const code = (error as { code?: unknown } | null)?.code;
-  if (code === DiscordjsErrorCodes.TokenInvalid || code === DiscordjsErrorCodes.TokenMissing) {
-    return 'Discord rechazó el DISCORD_TOKEN (revisa el token del bot en el Discord Developer Portal).';
-  }
+  if (code === DiscordjsErrorCodes.TokenInvalid || code === DiscordjsErrorCodes.TokenMissing) return true;
   const message = error instanceof Error ? error.message : String(error);
-  if (/disallowed intents|invalid intents/i.test(message)) {
-    return 'Discord rechazó los intents: activa "Server Members Intent" y "Message Content Intent" en el Developer Portal (Bot → Privileged Gateway Intents).';
-  }
-  return null;
+  return /disallowed intents|invalid intents/i.test(message);
 }
 
 // "Not enough sessions remaining ... resets at <fecha>": hay que esperar a esa hora
@@ -135,9 +137,9 @@ export class DiscordBot {
   }
 
   public async start() {
-    const token = process.env.DISCORD_TOKEN;
+    const token = process.env.DISCORD_TOKEN?.trim();
     if (!token) {
-      throw new Error('Falta la variable de entorno DISCORD_TOKEN');
+      throw new MissingDiscordTokenError();
     }
 
     await this.client.login(token);
@@ -157,14 +159,17 @@ export class DiscordBot {
         console.log('🚀 Bot de Discord conectado');
         return;
       } catch (error) {
-        const fatal = fatalLoginProblem(error);
-        if (fatal) {
-          console.error(`❌ No se pudo iniciar el bot de Discord: ${fatal} No lo vuelvo a intentar hasta que reinicies.`, error);
+        const { reason, details } = explainBotStartError(error);
+        if (isFatalLoginError(error)) {
+          console.error(`❌ El bot de Discord no se pudo conectar. ${reason}`);
+          if (details) console.error(error);
+          console.error('   El panel web sigue funcionando, pero el bot aparece desconectado. Corrige el .env y reinicia BotM (Ctrl + C y vuelve a arrancarlo).');
           return;
         }
         if (this.stopping) return;
         const waitMs = Math.max(delayMs, sessionLimitWaitMs(error) ?? 0);
-        console.error(`❌ No se pudo conectar el bot de Discord; lo vuelvo a intentar en ${Math.round(waitMs / 1000)} s.`, error);
+        console.error(`❌ El bot de Discord no se pudo conectar. ${reason} Lo vuelvo a intentar en ${Math.round(waitMs / 1000)} s.`);
+        if (details) console.error(error);
         await new Promise((resolve) => setTimeout(resolve, waitMs));
         delayMs = Math.min(delayMs * 2, LOGIN_RETRY_MAX_MS);
       }
@@ -186,6 +191,48 @@ export class DiscordBot {
     this.stopping = true;
     await this.client.destroy();
   }
+}
+
+/**
+ * Explica en español por qué no se pudo conectar el bot, con el texto original del error entre
+ * comillas para poder buscarlo. `details` es true cuando conviene mostrar también el error completo
+ * (los casos conocidos se explican solos y la traza solo confunde).
+ */
+export function explainBotStartError(error: unknown): { reason: string; details: boolean } {
+  const err = (error && typeof error === 'object' ? error : {}) as { code?: unknown; message?: unknown; status?: unknown };
+  const message = typeof err.message === 'string' ? err.message : String(error);
+
+  if (error instanceof MissingDiscordTokenError) {
+    return {
+      reason: 'Falta DISCORD_TOKEN en el archivo .env. Cópialo de Discord Developer Portal → tu aplicación → Bot → Reset Token.',
+      details: false,
+    };
+  }
+  if (err.code === 'TokenInvalid') {
+    return {
+      reason: `DISCORD_TOKEN no es válido ("${message}"). Genera otro en Developer Portal → Bot → Reset Token y pégalo en el .env.`,
+      details: false,
+    };
+  }
+  if (err.code === 'DisallowedIntents' || /disallowed intents/i.test(message)) {
+    return {
+      reason: `Faltan los Privileged Gateway Intents ("${message}"). En Developer Portal → Bot activa Server Members Intent y Message Content Intent y pulsa Save Changes.`,
+      details: false,
+    };
+  }
+  if (error instanceof DiscordAPIError || error instanceof HTTPError) {
+    return {
+      reason: `Discord rechazó la conexión (error ${error.status}: "${message}"). Si sigue pasando, revisa tu conexión a internet, un firewall o proxy, o el estado de Discord.`,
+      details: false,
+    };
+  }
+  if (isTransientError(error)) {
+    return {
+      reason: `No se pudo llegar a Discord ("${message}"). Revisa tu conexión a internet; también puede ser un firewall, un antivirus o que Discord esté caído.`,
+      details: false,
+    };
+  }
+  return { reason: `Error inesperado ("${message}").`, details: true };
 }
 
 // Export singleton instance

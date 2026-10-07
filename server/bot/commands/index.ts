@@ -2,6 +2,7 @@ import { DiscordBot } from '../index';
 import {
   ChatInputCommandInteraction,
   DiscordAPIError,
+  HTTPError,
   InteractionContextType,
   MessageFlags,
   REST,
@@ -91,8 +92,8 @@ export async function setupCommands(bot: DiscordBot) {
 
 // Envía los comandos a Discord. Nunca lanza: si algo falla lo registra en consola y el bot sigue.
 async function registerSlashCommands(commands: BotCommand[]) {
-  const token = process.env.DISCORD_TOKEN;
-  const clientId = process.env.DISCORD_CLIENT_ID;
+  const token = process.env.DISCORD_TOKEN?.trim();
+  const clientId = process.env.DISCORD_CLIENT_ID?.trim();
   if (!token || !clientId) {
     console.warn('⚠️ Falta DISCORD_TOKEN o DISCORD_CLIENT_ID: no se registran los comandos de barra');
     return;
@@ -139,6 +140,15 @@ async function registerSlashCommands(commands: BotCommand[]) {
   }
 }
 
+// Una línea con el código y el mensaje de Discord, en vez del error completo (cuerpo de la petición,
+// ArrayBuffer...), que solo llena la consola
+function describeRestError(error: unknown): string {
+  if (error instanceof DiscordAPIError || error instanceof HTTPError) {
+    return `error ${error.status} de Discord ("${error.message}")`;
+  }
+  return error instanceof Error ? error.message : String(error);
+}
+
 // PUT masivo. Si Discord rechaza algunos comandos (400), se reintenta sin ellos.
 // Devuelve true si quedó registrada la lista (completa o sin los rechazados).
 async function putCommands(
@@ -164,11 +174,11 @@ async function putCommands(
         console.log(`✅ ${valid.length} comandos de barra registrados ${where} (sin los rechazados)`);
         return true;
       } catch (retryError) {
-        console.error(`❌ No se pudieron registrar los comandos ${where}:`, retryError);
+        console.error(`❌ No se pudieron registrar los comandos ${where}: ${describeRestError(retryError)}`);
       }
       return false;
     }
-    console.error(`❌ No se pudieron registrar los comandos ${where}:`, error);
+    console.error(`❌ No se pudieron registrar los comandos ${where}: ${describeRestError(error)}`);
     return false;
   }
 }
