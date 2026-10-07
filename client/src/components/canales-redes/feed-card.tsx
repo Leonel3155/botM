@@ -32,6 +32,8 @@ interface FeedCardProps {
   channels: DiscordChannelItem[] | undefined;
   /** Se puede editar (el bot está en el servidor y los canales cargaron). */
   canEdit: boolean;
+  /** El bot no está en el servidor: no pasa por ningún feed hasta que vuelva. */
+  botMissing?: boolean;
   /** Hora actual (se renueva cada minuto) para los textos relativos. */
   now: number;
   onEdit: () => void;
@@ -64,7 +66,7 @@ function nextTurnText(feed: ContentFeedItem, now: number): string {
   return rest === 0 ? `Dentro de ~${hours} h` : `Dentro de ~${hours} h ${rest} min`;
 }
 
-export function FeedCard({ guildId, feed, channels, canEdit, now, onEdit }: FeedCardProps) {
+export function FeedCard({ guildId, feed, channels, canEdit, botMissing = false, now, onEdit }: FeedCardProps) {
   const { toast } = useToast();
   const [confirmDelete, setConfirmDelete] = useState(false);
   const kind = feedKind(feed);
@@ -98,7 +100,12 @@ export function FeedCard({ guildId, feed, channels, canEdit, now, onEdit }: Feed
       );
     },
     onError: (error) => {
-      if (isApiError(error) && error.status === 404) void invalidatePaths([`/api/social/${guildId}`]);
+      if (isApiError(error) && error.kind === "notFound") {
+        // Lo borró alguien más mientras tanto: solo actualizamos la lista
+        void invalidatePaths([`/api/social/${guildId}`]);
+        toast({ title: "Ese feed ya no existe", description: "Alguien lo borró hace un momento. Actualizamos la lista." });
+        return;
+      }
       toast({ variant: "destructive", title: "No se pudo cambiar el feed", description: errorText(error) });
     },
   });
@@ -116,10 +123,15 @@ export function FeedCard({ guildId, feed, channels, canEdit, now, onEdit }: Feed
       toast({ title: "Feed borrado", description: `${title} ya no publicará nada.` });
     },
     onError: (error) => {
-      if (isApiError(error) && error.status === 404) {
-        // Ya no existía (lo borró alguien más): solo actualizamos la lista
+      if (isApiError(error) && error.kind === "notFound") {
+        // Ya no existía (lo borró alguien más): el resultado es el mismo, solo actualizamos la lista
         setConfirmDelete(false);
+        queryClient.setQueryData<ContentFeedsResponse>(feedsKey(guildId), (old) =>
+          old?.filter((item) => item.id !== feed.id),
+        );
         void invalidatePaths([`/api/social/${guildId}`]);
+        toast({ title: "Ese feed ya no existía", description: "Alguien lo borró antes. Actualizamos la lista." });
+        return;
       }
       toast({ variant: "destructive", title: "No se pudo borrar el feed", description: errorText(error) });
     },
@@ -132,6 +144,16 @@ export function FeedCard({ guildId, feed, channels, canEdit, now, onEdit }: Feed
   const channel = findChannel(channels, feed.channelId);
   const channelIssue = feed.channelId ? getChannelIssue(channels, feed.channelId) : null;
   const lastPosted = parseDate(feed.lastPosted);
+  // Si el canal falla, el bot no marca el intento y lo reintenta cada minuto sin publicar nada
+  const blocked: { text: string; className: string } | null = !feed.channelId
+    ? { text: "Detenido: falta el canal", className: "text-destructive" }
+    : channelIssue?.level === "error"
+      ? { text: "Detenido: revisa el canal", className: "text-destructive" }
+      : channelIssue
+        ? { text: "Detenido: faltan permisos", className: "text-status-warning" }
+        : botMissing
+          ? { text: "Cuando vuelva el bot", className: "text-status-warning" }
+          : null;
 
   const Icon = kind === "twitter" ? Twitter : Rss;
 
@@ -230,7 +252,13 @@ export function FeedCard({ guildId, feed, channels, canEdit, now, onEdit }: Feed
               )}
             </Detail>
             <Detail label="Siguiente turno">
-              {enabled ? nextTurnText(feed, now) : <span className="text-muted-foreground">En pausa</span>}
+              {!enabled ? (
+                <span className="text-muted-foreground">En pausa</span>
+              ) : blocked ? (
+                <span className={blocked.className}>{blocked.text}</span>
+              ) : (
+                nextTurnText(feed, now)
+              )}
             </Detail>
           </dl>
         )}
@@ -251,7 +279,7 @@ export function FeedCard({ guildId, feed, channels, canEdit, now, onEdit }: Feed
                 variant="outline"
                 size="sm"
                 onClick={() => toggleMutation.mutate(false)}
-                disabled={busy}
+                disabled={busy || !canEdit}
                 data-testid={`button-disable-feed-${feed.id}`}
               >
                 {toggleMutation.isPending ? <Loader2 className="animate-spin" aria-hidden="true" /> : <PowerOff aria-hidden="true" />}
