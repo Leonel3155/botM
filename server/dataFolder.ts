@@ -33,7 +33,8 @@ export type DatabaseMode =
  * no es una base de verdad: se trata como vacía para que BotM use su propia base de datos.
  */
 function isExampleUrl(url: string): boolean {
-  return /^la_connection_string/i.test(url) || /@ep-ejemplo-123456\.us-east-2\.aws\.neon\.tech\b/i.test(url);
+  // Incluye el ejemplo en inglés (ep-example-…) de los .env.example de los bots viejos
+  return /^la_connection_string/i.test(url) || /@ep-(ejemplo|example)[-.][^/]*\.neon\.tech\b/i.test(url);
 }
 
 /** Aviso cuando DATABASE_URL tenía el ejemplo y BotM usa su propia base de datos. */
