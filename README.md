@@ -90,7 +90,7 @@ Inicias sesión con Discord y solo ves los servidores donde eres dueño o tienes
 - **Windows 10 u 11** (también funciona en Mac y Linux, pero esta guía usa Windows).
 - **Node.js 20.11 o más nuevo.** Lo más fácil es instalar la versión **LTS** que te ofrezca nodejs.org.
 - **Git**, para descargar y actualizar el proyecto (si prefieres, puedes bajar el ZIP desde GitHub).
-- **Una base de datos PostgreSQL.** Sirve cualquiera: [Neon](https://neon.tech) en la nube (el plan gratis alcanza y es lo más fácil), un PostgreSQL instalado en tu computadora, o un proveedor como Supabase o Railway. En el [paso 3](#3-crea-la-base-de-datos) están las opciones.
+- **Nada para la base de datos.** BotM trae su propia base de datos (un PostgreSQL dentro del programa) y la crea solo en una carpeta de tu computadora. Si prefieres una en la nube, como [Neon](https://neon.tech), o tu propio PostgreSQL, también se puede: mira el [paso 3](#3-la-base-de-datos-no-hace-falta-hacer-nada).
 - **Una cuenta de Discord** y un servidor donde seas dueño o administrador.
 
 Necesitas unos 30 minutos. No hace falta pagar nada.
@@ -131,13 +131,32 @@ cd botM
 
 Si el repositorio es privado, Git abrirá una ventana para que inicies sesión en GitHub. A partir de aquí, **todos los comandos se ejecutan dentro de la carpeta `botM`**. Un truco: en el Explorador de archivos, abre la carpeta, haz clic derecho en un espacio vacío y elige **Abrir en Terminal** (en Windows 10: Shift + clic derecho → **Abrir la ventana de PowerShell aquí**).
 
-### 3. Crea la base de datos
+### 3. La base de datos: no hace falta hacer nada
 
-BotM guarda los niveles, las monedas y los ajustes en una base PostgreSQL. Elige **una** de estas opciones; al final de cualquiera tendrás una dirección (la *connection string*) que va en `DATABASE_URL`. Es secreta: tiene la contraseña de tu base.
+BotM guarda los niveles, las monedas y los ajustes en **su propia base de datos**: un PostgreSQL que viene dentro de BotM y se guarda en una carpeta de tu computadora. **No tienes que instalar ni crear nada.** La primera vez que arrancas BotM crea la carpeta y las tablas solo (tarda unos segundos), y cuando lo actualizas pone las tablas al día al arrancar. Para eso deja `DATABASE_URL` **vacía** en el `.env` (paso 5).
+
+**Dónde queda la carpeta.** BotM la escribe en la consola al arrancar, en la línea `📁 Carpeta de la base de datos: …`:
+
+- Normalmente es la carpeta `data` dentro del proyecto (`botM\data`).
+- **Si el proyecto está dentro de OneDrive** (pasa si lo pusiste en el Escritorio o en Documentos y OneDrive les hace copia de seguridad), o dentro de Dropbox, Google Drive o iCloud Drive, BotM la guarda **fuera de la nube**, en `%LOCALAPPDATA%\BotM\data` (algo como `C:\Users\tu_usuario\AppData\Local\BotM\data`; si pegas `%LOCALAPPDATA%\BotM\data` en la barra de direcciones del Explorador, se abre). Esos programas bloquean y vuelven a subir los archivos mientras BotM los usa, y eso puede dañar la base de datos. Esa carpeta no depende de dónde esté el proyecto: **todas las copias del proyecto que tengas dentro de OneDrive usan la misma** (los mismos datos). Para una copia de prueba con datos aparte, ponle otro `DATABASE_DIR` en su `.env`.
+- Si prefieres otra carpeta, ponla en `DATABASE_DIR` en el `.env` (por ejemplo `DATABASE_DIR=C:\BotM\datos`). Esa manda siempre; solo no elijas una carpeta de OneDrive.
+
+**Bueno saber:**
+
+- **Una sola ventana a la vez.** Solo una copia de BotM puede usar la carpeta. Si abres otra (o otra copia del proyecto que use la misma carpeta), se cierra sola con `❌ BotM ya está abierto en otra ventana…`.
+- **Ciérralo con Ctrl + C** (o cerrando la ventana): BotM termina lo que estaba guardando y cierra la base de datos bien. Lo que ya se guardó no se pierde aunque se cierre de golpe, pero un apagón o un cuelgue de Windows sí pueden dañar la carpeta: por eso conviene tener respaldos.
+- **Respaldos:** cierra BotM y copia la carpeta entera a otro lado (un USB, otra carpeta, o tu OneDrive: una copia que BotM no está usando no corre peligro). Para volver a un respaldo, con BotM cerrado, borra la carpeta y pon la copia en su lugar. **Nunca copies ni reemplaces la carpeta con BotM abierto**, y no borres archivos sueltos de adentro. Borrar la carpeta borra todos los niveles, monedas y ajustes.
+- Ocupa unos 40 MB recién creada y crece poco a poco.
+
+#### Opcional: usar otra base de datos (Neon, PostgreSQL, Supabase…)
+
+Solo hace falta si vas a tener BotM en un hosting sin disco permanente (mira [Producción](#producción-hosting)) o si ya tenías BotM con otra base y quieres seguir usándola. Si pones una dirección en `DATABASE_URL`, BotM usa esa base en lugar de la suya (no copia los datos de una a otra).
+
+Elige **una** de estas opciones; al final de cualquiera tendrás una dirección (la *connection string*) que va en `DATABASE_URL`. Es secreta: tiene la contraseña de tu base.
 
 BotM decide solo cómo conectarse: si la dirección es de Neon (termina en `.neon.tech`) usa el controlador de Neon, y con cualquier otra usa el controlador normal de PostgreSQL. No tienes que configurar nada más.
 
-> ¿Ya tenías BotM corriendo con otra base y quieres conservar niveles, monedas y ajustes? Usa la connection string de **esa** base en lugar de crear una nueva, y lee con calma el paso 6.
+> ¿Ya tenías BotM corriendo con otra base y quieres conservar niveles, monedas y ajustes? Usa la connection string de **esa** base y lee con calma el paso 6.
 
 #### Opción A: Neon (en la nube, gratis; la más fácil)
 
@@ -219,12 +238,14 @@ Llena el `.env` (el de la carpeta principal) con lo que copiaste, sin comillas n
 DISCORD_TOKEN=el_token_del_bot
 DISCORD_CLIENT_ID=tu_application_id
 DISCORD_CLIENT_SECRET=el_client_secret
-DATABASE_URL=la_connection_string_del_paso_3
+DATABASE_URL=
 SESSION_SECRET=una_clave_aleatoria_larga
 APP_URL=http://localhost:5000
 FRONTEND_URL=http://localhost:5000
 PORT=5000
 ```
+
+Deja `DATABASE_URL` vacía para que BotM use su propia base de datos (paso 3). Solo si elegiste otra base, pega ahí su connection string.
 
 Para `SESSION_SECRET` genera una clave aleatoria con este comando y pega el resultado:
 
@@ -254,13 +275,22 @@ Con esto funciona el botón **Invitar bot** del panel. En [Variables de entorno]
 
 ```powershell
 npm install
-npm run db:push
 ```
 
-- `npm install` descarga todo lo que necesita el proyecto (crea la carpeta `node_modules`). Tarda unos minutos y es normal que muestre avisos amarillos (`warn` / `deprecated`).
-- `npm run db:push` crea o actualiza las tablas en tu base de datos (lee `DATABASE_URL` del `.env`). Con una base **nueva** no pregunta nada y termina con `[✓] Changes applied`. Si lo vuelves a correr y no hay nada que cambiar, dice `[i] No changes detected`: también está bien.
+`npm install` descarga todo lo que necesita el proyecto (crea la carpeta `node_modules`). Tarda unos minutos y es normal que muestre avisos amarillos (`warn` / `deprecated`).
 
-**Si usas una base que ya tenía datos de una versión anterior de BotM**, puede hacerte preguntas en inglés. Te mueves con las flechas ↑ ↓ y eliges con Enter:
+- **Con la base de datos de BotM (`DATABASE_URL` vacía) no hay que hacer nada más:** las tablas se crean solas la primera vez que arranca (paso 7).
+- **Si usas otra base (`DATABASE_URL`)**, crea las tablas con:
+
+  ```powershell
+  npm run db:push
+  ```
+
+  Lee `DATABASE_URL` del `.env`. Con una base **nueva** no pregunta nada y termina con `[✓] Changes applied`. Si lo vuelves a correr y no hay nada que cambiar, dice `[i] No changes detected`: también está bien.
+
+`npm run db:push` también sirve con la base de datos de BotM, pero solo con BotM cerrado, y casi nunca hace falta: solo si BotM te lo pide al arrancar (cuando una actualización trae un cambio que podría borrar datos y prefiere no hacerlo solo).
+
+**Si usas una base que ya tenía datos de una versión anterior de BotM, o si BotM te pidió ejecutar `npm run db:push`**, puede hacerte preguntas en inglés. Te mueves con las flechas ↑ ↓ y eliges con Enter:
 
 | Si pregunta… | Elige | Por qué |
 | --- | --- | --- |
@@ -278,15 +308,18 @@ npm run dev
 En la consola deberías ver, entre otras, estas líneas (el orden puede variar un poco):
 
 ```text
-🗄️ Base de datos: controlador PostgreSQL estándar (node-postgres)
+🗄️ Base de datos: integrada (PGlite, PostgreSQL dentro de BotM; no hace falta instalar nada)
+📁 Carpeta de la base de datos: C:\Users\tu_usuario\AppData\Local\BotM\data
+🆕 Creando la base de datos por primera vez (tarda unos segundos)…
+✅ Base de datos creada con sus tablas (36 cambios)
 … [express] serving on 127.0.0.1:5000
 🖥️ Panel web listo en http://localhost:5000
-✅ Conectado a la base de datos
+✅ Base de datos lista
 ✅ … comandos de barra registrados …
 🤖 Bot de Discord listo como BotM#1234
 ```
 
-Con Neon la primera línea dice `controlador de Neon (WebSocket)`. Si alguna línea sale con ❌, mira [Problemas comunes](#problemas-comunes): el mensaje dice qué falta. El panel se abre aunque el bot o la base de datos fallen, para que veas el error con calma.
+Las líneas `🆕 Creando…` y `✅ Base de datos creada…` salen solo la primera vez, y la carpeta depende de dónde esté tu proyecto (paso 3). Con `DATABASE_URL` la primera línea dice `controlador PostgreSQL estándar (node-postgres)` (o `controlador de Neon (WebSocket)` con Neon), no sale la línea 📁 y en vez de `✅ Base de datos lista` dice `✅ Conectado a la base de datos`. Si alguna línea sale con ❌, mira [Problemas comunes](#problemas-comunes): el mensaje dice qué falta. El panel se abre aunque el bot o la base de datos fallen, para que veas el error con calma.
 
 Si Windows pregunta si permites que Node.js use la red, basta con **Redes privadas** (para usar el panel en tu computadora ni siquiera hace falta).
 
@@ -323,7 +356,8 @@ Los ejemplos con todos los valores y comentarios están en [`.env.example`](.env
 | `DISCORD_TOKEN` | Sí | Token del bot (Developer Portal → Bot → Reset Token). Secreto. |
 | `DISCORD_CLIENT_ID` | Sí | Application ID (Developer Portal → General Information). Se usa para registrar los comandos y para el login del panel. |
 | `DISCORD_CLIENT_SECRET` | Sí | Client Secret (Developer Portal → OAuth2). Lo usa el login del panel. Secreto. |
-| `DATABASE_URL` | Sí | Connection string de tu base PostgreSQL (Neon, una instalada en tu computadora, Supabase, Railway…; ver el [paso 3](#3-crea-la-base-de-datos)). Sin ella el programa no arranca. Secreta. |
+| `DATABASE_URL` | No | Déjala vacía para usar la base de datos de BotM (recomendado). Ponla solo para usar otra base PostgreSQL: la connection string de Neon, una instalada en tu computadora, Supabase, Railway… (ver el [paso 3](#3-la-base-de-datos-no-hace-falta-hacer-nada)). Secreta. |
+| `DATABASE_DIR` | No | Carpeta de la base de datos de BotM (solo sin `DATABASE_URL`). Por defecto, la carpeta `data` del proyecto; si el proyecto está dentro de OneDrive, Dropbox, Google Drive o iCloud Drive, `%LOCALAPPDATA%\BotM\data` (en Mac y Linux, `~/.local/share/botm/data`), la misma para todas las copias del proyecto que estén en la nube. Una ruta relativa cuenta desde la carpeta del proyecto (BotM deja dentro un `.gitignore` para que la base nunca se suba a GitHub). Escríbela sin comillas. |
 | `SESSION_SECRET` | Sí | Clave aleatoria para firmar las sesiones del panel. Sin ella el programa no arranca; usa al menos 32 caracteres. |
 | `APP_URL` | Recomendada | Dirección pública del servidor, sin `/` al final. Por defecto `http://localhost:` + `PORT`. Discord vuelve del login a `APP_URL/auth/discord/callback`. |
 | `FRONTEND_URL` | Recomendada | Dirección del panel. Pon lo mismo que en `APP_URL` (el panel y el servidor van juntos). Por defecto, igual que `APP_URL`. |
@@ -331,11 +365,11 @@ Los ejemplos con todos los valores y comentarios están en [`.env.example`](.env
 | `DISCORD_DEV_GUILD_ID` | No | ID de tu servidor de pruebas (o varios separados por comas). Con `npm run dev` los comandos se registran ahí al instante. Con `npm start`, si sigue puesto, el bot registra los comandos globales y borra las copias de prueba de esos servidores. |
 | `DEV_BYPASS_AUTH` | No | Solo para desarrollo: con `1` aparece `/auth/dev-login`, que entra al panel **sin Discord** y deja ver todos los servidores del bot. Solo funciona con `npm run dev` y desde la misma computadora, entrando por `http://localhost`. Nunca lo actives en un servidor público. |
 | `HOST` | No | Dirección de red donde escucha el servidor. Por defecto, con `npm run dev` solo se puede abrir desde tu computadora (`127.0.0.1`) y con `npm start` desde cualquier lado (`0.0.0.0`). Pon `HOST=0.0.0.0` si quieres abrir el panel de desarrollo desde tu celular en la misma red. |
-| `DATABASE_DRIVER` | No | Fuerza el controlador de la base: `neon` o `pg`. Sin ella se elige solo: `neon` si `DATABASE_URL` es de Neon (`….neon.tech`) y `pg` (PostgreSQL normal) con cualquier otra. `pg` también funciona con Neon. Casi nunca hace falta. |
-| `DB_POOL_MAX` | No | Conexiones a la base abiertas a la vez (por defecto `10`). Déjalo así. |
-| `DB_CONNECTION_TIMEOUT_MS` | No | Cuánto esperar al abrir una conexión antes de dar error, en milisegundos (por defecto `10000`). |
-| `DB_IDLE_TIMEOUT_MS` | No | Cierra las conexiones que llevan este tiempo sin usarse, en milisegundos (por defecto `30000`). |
-| `DB_STATEMENT_TIMEOUT_MS` | No | Tiempo máximo de cada consulta, en milisegundos (por defecto `30000`; `0` = sin límite). |
+| `DATABASE_DRIVER` | No | Fuerza el controlador de la base: `pglite` (la base de datos de BotM), `neon` o `pg`. Sin ella se elige solo: `pglite` si `DATABASE_URL` está vacía, `neon` si es de Neon (`….neon.tech`) y `pg` (PostgreSQL normal) con cualquier otra. `pg` también funciona con Neon; `pglite` usa la base de BotM aunque haya `DATABASE_URL`. Casi nunca hace falta. |
+| `DB_POOL_MAX` | No | Solo con `DATABASE_URL`: conexiones a la base abiertas a la vez (por defecto `10`). Déjalo así. |
+| `DB_CONNECTION_TIMEOUT_MS` | No | Solo con `DATABASE_URL`: cuánto esperar al abrir una conexión antes de dar error, en milisegundos (por defecto `10000`). |
+| `DB_IDLE_TIMEOUT_MS` | No | Solo con `DATABASE_URL`: cierra las conexiones que llevan este tiempo sin usarse, en milisegundos (por defecto `30000`). |
+| `DB_STATEMENT_TIMEOUT_MS` | No | Tiempo máximo de cada consulta con `DATABASE_URL`, o de cada transacción con la base de datos de BotM, en milisegundos (por defecto `30000`; `0` = sin límite). |
 | `GLOBAL_CONCURRENCY` | No | Cuántas tareas del bot pueden correr a la vez (por defecto `50`). Déjalo así. |
 | `GLOBAL_TIMEOUT_MS` | No | Tiempo máximo de cada tarea del bot en milisegundos (por defecto `120000`). Déjalo así. |
 | `TWITTER_BEARER_TOKEN` / `X_BEARER_TOKEN` | No | No se usan: Twitter/X está desactivado. |
@@ -483,14 +517,16 @@ Cierra y vuelve a abrir PowerShell. Otra opción es escribir `npm.cmd` en lugar 
 ### El programa se cierra al arrancar
 
 - `❌ Falta SESSION_SECRET en el archivo .env` o `SESSION_SECRET todavía tiene el texto de ejemplo`: genera una clave con el comando del paso 5 y pégala en el `.env`.
-- `❌ Falta DATABASE_URL en el archivo .env`: falta `DATABASE_URL`, o el `.env` no está en la carpeta principal del proyecto (revisa que no se llame `.env.txt`: en el Explorador activa **Vista → Extensiones de nombre de archivo**).
+- `❌ BotM ya está abierto en otra ventana…`: otra copia de BotM ya usa la base de datos (quizá en otra ventana de PowerShell, minimizada, o otra copia del proyecto que también está en OneDrive). Ciérrala con Ctrl + C. Este aviso solo sale si esa copia **sigue abierta** (después de un apagón o de cerrarla de golpe, BotM se da cuenta solo y arranca normal); si no encuentras la ventana, abre el **Administrador de tareas** (Ctrl + Shift + Esc) → **Detalles** y termina el `node.exe` con el PID que dice el mensaje.
+- Otros mensajes de la base de datos de BotM (la carpeta, las tablas): mira [La base de datos de BotM no arranca](#la-base-de-datos-de-botm-no-arranca).
+- `❌ DATABASE_DRIVER=pg necesita DATABASE_URL…` (o `neon`): borra `DATABASE_DRIVER` del `.env` para usar la base de datos de BotM, o pon tu `DATABASE_URL`. Si pusiste `DATABASE_URL` y BotM no la ve, revisa que el `.env` esté en la carpeta principal del proyecto y que no se llame `.env.txt` (en el Explorador activa **Vista → Extensiones de nombre de archivo**).
 - `❌ El puerto 5000 ya está en uso (EADDRINUSE)`: otro programa ya usa el puerto 5000 (¿dejaste otra ventana con BotM abierta?). Ciérralo, o cambia `PORT`, `APP_URL`, `FRONTEND_URL` y el redirect de Discord al nuevo puerto.
 - `❌ No hay permiso para usar el puerto 5000 (EACCES)`: Windows a veces reserva ese puerto para sí mismo (pasa con Hyper-V o WSL). Usa otro, por ejemplo `PORT=3000`, y cambia también `APP_URL`, `FRONTEND_URL` y el redirect de Discord.
 - `❌ BotM no pudo arrancar el servidor web`: copia el error completo que sale debajo y pide ayuda. Si usas `npm start`, primero ejecuta `npm run build`.
 
 ### La base de datos no conecta
 
-Al arrancar, BotM prueba la base y escribe `✅ Conectado a la base de datos` o una línea `❌ No se pudo usar la base de datos (…)` que termina con qué hacer. Las más comunes:
+Esto es para cuando usas otra base con `DATABASE_URL`. Al arrancar, BotM prueba la base y escribe `✅ Conectado a la base de datos` o una línea `❌ No se pudo usar la base de datos (…)` que termina con qué hacer. Las más comunes:
 
 - `password authentication failed` (`28P01`): el usuario o la contraseña de `DATABASE_URL` están mal. Si la contraseña tiene símbolos, mira la nota de [contraseñas con símbolos](#opción-c-supabase-railway-docker-u-otro-proveedor).
 - `relation "guilds" does not exist` (`42P01`): la base está vacía. Ejecuta `npm run db:push` y reinicia BotM.
@@ -499,7 +535,21 @@ Al arrancar, BotM prueba la base y escribe `✅ Conectado a la base de datos` o 
 - `self-signed certificate`: cambia `sslmode=require` por `sslmode=no-verify` en `DATABASE_URL`.
 - `The server does not support SSL connections`: tu PostgreSQL no usa SSL; quita `?sslmode=require` del final de `DATABASE_URL`.
 
-Mientras la base no conecte, el panel abre pero sus secciones muestran errores. Corrige el `.env` y reinicia BotM.
+Mientras la base no conecte, el panel abre pero sus secciones muestran errores. Corrige el `.env` y reinicia BotM. **Si no quieres usar otra base**, deja `DATABASE_URL` vacía (`DATABASE_URL=`): BotM usa la suya (empieza sin datos; no copia los de la otra base).
+
+### La base de datos de BotM no arranca
+
+Esto es para la base de datos de BotM (`DATABASE_URL` vacía). Si no puede abrirla, BotM se cierra con una línea `❌` que dice qué pasó:
+
+- `… tiene archivos pero no es una base de datos de BotM`: la carpeta de `DATABASE_DIR` ya tenía otras cosas y BotM no las toca. Elige una carpeta vacía (o una que no exista: BotM la crea).
+- `No hay permiso para crear o usar la carpeta de la base de datos`: elige otra carpeta con `DATABASE_DIR`, por ejemplo dentro de Documentos (pero no en OneDrive).
+- `Las tablas de la base de datos no coinciden con esta versión de BotM…`: una actualización necesita un cambio que podría borrar datos, y BotM no lo hace solo. Cierra BotM, ejecuta `npm run db:push`, responde sus preguntas con la tabla del [paso 6](#6-instala-las-dependencias-y-crea-las-tablas) y vuelve a arrancar. Si en cambio sale `⚠️ La base de datos tiene cambios pendientes…`, BotM funciona igual: haz lo mismo cuando puedas.
+- `No se pudo abrir la base de datos de …`: la carpeta está dañada (por ejemplo, se copió o se restauró con BotM abierto, o hubo un apagón). Con BotM cerrado, pon en su lugar tu último respaldo (paso 3).
+- `… es de PostgreSQL 18 y esta versión de BotM usa PostgreSQL 17`: la carpeta es de otra versión de BotM. Vuelve a esa versión, o pide ayuda para pasar los datos.
+- `⚠️ Ya hay una base de datos de BotM en …`: no es un error. BotM creó una base nueva porque el proyecto cambió de lugar y la de antes quedó en la otra carpeta. Si quieres tus datos de antes, haz lo que dice el mensaje:
+  - Si **sacaste el proyecto de OneDrive**, la de antes está en `%LOCALAPPDATA%\BotM\data`: cierra BotM, pon esa carpeta en `DATABASE_DIR` y vuelve a arrancarlo.
+  - Si **el proyecto quedó dentro de OneDrive** (por ejemplo, Windows empezó a hacer copia de seguridad del Escritorio), la de antes está en la carpeta `data` del proyecto, dentro de la nube: **no** pongas esa carpeta en `DATABASE_DIR`. Cierra BotM, borra todo lo que hay dentro de `%LOCALAPPDATA%\BotM\data` (es la base nueva, sin datos), pasa ahí todo lo que hay dentro de la carpeta `data` del proyecto y vuelve a arrancarlo.
+- `⚠️ DATABASE_URL tenía el ejemplo de .env.example…`: no es un error. Tu `.env` es de antes y tiene la dirección de ejemplo; BotM la ignora y usa su base de datos. Borra esa línea o déjala vacía (`DATABASE_URL=`).
 
 ### El bot aparece desconectado (offline)
 
@@ -550,7 +600,7 @@ El panel guarda una cookie al pulsar "Iniciar sesión" y la revisa cuando Discor
 
 ### `npm run db:push` falla
 
-- `DATABASE_URL, ensure the database is provisioned`: falta `DATABASE_URL` en el `.env` (o el `.env` no está en la carpeta principal).
+- `BotM está abierto … cierra BotM (Ctrl + C en su ventana) antes de "npm run db:push"`: con la base de datos de BotM, `db:push` y BotM no pueden usarla a la vez. Cierra BotM y repite.
 - Errores de conexión o contraseña (`password authentication failed`, `ENOTFOUND`, `ECONNREFUSED`…): vuelve a copiar la connection string (en Neon, desde **Connect**) y revisa que tu PostgreSQL esté encendido. Son los mismos casos de [La base de datos no conecta](#la-base-de-datos-no-conecta).
 - `self-signed certificate in certificate chain` (o `DEPTH_ZERO_SELF_SIGNED_CERT`): cambia `sslmode=require` por `sslmode=no-verify` en `DATABASE_URL`.
 - `The server does not support SSL connections`: quita `?sslmode=require` del final de `DATABASE_URL`.
@@ -579,11 +629,14 @@ Detén el programa (Ctrl + C) y ejecuta en la carpeta del proyecto:
 ```powershell
 git pull
 npm install
-npm run db:push
 npm run dev
 ```
 
-`npm run db:push` va **siempre** antes de arrancar una versión nueva: si la versión agrega columnas y no lo ejecutas, fallará todo lo que lee la configuración del servidor. Si te hace preguntas, usa la tabla del [paso 6](#6-instala-las-dependencias-y-crea-las-tablas).
+Antes de actualizar conviene hacer un respaldo de la carpeta de la base de datos (paso 3).
+
+- **Con la base de datos de BotM** no hace falta nada más: al arrancar pone las tablas al día sola. Si algún cambio pudiera borrar datos no lo hace y te lo dice en la consola (mira [La base de datos de BotM no arranca](#la-base-de-datos-de-botm-no-arranca)).
+- **Con `DATABASE_URL`**, ejecuta `npm run db:push` **siempre** después de `npm install` y antes de arrancar: si la versión agrega columnas y no lo ejecutas, fallará todo lo que lee la configuración del servidor. Si te hace preguntas, usa la tabla del [paso 6](#6-instala-las-dependencias-y-crea-las-tablas).
+- **Si quieres pasar a la base de datos de BotM**, deja `DATABASE_URL` vacía en tu `.env` (`DATABASE_URL=`). Actualizar no cambia tu `.env`: si lo copiaste de un `.env.example` viejo, puede seguir teniendo una dirección. BotM empieza con su base sin datos (no copia los de la base anterior).
 
 ---
 
@@ -592,23 +645,23 @@ npm run dev
 Para tenerlo encendido todo el tiempo en un servidor o hosting:
 
 1. Instala las dependencias **completas** con `npm install` (no uses `--omit=dev` ni `--production`: el servidor compilado todavía necesita algunas, como Vite).
-2. Pon en el `.env` tu dominio con HTTPS, por ejemplo `APP_URL=https://botm.tudominio.com` y `FRONTEND_URL=https://botm.tudominio.com`, y agrega `https://botm.tudominio.com/auth/discord/callback` en **OAuth2 → Redirects** de Discord. En `DATABASE_URL` puede ir la misma base que usabas o la que te dé tu hosting (si el hosting te da una dirección interna para su PostgreSQL, como Railway, úsala ahí).
+2. Pon en el `.env` tu dominio con HTTPS, por ejemplo `APP_URL=https://botm.tudominio.com` y `FRONTEND_URL=https://botm.tudominio.com`, y agrega `https://botm.tudominio.com/auth/discord/callback` en **OAuth2 → Redirects** de Discord. Para la base de datos, lee abajo **La base de datos de BotM necesita un disco permanente**. Si usas `DATABASE_URL`, puede ir la misma base que usabas o la que te dé tu hosting (si el hosting te da una dirección interna para su PostgreSQL, como Railway, úsala ahí).
 3. Pon `VITE_DISCORD_CLIENT_ID` en `client/.env` (o como variable de entorno) **antes** de compilar: queda dentro del panel compilado.
 4. Compila y arranca:
 
    ```powershell
-   npm run db:push
    npm run build
    npm start
    ```
 
-   `npm start` pone `NODE_ENV=production` solo y sirve el panel ya compilado desde la carpeta `dist`.
+   `npm start` pone `NODE_ENV=production` solo y sirve el panel ya compilado desde la carpeta `dist`. Con `DATABASE_URL`, ejecuta antes `npm run db:push`; con la base de datos de BotM no hace falta.
 
 Ten en cuenta:
 
+- **La base de datos de BotM necesita un disco permanente.** Todo queda en su carpeta (`data`, o la de `DATABASE_DIR`). En un VPS o en una computadora tuya no hay que hacer nada. Muchos hostings (Railway, Render, Fly.io…) borran los archivos en cada despliegue o reinicio, salvo que agregues un **volumen** (disco persistente): agrégalo y pon su ruta en `DATABASE_DIR` (por ejemplo `DATABASE_DIR=/data/botm`). Si tu hosting no tiene volúmenes, usa una base aparte con `DATABASE_URL` (paso 3). Para llevarte los datos que ya tienes en tu computadora, cierra BotM y copia la carpeta entera al volumen del hosting.
 - **HTTPS es obligatorio.** En producción las cookies de sesión son `secure` y el navegador solo las manda por HTTPS; sin HTTPS no se puede iniciar sesión. Si usas un proxy delante (Nginx, Caddy, o el de tu hosting) que se encarga del HTTPS, ya está soportado (`trust proxy`).
 - **Las sesiones viven en memoria.** Cada vez que reinicias el programa, todos tienen que volver a iniciar sesión en el panel. También caducan tras 24 horas sin usar el panel. El bot no se ve afectado.
-- **Una sola copia a la vez.** No corras BotM dos veces con el mismo token (ni en dos computadoras, ni con varias instancias en el hosting): el bot respondería doble y publicaría doble, y parte de su estado (esperas, modo raid, sesiones del panel) vive en la memoria de cada copia. Si te mudas de hosting, apaga la copia vieja cuando la nueva esté conectada.
+- **Una sola copia a la vez.** No corras BotM dos veces con el mismo token (ni en dos computadoras, ni con varias instancias en el hosting): el bot respondería doble y publicaría doble, y parte de su estado (esperas, modo raid, sesiones del panel) vive en la memoria de cada copia. (Con la base de datos de BotM, una segunda copia en la misma carpeta ni siquiera arranca.) Si te mudas de hosting, apaga la copia vieja cuando la nueva esté conectada.
 - `DEV_BYPASS_AUTH` no funciona en producción aunque lo pongas, y `/stress` y `/oauth-test` no se registran.
 
 ---
@@ -632,7 +685,10 @@ botM/
 │   └── src/pages/           Una página por sección del panel
 ├── server/
 │   ├── index.ts             Arranca todo: servidor web, panel y bot
-│   ├── db.ts                Conexión a la base de datos (Neon o cualquier PostgreSQL)
+│   ├── db.ts                Conexión a la base de datos (la de BotM, Neon o cualquier PostgreSQL)
+│   ├── embeddedDb.ts        Base de datos de BotM (PGlite): abrirla, cerrarla y consultas seguras
+│   ├── dataFolder.ts        Carpeta de esa base y su candado (una sola copia de BotM a la vez)
+│   ├── schemaSync.ts        Crea y pone al día sus tablas al arrancar
 │   ├── routes.ts, routes/   API del panel (login, ajustes, estadísticas…)
 │   ├── services/reddit.ts   Lee las publicaciones de Reddit
 │   └── bot/
@@ -644,6 +700,8 @@ botM/
 ├── shared/
 │   ├── schema.ts            Tablas de la base de datos
 │   └── api.ts               Tipos que comparten el panel y el servidor
+├── scripts/                 Modo desarrollo o producción de npm run dev y npm start
+├── data/                    Base de datos de BotM, si no está en otro lado (se crea sola; ver paso 3)
 ├── .env                     Tus llaves (lo creas tú; nunca lo compartas)
 └── .env.example             Plantilla del .env
 ```
@@ -653,7 +711,7 @@ Comandos de npm disponibles:
 | Comando | Qué hace |
 | --- | --- |
 | `npm run dev` | Arranca el bot y el panel en modo desarrollo (el panel se actualiza solo al cambiar el código). |
-| `npm run db:push` | Crea o actualiza las tablas de la base de datos. |
+| `npm run db:push` | Crea o actualiza las tablas de la base de datos. Con la base de datos de BotM casi nunca hace falta (BotM lo hace solo al arrancar) y solo funciona con BotM cerrado. |
 | `npm run build` | Compila el panel y el servidor en la carpeta `dist`. |
 | `npm start` | Arranca la versión compilada en modo producción. |
 | `npm run check` | Revisa los tipos de TypeScript (para desarrolladores). |

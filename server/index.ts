@@ -9,7 +9,7 @@ import { SESSION_COOKIE_NAME } from "./routes/middleware";
 import { setupVite, serveStatic, log } from "./vite";
 import { bot } from "./bot/index";
 import { ContentScheduler } from "./bot/scheduler";
-import { checkDatabaseConnection } from "./db";
+import { checkDatabaseConnection, closeDatabase, initDatabase, DatabaseStartupError } from "./db";
 
 // Sin SESSION_SECRET las sesiones del panel serían inseguras: mejor no arrancar
 const sessionSecret = process.env.SESSION_SECRET;
@@ -108,7 +108,48 @@ app.use((req, res, next) => {
   next();
 });
 
+// Apagado ordenado (Ctrl + C, cerrar la ventana, el hosting deteniendo el proceso): primero el bot y
+// después la base de datos, que con la base integrada se cierra limpia para no dejar la carpeta a medias.
+// En Windows también SIGBREAK (Ctrl + Pausa) y SIGHUP (cerrar la ventana de la consola; Windows da unos
+// segundos antes de terminar el proceso). En Linux SIGHUP se deja como estaba: con "nohup" se ignora.
+let shuttingDown = false;
+async function shutdown(exitCode = 0): Promise<void> {
+  if (shuttingDown) return;
+  shuttingDown = true;
+  console.log('🛑 Cerrando BotM…');
+  // Si algo se queda colgado, se sale igual (lo ya guardado en la base no se pierde)
+  setTimeout(() => {
+    console.error('⚠️ El cierre tardó demasiado; se fuerza la salida.');
+    process.exit(exitCode || 1);
+  }, 20_000).unref();
+  try {
+    await bot.stop();
+  } catch (error) {
+    console.warn('⚠️ El bot no se cerró bien:', error);
+  }
+  await closeDatabase();
+  process.exit(exitCode);
+}
+const shutdownSignals: NodeJS.Signals[] = process.platform === 'win32'
+  ? ['SIGINT', 'SIGTERM', 'SIGBREAK', 'SIGHUP']
+  : ['SIGINT', 'SIGTERM'];
+for (const signal of shutdownSignals) {
+  process.on(signal, () => void shutdown(0));
+}
+
 (async () => {
+  // La base de datos va primero: con la base integrada se crean o ponen al día las tablas antes de
+  // que el bot o el panel las usen
+  try {
+    await initDatabase();
+  } catch (error) {
+    if (shuttingDown) return; // se pidió cerrar mientras abría: shutdown() termina el trabajo
+    if (error instanceof DatabaseStartupError) console.error(`❌ ${error.message}`);
+    else console.error('❌ No se pudo abrir la base de datos:', error);
+    await closeDatabase();
+    process.exit(1);
+  }
+
   const server = await registerRoutes(app, { sessionParser });
 
   // Último recurso para errores no atrapados. Nunca enviamos err.message en un 5xx (puede
@@ -164,7 +205,7 @@ app.use((req, res, next) => {
     } else {
       console.error('❌ El servidor web no pudo arrancar:', error);
     }
-    process.exit(1);
+    void closeDatabase().finally(() => process.exit(1));
   };
   server.once('error', onListenError);
 
@@ -180,23 +221,10 @@ app.use((req, res, next) => {
     void checkDatabaseConnection();
     void startDiscordBot();
   });
-
-  // Graceful shutdown
-  process.on('SIGTERM', async () => {
-    console.log('🛑 Shutting down gracefully...');
-    await bot.stop();
-    process.exit(0);
-  });
-
-  process.on('SIGINT', async () => {
-    console.log('🛑 Shutting down gracefully...');
-    await bot.stop();
-    process.exit(0);
-  });
 })().catch((error) => {
   // Sin esto el proceso se quedaría vivo sin servir nada (la promesa rechazada solo se anota)
   console.error('❌ BotM no pudo arrancar el servidor web:', error);
-  process.exit(1);
+  void closeDatabase().finally(() => process.exit(1));
 });
 
 // Programador (pregunta del día y feeds de Reddit) y bot de Discord, sin frenar el panel. Si Discord
