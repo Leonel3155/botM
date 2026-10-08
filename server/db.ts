@@ -1,20 +1,24 @@
 import { Pool as NeonPool, neonConfig } from '@neondatabase/serverless';
+import { sql } from 'drizzle-orm';
 import { drizzle as drizzleNeon } from 'drizzle-orm/neon-serverless';
 import { drizzle as drizzleNodePg } from 'drizzle-orm/node-postgres';
+import { drizzle as drizzlePglite } from 'drizzle-orm/pglite';
 import type { PgDatabase, PgQueryResultHKT } from 'drizzle-orm/pg-core';
 import pg from 'pg';
 import ws from 'ws';
 import * as schema from '@shared/schema';
+import { databaseMode } from './dataFolder';
+import { DatabaseStartupError, EmbeddedDatabase } from './embeddedDb';
 
-const DATABASE_URL = process.env.DATABASE_URL?.trim();
-if (!DATABASE_URL) {
-  // Igual que con SESSION_SECRET: sin base de datos no hay nada que arrancar
-  console.error(
-    '❌ Falta DATABASE_URL en el archivo .env: pon la cadena de conexión de tu base PostgreSQL ' +
-    '(Neon, Supabase, Railway o un PostgreSQL instalado en tu computadora).'
-  );
+export { DatabaseStartupError };
+
+// Sin DATABASE_URL BotM usa su propia base de datos (PGlite) en una carpeta; con DATABASE_URL, ese PostgreSQL
+const mode = databaseMode();
+if (mode.kind === 'invalid') {
+  console.error(`❌ ${mode.message}`);
   process.exit(1);
 }
+const DATABASE_URL = mode.kind === 'url' ? mode.url : '';
 
 // Número entero positivo de una variable de entorno (o el valor por defecto si no viene o no es válido)
 function envInt(name: string, fallback: number, { min = 0 }: { min?: number } = {}): number {
@@ -30,11 +34,13 @@ function envInt(name: string, fallback: number, { min = 0 }: { min?: number } = 
 // - neon: @neondatabase/serverless, habla con la base por WebSocket. Solo sirve con Neon.
 // - pg:   node-postgres, conexión TCP normal. Sirve con cualquier PostgreSQL: uno instalado en tu
 //         computadora (Windows, Docker), Supabase, Railway… y también con Neon.
+// - pglite: base de datos integrada (PostgreSQL dentro del propio proceso), guardada en una carpeta.
+//         Se usa cuando DATABASE_URL está vacía (ver embeddedDb.ts y dataFolder.ts).
 //
-// Por defecto se elige solo según DATABASE_URL: los hosts de Neon (*.neon.tech) usan "neon" como
-// siempre y todo lo demás usa "pg". DATABASE_DRIVER=neon|pg lo fuerza.
+// Con DATABASE_URL se elige solo: los hosts de Neon (*.neon.tech) usan "neon" como siempre y todo lo
+// demás usa "pg". DATABASE_DRIVER=neon|pg|pglite lo fuerza.
 // ---------------------------------------------------------------------------------------------
-type DbDriver = 'neon' | 'pg';
+type DbDriver = 'neon' | 'pg' | 'pglite';
 
 /** Host de la cadena de conexión, en minúsculas ('' si no se encuentra). Nunca registra la URL: trae la contraseña. */
 function databaseHost(url: string): string {
@@ -57,15 +63,27 @@ function chooseDriver(url: string): DbDriver {
   const forced = process.env.DATABASE_DRIVER?.trim().toLowerCase();
   if (forced === 'neon' || forced === 'pg') return forced;
   if (forced) {
-    console.warn(`[DB] DATABASE_DRIVER="${forced}" no es válido (usa "neon" o "pg"); se elige según DATABASE_URL.`);
+    console.warn(`[DB] DATABASE_DRIVER="${forced}" no es válido (usa "neon", "pg" o "pglite"); se elige según DATABASE_URL.`);
   }
   return isNeonHost(databaseHost(url)) ? 'neon' : 'pg';
 }
 
-export const dbDriver: DbDriver = chooseDriver(DATABASE_URL);
+function embeddedDriver(): DbDriver {
+  const forced = process.env.DATABASE_DRIVER?.trim().toLowerCase();
+  if (forced && forced !== 'pglite') {
+    console.warn(`[DB] DATABASE_DRIVER="${forced}" no es válido (usa "neon", "pg" o "pglite"); se usa la base de datos integrada.`);
+  }
+  if (mode.kind === 'embedded' && mode.ignoredUrl) {
+    console.warn('[DB] DATABASE_DRIVER=pglite: se usa la base de datos integrada y se ignora DATABASE_URL.');
+  }
+  return 'pglite';
+}
+
+export const dbDriver: DbDriver = mode.kind === 'url' ? chooseDriver(DATABASE_URL) : embeddedDriver();
 
 // Límite de cada consulta en el servidor de PostgreSQL. Si se pasa, PostgreSQL la cancela con un
 // error normal (código 57014): la transacción se deshace entera y nunca queda a medias.
+// Con la base integrada (PGlite no puede cortar una consulta) es el límite de cada transacción.
 // DB_STATEMENT_TIMEOUT_MS=0 lo desactiva.
 const STATEMENT_TIMEOUT_MS = envInt('DB_STATEMENT_TIMEOUT_MS', 30_000);
 
@@ -80,10 +98,10 @@ const poolConfig: pg.PoolConfig = {
   idleTimeoutMillis: envInt('DB_IDLE_TIMEOUT_MS', 30_000, { min: 1 }),
 };
 
-// Tipo común a los dos: lo que usan storage.ts y los servicios del bot (select, insert, transaction, execute…)
+// Tipo común a todos: lo que usan storage.ts y los servicios del bot (select, insert, transaction, execute…)
 type Database = PgDatabase<PgQueryResultHKT, typeof schema>;
 
-function createDatabase(driver: DbDriver): { pool: pg.Pool; db: Database } {
+function createPoolDatabase(driver: 'neon' | 'pg'): { pool: pg.Pool; db: Database } {
   if (driver === 'neon') {
     neonConfig.webSocketConstructor = ws;
     const neonPool = new NeonPool(poolConfig);
@@ -93,35 +111,57 @@ function createDatabase(driver: DbDriver): { pool: pg.Pool; db: Database } {
   return { pool: pgPool, db: drizzleNodePg({ client: pgPool, schema }) };
 }
 
-const database = createDatabase(dbDriver);
+function setUpPool(pool: pg.Pool): void {
+  console.log(
+    dbDriver === 'neon'
+      ? '🗄️ Base de datos: controlador de Neon (WebSocket)'
+      : '🗄️ Base de datos: controlador PostgreSQL estándar (node-postgres)'
+  );
 
-export const pool = database.pool;
-
-console.log(
-  dbDriver === 'neon'
-    ? '🗄️ Base de datos: controlador de Neon (WebSocket)'
-    : '🗄️ Base de datos: controlador PostgreSQL estándar (node-postgres)'
-);
-
-// statement_timeout con SET al abrir cada conexión, no como parámetro de arranque: el pooler de Neon
-// (PgBouncer, URLs con "-pooler") rechaza parámetros de arranque desconocidos y no conectaría.
-// La consulta se encola antes que cualquier otra de esa conexión.
-if (STATEMENT_TIMEOUT_MS > 0) {
-  pool.on('connect', (client) => {
-    client.query(`SET statement_timeout = ${STATEMENT_TIMEOUT_MS}`).catch((error: Error) => {
-      console.warn('[DB] No se pudo configurar statement_timeout en una conexión nueva:', error.message);
+  // statement_timeout con SET al abrir cada conexión, no como parámetro de arranque: el pooler de Neon
+  // (PgBouncer, URLs con "-pooler") rechaza parámetros de arranque desconocidos y no conectaría.
+  // La consulta se encola antes que cualquier otra de esa conexión.
+  if (STATEMENT_TIMEOUT_MS > 0) {
+    pool.on('connect', (client) => {
+      client.query(`SET statement_timeout = ${STATEMENT_TIMEOUT_MS}`).catch((error: Error) => {
+        console.warn('[DB] No se pudo configurar statement_timeout en una conexión nueva:', error.message);
+      });
     });
+  }
+
+  // Una conexión inactiva que se cae (p. ej. Neon suspendió la base de datos o se reinició PostgreSQL)
+  // emite 'error' en el pool. Sin este listener el proceso entero se caería; el pool la descarta y
+  // abre otra cuando haga falta.
+  pool.on('error', (error) => {
+    console.warn('[DB] Se cerró una conexión inactiva con la base de datos:', error.message);
   });
 }
 
-// Una conexión inactiva que se cae (p. ej. Neon suspendió la base de datos o se reinició PostgreSQL)
-// emite 'error' en el pool. Sin este listener el proceso entero se caería; el pool la descarta y
-// abre otra cuando haga falta.
-pool.on('error', (error) => {
-  console.warn('[DB] Se cerró una conexión inactiva con la base de datos:', error.message);
-});
+// Base integrada: se abre en initDatabase() (carpeta, candado y tablas); hasta entonces las consultas esperan
+const embedded = dbDriver === 'pglite' ? new EmbeddedDatabase(STATEMENT_TIMEOUT_MS) : null;
+const database: { pool: pg.Pool | null; db: Database } = embedded
+  ? { pool: null, db: drizzlePglite({ client: embedded.client, schema }) }
+  : createPoolDatabase(dbDriver as 'neon' | 'pg');
+
+const pool = database.pool;
+if (pool) setUpPool(pool);
+else console.log('🗄️ Base de datos: integrada (PGlite, PostgreSQL dentro de BotM; no hace falta instalar nada)');
 
 export const db = database.db;
+
+/**
+ * Prepara la base antes de arrancar el bot y el panel. Con la base integrada elige la carpeta, toma el
+ * candado, la abre y crea o pone al día las tablas; lanza DatabaseStartupError (mensaje en español) si no
+ * se puede. Con DATABASE_URL no hace nada: cada consulta conecta sola, como siempre.
+ */
+export async function initDatabase(): Promise<void> {
+  if (embedded) await embedded.open(schema);
+}
+
+/** Cierra la base integrada limpia (al apagar BotM). Nunca lanza. Con DATABASE_URL no hace nada. */
+export async function closeDatabase(): Promise<void> {
+  if (embedded) await embedded.close();
+}
 
 /** Explicación en español de un error al conectar con la base de datos (para la consola). */
 function explainDatabaseError(code: string, message: string): string {
@@ -160,15 +200,19 @@ function explainDatabaseError(code: string, message: string): string {
 export async function checkDatabaseConnection(): Promise<boolean> {
   try {
     // "guilds" es la primera tabla que se consulta: si no existe, falta npm run db:push
-    await pool.query('SELECT 1 FROM guilds LIMIT 1');
-    console.log('✅ Conectado a la base de datos');
+    if (pool) await pool.query('SELECT 1 FROM guilds LIMIT 1');
+    else await db.execute(sql`select 1 from guilds limit 1`);
+    console.log(pool ? '✅ Conectado a la base de datos' : '✅ Base de datos lista');
     return true;
   } catch (error) {
     const err = (error && typeof error === 'object' ? error : {}) as { code?: unknown; message?: unknown };
     const code = typeof err.code === 'string' ? err.code : '';
     const message = typeof err.message === 'string' ? err.message : String(error);
     const detail = [code, message].filter(Boolean).join(': ');
-    console.error(`❌ No se pudo usar la base de datos (${detail}). ${explainDatabaseError(code, message)}`);
+    const advice = pool
+      ? explainDatabaseError(code, message)
+      : 'Cierra BotM (Ctrl + C), ejecuta "npm run db:push" y vuelve a arrancarlo.';
+    console.error(`❌ No se pudo usar la base de datos (${detail}). ${advice}`);
     return false;
   }
 }
