@@ -7,7 +7,7 @@ import type { PgDatabase, PgQueryResultHKT } from 'drizzle-orm/pg-core';
 import pg from 'pg';
 import ws from 'ws';
 import * as schema from '@shared/schema';
-import { databaseMode } from './dataFolder';
+import { databaseMode, EXAMPLE_URL_WARNING } from './dataFolder';
 import { DatabaseStartupError, EmbeddedDatabase } from './embeddedDb';
 
 export { DatabaseStartupError };
@@ -76,6 +76,7 @@ function embeddedDriver(): DbDriver {
   if (mode.kind === 'embedded' && mode.ignoredUrl) {
     console.warn('[DB] DATABASE_DRIVER=pglite: se usa la base de datos integrada y se ignora DATABASE_URL.');
   }
+  if (mode.kind === 'embedded' && mode.exampleUrl) console.warn(EXAMPLE_URL_WARNING);
   return 'pglite';
 }
 
@@ -193,6 +194,9 @@ function explainDatabaseError(code: string, message: string): string {
   return 'Revisa DATABASE_URL en el archivo .env.';
 }
 
+// Si DATABASE_URL no funciona, vaciarla también es una salida: BotM usa su propia base de datos
+const EMBEDDED_HINT = ' Si no quieres usar otra base de datos, deja DATABASE_URL vacía y BotM usará la suya (empieza sin datos).';
+
 /**
  * Prueba la conexión al arrancar y deja un mensaje claro en la consola. Nunca lanza: si falla,
  * el panel y el bot siguen funcionando y cada consulta vuelve a intentar conectar por su cuenta.
@@ -210,7 +214,7 @@ export async function checkDatabaseConnection(): Promise<boolean> {
     const message = typeof err.message === 'string' ? err.message : String(error);
     const detail = [code, message].filter(Boolean).join(': ');
     const advice = pool
-      ? explainDatabaseError(code, message)
+      ? explainDatabaseError(code, message) + (code === '42P01' ? '' : EMBEDDED_HINT)
       : 'Cierra BotM (Ctrl + C), ejecuta "npm run db:push" y vuelve a arrancarlo.';
     console.error(`❌ No se pudo usar la base de datos (${detail}). ${advice}`);
     return false;

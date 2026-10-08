@@ -281,26 +281,31 @@ export async function syncEmbeddedSchema(pg: PGlite, schema: Record<string, unkn
 
   // Un cambio de tipo pendiente también impide funcionar (las consultas esperan el tipo nuevo)
   const typeChange = (statement: string) => / SET DATA TYPE /i.test(statement);
-  const problems = [
-    ...(await blockingProblems(pg, tables)),
-    ...pending.filter(typeChange).map((s) => `cambio de tipo pendiente: ${short(s)}`),
-  ];
-  const details = [
+  const typeChanges = pending.filter(typeChange);
+  // Por qué BotM no lo hace solo: va primero y completo, porque es lo que se decide con db:push
+  const reasons = [
     ...risks,
-    ...pending.filter((s) => !typeChange(s)).map((s) => `cambio pendiente: ${short(s)}`),
     ...(applyError ? [`error al aplicar los cambios: ${applyError}`] : []),
+    ...typeChanges.map((s) => `cambio de tipo pendiente: ${short(s)}`),
+    ...pending.filter((s) => !typeChange(s)).map((s) => `cambio pendiente: ${short(s)}`),
   ];
+  // Lo que falta para funcionar (casi siempre cosas nuevas que se agregan junto con lo anterior)
+  const missing = await blockingProblems(pg, tables);
 
-  if (problems.length) {
-    throw new SchemaSyncError(
+  if (missing.length || typeChanges.length) {
+    const parts = [
       'Las tablas de la base de datos no coinciden con esta versión de BotM y ponerlas al día podría borrar datos, ' +
-      `así que BotM no lo hace solo y se cierra.\n${list([...problems, ...details])}\n   Para arreglarlo, ${PUSH_STEPS}`
-    );
+      'así que BotM no lo hace solo y se cierra.',
+    ];
+    if (reasons.length) parts.push(`   Lo que necesita tu decisión:\n${list(reasons, Infinity)}`);
+    if (missing.length) parts.push(`   Lo que falta en las tablas (se agrega al resolver lo anterior):\n${list(missing)}`);
+    parts.push(`   Para arreglarlo, ${PUSH_STEPS}`);
+    throw new SchemaSyncError(parts.join('\n'));
   }
-  if (details.length) {
+  if (reasons.length) {
     console.warn(
       '⚠️ La base de datos tiene cambios pendientes que BotM no aplica solo porque podrían borrar datos. ' +
-      `BotM funciona igual.\n${list(details)}\n   Para aplicarlos cuando quieras, cierra BotM (Ctrl + C) y ${PUSH_STEPS}`
+      `BotM funciona igual.\n${list(reasons, Infinity)}\n   Para aplicarlos cuando quieras, cierra BotM (Ctrl + C) y ${PUSH_STEPS}`
     );
   }
   return { applied, pending };

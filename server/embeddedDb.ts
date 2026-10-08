@@ -165,7 +165,8 @@ export class EmbeddedDatabase {
     if (choice.source === 'local') {
       console.log(
         `   (Tu proyecto está dentro de ${choice.syncedBy}: la base se guarda en esta carpeta de tu usuario, fuera de la ` +
-        'sincronización, porque la nube bloquea y reescribe archivos mientras se usan y puede dañarla. DATABASE_DIR la cambia.)'
+        'sincronización, porque la nube bloquea y reescribe archivos mientras se usan y puede dañarla. Todas las copias ' +
+        'del proyecto que estén en la nube usan esta misma carpeta; DATABASE_DIR la cambia.)'
       );
     } else if (choice.source === 'env' && choice.syncedBy) {
       console.warn(
@@ -191,8 +192,14 @@ export class EmbeddedDatabase {
       );
       if (hasDatabase(choice.alternative)) {
         console.warn(
-          `⚠️ Ya hay una base de datos de BotM en ${choice.alternative} (de cuando el proyecto estaba en otra carpeta). ` +
-          `Si quieres seguir usándola, cierra BotM y pon DATABASE_DIR=${choice.alternative} en el archivo .env.`
+          choice.source === 'local'
+            // La otra es la carpeta "data" del proyecto, dentro de la nube: no hay que volver a usarla ahí
+            ? `⚠️ Ya hay una base de datos de BotM en ${choice.alternative}, dentro de ${choice.syncedBy}, donde la ` +
+              'sincronización puede dañarla; por eso BotM ya no la usa ahí. Si quieres seguir con esos datos: cierra BotM, ' +
+              `borra todo lo que hay dentro de ${choice.dir} (es la base nueva, sin datos), pasa ahí todo lo que hay dentro de ` +
+              `${choice.alternative} y vuelve a arrancar BotM.`
+            : `⚠️ Ya hay una base de datos de BotM en ${choice.alternative} (de cuando el proyecto estaba en otra carpeta). ` +
+              `Si quieres seguir usándola, cierra BotM y pon DATABASE_DIR=${choice.alternative} en el archivo .env.`
         );
       }
     }
@@ -215,8 +222,9 @@ export class EmbeddedDatabase {
 
     try {
       const { applied } = await syncEmbeddedSchema(this.pg, schema);
-      if (folder.isNew) console.log(`✅ Base de datos creada con sus tablas (${applied} cambios)`);
-      else if (applied > 0) console.log(`✅ Tablas de la base de datos puestas al día (${applied} cambios)`);
+      const changes = `${applied} ${applied === 1 ? 'cambio' : 'cambios'}`;
+      if (folder.isNew) console.log(`✅ Base de datos creada con sus tablas (${changes})`);
+      else if (applied > 0) console.log(`✅ Tablas de la base de datos puestas al día (${changes})`);
     } catch (error) {
       if (error instanceof SchemaSyncError) throw new DatabaseStartupError(error.message);
       throw new DatabaseStartupError(`No se pudieron revisar las tablas de la base de datos: ${(error as Error)?.message ?? error}`);

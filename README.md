@@ -138,12 +138,12 @@ BotM guarda los niveles, las monedas y los ajustes en **su propia base de datos*
 **Dónde queda la carpeta.** BotM la escribe en la consola al arrancar, en la línea `📁 Carpeta de la base de datos: …`:
 
 - Normalmente es la carpeta `data` dentro del proyecto (`botM\data`).
-- **Si el proyecto está dentro de OneDrive** (pasa si lo pusiste en el Escritorio o en Documentos y OneDrive les hace copia de seguridad), o dentro de Dropbox, Google Drive o iCloud Drive, BotM la guarda **fuera de la nube**, en `%LOCALAPPDATA%\BotM\data` (algo como `C:\Users\tu_usuario\AppData\Local\BotM\data`; si pegas `%LOCALAPPDATA%\BotM\data` en la barra de direcciones del Explorador, se abre). Esos programas bloquean y vuelven a subir los archivos mientras BotM los usa, y eso puede dañar la base de datos.
+- **Si el proyecto está dentro de OneDrive** (pasa si lo pusiste en el Escritorio o en Documentos y OneDrive les hace copia de seguridad), o dentro de Dropbox, Google Drive o iCloud Drive, BotM la guarda **fuera de la nube**, en `%LOCALAPPDATA%\BotM\data` (algo como `C:\Users\tu_usuario\AppData\Local\BotM\data`; si pegas `%LOCALAPPDATA%\BotM\data` en la barra de direcciones del Explorador, se abre). Esos programas bloquean y vuelven a subir los archivos mientras BotM los usa, y eso puede dañar la base de datos. Esa carpeta no depende de dónde esté el proyecto: **todas las copias del proyecto que tengas dentro de OneDrive usan la misma** (los mismos datos). Para una copia de prueba con datos aparte, ponle otro `DATABASE_DIR` en su `.env`.
 - Si prefieres otra carpeta, ponla en `DATABASE_DIR` en el `.env` (por ejemplo `DATABASE_DIR=C:\BotM\datos`). Esa manda siempre; solo no elijas una carpeta de OneDrive.
 
 **Bueno saber:**
 
-- **Una sola ventana a la vez.** Solo una copia de BotM puede usar la carpeta. Si abres otra, se cierra sola con `❌ BotM ya está abierto en otra ventana…`.
+- **Una sola ventana a la vez.** Solo una copia de BotM puede usar la carpeta. Si abres otra (o otra copia del proyecto que use la misma carpeta), se cierra sola con `❌ BotM ya está abierto en otra ventana…`.
 - **Ciérralo con Ctrl + C** (o cerrando la ventana): BotM termina lo que estaba guardando y cierra la base de datos bien. Lo que ya se guardó no se pierde aunque se cierre de golpe, pero un apagón o un cuelgue de Windows sí pueden dañar la carpeta: por eso conviene tener respaldos.
 - **Respaldos:** cierra BotM y copia la carpeta entera a otro lado (un USB, otra carpeta, o tu OneDrive: una copia que BotM no está usando no corre peligro). Para volver a un respaldo, con BotM cerrado, borra la carpeta y pon la copia en su lugar. **Nunca copies ni reemplaces la carpeta con BotM abierto**, y no borres archivos sueltos de adentro. Borrar la carpeta borra todos los niveles, monedas y ajustes.
 - Ocupa unos 40 MB recién creada y crece poco a poco.
@@ -357,7 +357,7 @@ Los ejemplos con todos los valores y comentarios están en [`.env.example`](.env
 | `DISCORD_CLIENT_ID` | Sí | Application ID (Developer Portal → General Information). Se usa para registrar los comandos y para el login del panel. |
 | `DISCORD_CLIENT_SECRET` | Sí | Client Secret (Developer Portal → OAuth2). Lo usa el login del panel. Secreto. |
 | `DATABASE_URL` | No | Déjala vacía para usar la base de datos de BotM (recomendado). Ponla solo para usar otra base PostgreSQL: la connection string de Neon, una instalada en tu computadora, Supabase, Railway… (ver el [paso 3](#3-la-base-de-datos-no-hace-falta-hacer-nada)). Secreta. |
-| `DATABASE_DIR` | No | Carpeta de la base de datos de BotM (solo sin `DATABASE_URL`). Por defecto, la carpeta `data` del proyecto; si el proyecto está dentro de OneDrive, Dropbox, Google Drive o iCloud Drive, `%LOCALAPPDATA%\BotM\data` (en Mac y Linux, `~/.local/share/botm/data`). Una ruta relativa cuenta desde la carpeta del proyecto. Escríbela sin comillas. |
+| `DATABASE_DIR` | No | Carpeta de la base de datos de BotM (solo sin `DATABASE_URL`). Por defecto, la carpeta `data` del proyecto; si el proyecto está dentro de OneDrive, Dropbox, Google Drive o iCloud Drive, `%LOCALAPPDATA%\BotM\data` (en Mac y Linux, `~/.local/share/botm/data`), la misma para todas las copias del proyecto que estén en la nube. Una ruta relativa cuenta desde la carpeta del proyecto (BotM deja dentro un `.gitignore` para que la base nunca se suba a GitHub). Escríbela sin comillas. |
 | `SESSION_SECRET` | Sí | Clave aleatoria para firmar las sesiones del panel. Sin ella el programa no arranca; usa al menos 32 caracteres. |
 | `APP_URL` | Recomendada | Dirección pública del servidor, sin `/` al final. Por defecto `http://localhost:` + `PORT`. Discord vuelve del login a `APP_URL/auth/discord/callback`. |
 | `FRONTEND_URL` | Recomendada | Dirección del panel. Pon lo mismo que en `APP_URL` (el panel y el servidor van juntos). Por defecto, igual que `APP_URL`. |
@@ -517,7 +517,7 @@ Cierra y vuelve a abrir PowerShell. Otra opción es escribir `npm.cmd` en lugar 
 ### El programa se cierra al arrancar
 
 - `❌ Falta SESSION_SECRET en el archivo .env` o `SESSION_SECRET todavía tiene el texto de ejemplo`: genera una clave con el comando del paso 5 y pégala en el `.env`.
-- `❌ BotM ya está abierto en otra ventana…`: otra copia de BotM ya usa la base de datos (quizá en otra ventana de PowerShell, minimizada). Ciérrala con Ctrl + C. Si estás seguro de que no hay ninguna (por ejemplo después de un apagón), espera 2 minutos y vuelve a intentarlo.
+- `❌ BotM ya está abierto en otra ventana…`: otra copia de BotM ya usa la base de datos (quizá en otra ventana de PowerShell, minimizada, o otra copia del proyecto que también está en OneDrive). Ciérrala con Ctrl + C. Este aviso solo sale si esa copia **sigue abierta** (después de un apagón o de cerrarla de golpe, BotM se da cuenta solo y arranca normal); si no encuentras la ventana, abre el **Administrador de tareas** (Ctrl + Shift + Esc) → **Detalles** y termina el `node.exe` con el PID que dice el mensaje.
 - Otros mensajes de la base de datos de BotM (la carpeta, las tablas): mira [La base de datos de BotM no arranca](#la-base-de-datos-de-botm-no-arranca).
 - `❌ DATABASE_DRIVER=pg necesita DATABASE_URL…` (o `neon`): borra `DATABASE_DRIVER` del `.env` para usar la base de datos de BotM, o pon tu `DATABASE_URL`. Si pusiste `DATABASE_URL` y BotM no la ve, revisa que el `.env` esté en la carpeta principal del proyecto y que no se llame `.env.txt` (en el Explorador activa **Vista → Extensiones de nombre de archivo**).
 - `❌ El puerto 5000 ya está en uso (EADDRINUSE)`: otro programa ya usa el puerto 5000 (¿dejaste otra ventana con BotM abierta?). Ciérralo, o cambia `PORT`, `APP_URL`, `FRONTEND_URL` y el redirect de Discord al nuevo puerto.
@@ -535,7 +535,7 @@ Esto es para cuando usas otra base con `DATABASE_URL`. Al arrancar, BotM prueba 
 - `self-signed certificate`: cambia `sslmode=require` por `sslmode=no-verify` en `DATABASE_URL`.
 - `The server does not support SSL connections`: tu PostgreSQL no usa SSL; quita `?sslmode=require` del final de `DATABASE_URL`.
 
-Mientras la base no conecte, el panel abre pero sus secciones muestran errores. Corrige el `.env` y reinicia BotM.
+Mientras la base no conecte, el panel abre pero sus secciones muestran errores. Corrige el `.env` y reinicia BotM. **Si no quieres usar otra base**, deja `DATABASE_URL` vacía (`DATABASE_URL=`): BotM usa la suya (empieza sin datos; no copia los de la otra base).
 
 ### La base de datos de BotM no arranca
 
@@ -546,7 +546,10 @@ Esto es para la base de datos de BotM (`DATABASE_URL` vacía). Si no puede abrir
 - `Las tablas de la base de datos no coinciden con esta versión de BotM…`: una actualización necesita un cambio que podría borrar datos, y BotM no lo hace solo. Cierra BotM, ejecuta `npm run db:push`, responde sus preguntas con la tabla del [paso 6](#6-instala-las-dependencias-y-crea-las-tablas) y vuelve a arrancar. Si en cambio sale `⚠️ La base de datos tiene cambios pendientes…`, BotM funciona igual: haz lo mismo cuando puedas.
 - `No se pudo abrir la base de datos de …`: la carpeta está dañada (por ejemplo, se copió o se restauró con BotM abierto, o hubo un apagón). Con BotM cerrado, pon en su lugar tu último respaldo (paso 3).
 - `… es de PostgreSQL 18 y esta versión de BotM usa PostgreSQL 17`: la carpeta es de otra versión de BotM. Vuelve a esa versión, o pide ayuda para pasar los datos.
-- `⚠️ Ya hay una base de datos de BotM en …`: no es un error. BotM creó una base nueva porque el proyecto cambió de lugar (por ejemplo, lo sacaste de OneDrive) y la de antes quedó en la otra carpeta. Si quieres tus datos de antes, cierra BotM, pon esa carpeta en `DATABASE_DIR` y vuelve a arrancarlo.
+- `⚠️ Ya hay una base de datos de BotM en …`: no es un error. BotM creó una base nueva porque el proyecto cambió de lugar y la de antes quedó en la otra carpeta. Si quieres tus datos de antes, haz lo que dice el mensaje:
+  - Si **sacaste el proyecto de OneDrive**, la de antes está en `%LOCALAPPDATA%\BotM\data`: cierra BotM, pon esa carpeta en `DATABASE_DIR` y vuelve a arrancarlo.
+  - Si **el proyecto quedó dentro de OneDrive** (por ejemplo, Windows empezó a hacer copia de seguridad del Escritorio), la de antes está en la carpeta `data` del proyecto, dentro de la nube: **no** pongas esa carpeta en `DATABASE_DIR`. Cierra BotM, borra todo lo que hay dentro de `%LOCALAPPDATA%\BotM\data` (es la base nueva, sin datos), pasa ahí todo lo que hay dentro de la carpeta `data` del proyecto y vuelve a arrancarlo.
+- `⚠️ DATABASE_URL tenía el ejemplo de .env.example…`: no es un error. Tu `.env` es de antes y tiene la dirección de ejemplo; BotM la ignora y usa su base de datos. Borra esa línea o déjala vacía (`DATABASE_URL=`).
 
 ### El bot aparece desconectado (offline)
 
@@ -633,6 +636,7 @@ Antes de actualizar conviene hacer un respaldo de la carpeta de la base de datos
 
 - **Con la base de datos de BotM** no hace falta nada más: al arrancar pone las tablas al día sola. Si algún cambio pudiera borrar datos no lo hace y te lo dice en la consola (mira [La base de datos de BotM no arranca](#la-base-de-datos-de-botm-no-arranca)).
 - **Con `DATABASE_URL`**, ejecuta `npm run db:push` **siempre** después de `npm install` y antes de arrancar: si la versión agrega columnas y no lo ejecutas, fallará todo lo que lee la configuración del servidor. Si te hace preguntas, usa la tabla del [paso 6](#6-instala-las-dependencias-y-crea-las-tablas).
+- **Si quieres pasar a la base de datos de BotM**, deja `DATABASE_URL` vacía en tu `.env` (`DATABASE_URL=`). Actualizar no cambia tu `.env`: si lo copiaste de un `.env.example` viejo, puede seguir teniendo una dirección. BotM empieza con su base sin datos (no copia los de la base anterior).
 
 ---
 
