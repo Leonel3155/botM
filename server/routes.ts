@@ -7,6 +7,8 @@ import { storage, ContentFeedLimitError, type ContentFeedUpdate } from "./storag
 import { z } from "zod";
 import {
   CONTENT_FEED_LIMITS,
+  NEWS_SECTIONS,
+  type NewsSection,
   type ContentFeedResponse,
   type ContentFeedsResponse,
   type GuildConfigResponse,
@@ -17,6 +19,7 @@ import {
   type UserLevelResponse,
 } from "@shared/api";
 import { bot } from "./bot/index";
+import { FeedError, resolveNewsFeed } from "./services/rss";
 import { invalidateAntiRaidConfig, liftLockdown } from "./bot/middleware/antiRaid";
 import { invalidateCustomCommandsCache } from "./bot/customCommands";
 import { setupAuthRoutes } from "./routes/auth";
@@ -127,10 +130,12 @@ const postIntervalSchema = z.number()
 
 const SUBREDDIT_REGEX = new RegExp(CONTENT_FEED_LIMITS.subredditPattern);
 
-// Solo Reddit: Twitter/X no tiene acceso real a su API (publicaría contenido de relleno)
-const TWITTER_FEEDS_DISABLED_ERROR = 'Twitter/X todavía no está disponible: por ahora solo se puede usar Reddit.';
+// Reddit y noticias (RSS): Twitter/X no tiene acceso real a su API (publicaría contenido de relleno)
+const TWITTER_FEEDS_DISABLED_ERROR = 'Twitter/X todavía no está disponible: por ahora se puede usar Reddit o noticias por RSS.';
 
-const contentFeedSchema = z.object({
+const NEWS_MIN_INTERVAL_ERROR = `Las noticias se revisan como mucho cada ${CONTENT_FEED_LIMITS.newsMinInterval} minutos.`;
+
+const redditFeedSchema = z.object({
   source: z.literal('reddit'),
   channelId: snowflakeSchema,
   sourceConfig: z.object({
@@ -139,6 +144,32 @@ const contentFeedSchema = z.object({
   }).strict(),
   postInterval: postIntervalSchema
 }).strict();
+
+// Noticias: una sección o un tema de Google Noticias, o el enlace de un RSS o de un sitio
+const newsFeedSchema = z.object({
+  source: z.literal('rss'),
+  channelId: snowflakeSchema,
+  sourceConfig: z.object({
+    section: z.enum(NEWS_SECTIONS, { errorMap: () => ({ message: 'Esa sección de noticias no existe.' }) }).optional(),
+    topic: z.string().trim()
+      .min(CONTENT_FEED_LIMITS.newsTopicMinLength, 'Escribe un tema un poco más largo.')
+      .max(CONTENT_FEED_LIMITS.newsTopicMaxLength, `El tema puede tener hasta ${CONTENT_FEED_LIMITS.newsTopicMaxLength} letras.`)
+      .optional(),
+    url: z.string().trim()
+      .min(4, 'Pega el enlace del sitio o de su RSS.')
+      .max(CONTENT_FEED_LIMITS.newsUrlMaxLength, 'Ese enlace es demasiado largo.')
+      .optional(),
+  }).strict()
+    .refine((config) => [config.section, config.topic, config.url].filter((value) => value !== undefined).length === 1,
+      'Elige una sección, escribe un tema o pega un enlace (solo una de las tres).')
+    .transform((config): { section: NewsSection } | { topic: string } | { url: string } =>
+      config.section !== undefined ? { section: config.section }
+        : config.topic !== undefined ? { topic: config.topic }
+          : { url: config.url! }),
+  postInterval: postIntervalSchema.refine((value) => value >= CONTENT_FEED_LIMITS.newsMinInterval, NEWS_MIN_INTERVAL_ERROR)
+}).strict();
+
+const contentFeedSchema = z.discriminatedUnion('source', [redditFeedSchema, newsFeedSchema]);
 
 const contentFeedUpdateSchema = z.object({
   channelId: snowflakeSchema,
@@ -589,9 +620,23 @@ export async function registerRoutes(app: Express, { sessionParser }: RegisterRo
         return res.status(403).json({ error: userProblem });
       }
 
+      // Noticias: antes de guardar se lee el feed una vez (y si es la página de un sitio, se busca su RSS)
+      let sourceConfig: Record<string, unknown> = feedData.sourceConfig;
+      if (feedData.source === 'rss') {
+        try {
+          sourceConfig = { ...(await resolveNewsFeed(feedData.sourceConfig, { timeoutMs: 10_000 })).config };
+        } catch (error) {
+          const message = error instanceof FeedError ? error.message : 'No se pudo leer ese feed de noticias.';
+          if (!(error instanceof FeedError)) console.error('[SOCIAL-FEED-RSS-ERROR]', error);
+          const field = 'url' in feedData.sourceConfig ? 'sourceConfig.url' : 'sourceConfig';
+          return res.status(400).json({ error: message, details: [{ field, message }] });
+        }
+      }
+
       await ensureGuildRow(botGuild);
       const feed = await storage.createContentFeed({
         ...feedData,
+        sourceConfig,
         guildId,
         enabled: true
       });
@@ -626,6 +671,13 @@ export async function registerRoutes(app: Express, { sessionParser }: RegisterRo
       const onlyDisables = Object.keys(body).length === 1 && body.enabled === false;
       if (existing.source === 'twitter' && !onlyDisables) {
         return res.status(400).json({ error: `${TWITTER_FEEDS_DISABLED_ERROR} Este feed solo se puede desactivar o borrar.` });
+      }
+
+      if (existing.source === 'rss' && body.postInterval !== undefined && body.postInterval < CONTENT_FEED_LIMITS.newsMinInterval) {
+        return res.status(400).json({
+          error: NEWS_MIN_INTERVAL_ERROR,
+          details: [{ field: 'postInterval', message: NEWS_MIN_INTERVAL_ERROR }]
+        });
       }
 
       if (body.channelId && !findGuildTextChannel(getBotGuild(res), body.channelId)) {

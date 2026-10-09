@@ -50,7 +50,7 @@ type ChannelFormValues = Record<ChannelField, string | null>;
 
 const FIELD_NAMES: Record<ChannelField, string> = {
   welcomeChannelId: "Bienvenida",
-  contentChannelId: "Contenido de Reddit",
+  contentChannelId: "Contenido (noticias y Reddit)",
   moderationChannelId: "Moderación",
 };
 
@@ -470,8 +470,8 @@ function ChannelsEditor({ guildId }: { guildId: string }) {
             <ChannelRoleCard
               fieldId="canal-contenido"
               icon={Share2}
-              title="Contenido de Reddit"
-              purpose="Tu canal preferido para memes e imágenes de Reddit."
+              title="Contenido (noticias y Reddit)"
+              purpose="Tu canal preferido para noticias, memes e imágenes de Reddit."
               facts={[
                 "Cuando creas un feed en Redes sociales, el panel te propone este canal.",
                 "Cada feed publica en el canal que tenga elegido: cambiar este no mueve los feeds que ya existen.",

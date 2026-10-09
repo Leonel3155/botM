@@ -1,13 +1,16 @@
-import type { Guild } from 'discord.js';
+import type { Guild, GuildTextBasedChannel } from 'discord.js';
 import type { ContentFeed } from '@shared/schema';
-import { CONTENT_FEED_LIMITS } from '@shared/api';
+import { CONTENT_FEED_LIMITS, type NewsFeedConfig } from '@shared/api';
 import { DiscordBot } from './index';
 import { storage } from '../storage';
 import { redditService } from '../services/reddit';
+import { formatNewsItem, loadFeed, type FeedItem } from '../services/rss';
 import { dailyQuestions } from './services/dailyQuestion';
 import { resolveSendableChannel } from './services/channels';
 
 const SUBREDDIT_REGEX = new RegExp(CONTENT_FEED_LIMITS.subredditPattern);
+// Noticias de más de 3 días no se publican (salvo la primera vez, para que se vea que el feed funciona)
+const NEWS_MAX_AGE_MS = 3 * 24 * 60 * 60 * 1000;
 
 export class ContentScheduler {
   private bot: DiscordBot;
@@ -89,16 +92,21 @@ export class ContentScheduler {
     }
 
     try {
-      if (feed.source !== 'reddit') {
+      if (feed.source !== 'reddit' && feed.source !== 'rss') {
         // No hay integración real con Twitter/X: nunca publicamos contenido inventado
         console.warn(`[FEEDS] ${label}: las publicaciones de ${feed.source === 'twitter' ? 'Twitter/X' : feed.source} todavía no están disponibles; no se publica nada.`);
         return;
       }
 
-      // Antes de pedirle nada a Reddit: ¿puedo publicar en ese canal?
+      // Antes de pedirle nada a Reddit o al sitio de noticias: ¿puedo publicar en ese canal?
       const check = resolveSendableChannel(guild, feed.channelId);
       if (!check.ok) {
         console.warn(`[FEEDS] ${label}: no puedo publicar en el canal ${feed.channelId ?? '(sin canal)'}: ${plainReason(check.reason)} Lo vuelvo a intentar en ${feed.postInterval} min.`);
+        return;
+      }
+
+      if (feed.source === 'rss') {
+        await this.postNews(guild, feed, check.channel, label);
         return;
       }
 
@@ -140,6 +148,77 @@ export class ContentScheduler {
     }
   }
 
+  // Noticias: publica lo nuevo del feed (como mucho newsMaxPerTurn, de lo más viejo a lo más nuevo)
+  // y da por visto todo lo demás, para no llenar el canal ni repetir.
+  private async postNews(guild: Guild, feed: ContentFeed, channel: GuildTextBasedChannel, label: string) {
+    const config = newsConfigOf(feed);
+    if (!config) {
+      console.warn(`[FEEDS] ${label}: el feed de noticias no tiene un enlace guardado; no se publica nada.`);
+      return;
+    }
+    const name = config.title ?? 'Noticias';
+
+    let items: FeedItem[];
+    try {
+      items = (await loadFeed(config.url)).items;
+    } catch (error) {
+      const reason = error instanceof Error ? error.message : String(error);
+      console.warn(`[FEEDS] ${label}: no pude leer ${name}: ${reason} Lo vuelvo a intentar en ${feed.postInterval} min.`);
+      return;
+    }
+    if (items.length === 0) {
+      console.log(`[FEEDS] ${label}: ${name} no tiene noticias ahora; lo vuelvo a revisar en ${feed.postInterval} min.`);
+      return;
+    }
+
+    const firstTime = !(await storage.hasPostedContent(feed.id));
+    const seen = await storage.getPostedSourceIds(feed.id, items.map(item => item.sourceId));
+    if (seen.size > 0) await storage.touchPostedContent(feed.id, [...seen]);
+
+    const fresh = newestFirst(items.filter(item => !seen.has(item.sourceId)));
+    if (fresh.length === 0) {
+      console.log(`[FEEDS] ${label}: nada nuevo en ${name}; lo vuelvo a revisar en ${feed.postInterval} min.`);
+      return;
+    }
+
+    const now = Date.now();
+    const toPost = firstTime
+      ? fresh.slice(0, 1)
+      : fresh
+          .filter(item => !item.published || now - item.published.getTime() <= NEWS_MAX_AGE_MS)
+          .slice(0, CONTENT_FEED_LIMITS.newsMaxPerTurn);
+    const postIds = new Set(toPost.map(item => item.sourceId));
+    const skipped = fresh.filter(item => !postIds.has(item.sourceId)).map(item => item.sourceId);
+    if (skipped.length > 0) await storage.recordSeenContent(feed.id, skipped);
+
+    let posted = 0;
+    for (const item of [...toPost].reverse()) {
+      let messageId: string | null = null;
+      try {
+        const sent = await channel.send(formatNewsItem(name, item));
+        messageId = sent.id;
+        posted++;
+      } catch (error) {
+        // Se apunta igual como vista: si Discord la rechaza, reintentarla cada turno no la arregla
+        console.error(`[FEEDS] ${label}: Discord no aceptó la noticia "${item.title.slice(0, 80)}":`, error);
+      }
+      await storage.recordPostedContent({
+        feedId: feed.id,
+        sourceId: item.sourceId,
+        messageId,
+        title: item.title.slice(0, 300),
+        url: item.link,
+      }).catch((error) => {
+        console.error(`[FEEDS] ${label}: no se pudo apuntar la noticia (podría repetirse):`, error);
+      });
+    }
+    if (posted > 0) {
+      console.log(`[FEEDS] Publiqué ${posted} ${posted === 1 ? 'noticia' : 'noticias'} de ${name} en ${guild.name}.`);
+    } else if (toPost.length === 0) {
+      console.log(`[FEEDS] ${label}: lo nuevo de ${name} tiene más de 3 días; no lo publico.`);
+    }
+  }
+
   stopScheduler() {
     if (this.interval) {
       clearInterval(this.interval);
@@ -156,6 +235,21 @@ function subredditOf(feed: ContentFeed): string | null {
   if (!config || typeof config !== 'object' || Array.isArray(config)) return null;
   const value = (config as Record<string, unknown>).subreddit;
   return typeof value === 'string' && value.trim() ? value.trim() : null;
+}
+
+// sourceConfig de un feed de noticias: { url, title?, ... } (lo arma el servidor al crearlo)
+function newsConfigOf(feed: ContentFeed): NewsFeedConfig | null {
+  const config = feed.sourceConfig;
+  if (!config || typeof config !== 'object' || Array.isArray(config)) return null;
+  const { url, title } = config as Record<string, unknown>;
+  if (typeof url !== 'string' || !url) return null;
+  return { url, title: typeof title === 'string' && title.trim() ? title.trim() : undefined };
+}
+
+// Lo más nuevo primero. Si alguna noticia no trae fecha, se respeta el orden del feed (casi siempre ya va así)
+function newestFirst(items: FeedItem[]): FeedItem[] {
+  if (items.some(item => !item.published)) return items;
+  return [...items].sort((a, b) => b.published!.getTime() - a.published!.getTime());
 }
 
 // Los motivos de channels.ts vienen con formato de Discord (**negritas**); en el log van en texto plano

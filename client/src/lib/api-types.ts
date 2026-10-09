@@ -41,6 +41,9 @@ export type ModerationActionResponse = Serialized<ModerationAction>;
 export interface ContentFeedSourceConfig {
   subreddit?: string;
   filterNSFW?: boolean;
+  /** Noticias (source "rss"): el RSS que lee el bot y su nombre. */
+  url?: string;
+  title?: string;
   [key: string]: unknown;
 }
 
@@ -52,7 +55,7 @@ export type ContentFeedResponse = Omit<Serialized<ContentFeed>, "sourceConfig"> 
 // Cuerpo de POST /api/social/:guildId/feeds (ver feedSchema en server/routes.ts)
 export interface NewContentFeed {
   channelId: string;
-  source: "reddit" | "twitter";
+  source: "reddit" | "rss";
   sourceConfig: ContentFeedSourceConfig;
   postInterval: number;
 }

@@ -242,6 +242,9 @@ export interface IStorage {
   createContentFeed(feedData: any): Promise<any>;
   getPostedSourceIds(feedId: string, sourceIds: string[]): Promise<Set<string>>;
   recordPostedContent(entry: PostedContentEntry): Promise<void>;
+  hasPostedContent(feedId: string): Promise<boolean>;
+  recordSeenContent(feedId: string, sourceIds: string[]): Promise<void>;
+  touchPostedContent(feedId: string, sourceIds: string[]): Promise<void>;
   updateGuildSettings(guildId: string, settings: any): Promise<void>;
 }
 
@@ -1146,9 +1149,46 @@ export class DatabaseStorage implements IStorage {
   // Apunta lo publicado y olvida lo de hace más de una semana (para entonces ya no está en "hot")
   async recordPostedContent(entry: PostedContentEntry): Promise<void> {
     await db.insert(postedContent).values(entry);
+    await this.forgetOldPostedContent(entry.feedId);
+  }
+
+  async hasPostedContent(feedId: string): Promise<boolean> {
+    const [row] = await db
+      .select({ id: postedContent.id })
+      .from(postedContent)
+      .where(eq(postedContent.feedId, feedId))
+      .limit(1);
+    return !!row;
+  }
+
+  // Noticias: lo que el bot vio en el feed pero decidió no publicar (viejo o de más en ese turno).
+  // Queda apuntado sin mensaje para que no salga después.
+  async recordSeenContent(feedId: string, sourceIds: string[]): Promise<void> {
+    const unique = Array.from(new Set(sourceIds));
+    for (let i = 0; i < unique.length; i += 100) {
+      const chunk = unique.slice(i, i + 100);
+      await db.insert(postedContent).values(chunk.map((sourceId) => ({ feedId, sourceId, messageId: null })));
+    }
+    if (unique.length > 0) await this.forgetOldPostedContent(feedId);
+  }
+
+  // Noticias: lo que sigue en el feed se vuelve a marcar como reciente, así no se olvida
+  // (ni se vuelve a publicar) mientras el sitio lo siga mostrando. En estos feeds posted_at es "visto por última vez".
+  async touchPostedContent(feedId: string, sourceIds: string[]): Promise<void> {
+    const unique = Array.from(new Set(sourceIds));
+    for (let i = 0; i < unique.length; i += 100) {
+      const chunk = unique.slice(i, i + 100);
+      await db
+        .update(postedContent)
+        .set({ postedAt: new Date() })
+        .where(and(eq(postedContent.feedId, feedId), inArray(postedContent.sourceId, chunk)));
+    }
+  }
+
+  private async forgetOldPostedContent(feedId: string): Promise<void> {
     await db
       .delete(postedContent)
-      .where(and(eq(postedContent.feedId, entry.feedId), lt(postedContent.postedAt, new Date(Date.now() - POSTED_CONTENT_RETENTION_MS))));
+      .where(and(eq(postedContent.feedId, feedId), lt(postedContent.postedAt, new Date(Date.now() - POSTED_CONTENT_RETENTION_MS))));
   }
 
   async updateGuildSettings(guildId: string, settings: any): Promise<void> {

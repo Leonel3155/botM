@@ -1,7 +1,15 @@
-import { CONTENT_FEED_LIMITS as API_CONTENT_FEED_LIMITS, type ContentFeedItem } from "@shared/api";
+import {
+  CONTENT_FEED_LIMITS as API_CONTENT_FEED_LIMITS,
+  NEWS_SECTIONS,
+  NEWS_SECTION_LABELS,
+  type ContentFeedItem,
+  type NewsSection,
+} from "@shared/api";
+
+export { NEWS_SECTIONS, NEWS_SECTION_LABELS, type NewsSection };
 
 /**
- * Límites de los feeds de Reddit, sacados de shared/api.ts (los mismos que valida el servidor).
+ * Límites de los feeds (Reddit y noticias), sacados de shared/api.ts (los mismos que valida el servidor).
  * Aquí el patrón del subreddit va ya como RegExp para usarlo directo en los formularios.
  */
 export const CONTENT_FEED_LIMITS = {
@@ -13,7 +21,16 @@ export const CONTENT_FEED_LIMITS = {
   subredditMaxLength: API_CONTENT_FEED_LIMITS.subredditMaxLength,
   /** Minutos entre publicaciones. */
   postInterval: API_CONTENT_FEED_LIMITS.postInterval,
+  /** Noticias: mínimo de minutos entre revisiones y cuántas publica por turno. */
+  newsMinInterval: API_CONTENT_FEED_LIMITS.newsMinInterval,
+  newsMaxPerTurn: API_CONTENT_FEED_LIMITS.newsMaxPerTurn,
+  newsUrlMaxLength: API_CONTENT_FEED_LIMITS.newsUrlMaxLength,
+  newsTopicMinLength: API_CONTENT_FEED_LIMITS.newsTopicMinLength,
+  newsTopicMaxLength: API_CONTENT_FEED_LIMITS.newsTopicMaxLength,
 } as const;
+
+/** Temas que se proponen al crear un feed de noticias por tema. */
+export const NEWS_TOPIC_SUGGESTIONS = ["Videojuegos", "Anime", "Inteligencia artificial", "Fútbol", "Fórmula 1", "Cine y series"] as const;
 
 /** Intervalo propuesto para un feed nuevo. */
 export const DEFAULT_POST_INTERVAL = 60;
@@ -60,12 +77,18 @@ export function formatIntervalShort(minutes: number): string {
   return Number.isInteger(hours) ? `${hours} h` : `${Math.floor(hours)} h ${minutes % 60} min`;
 }
 
-export type FeedKind = "reddit" | "twitter" | "unknown";
+export type FeedKind = "reddit" | "rss" | "twitter" | "unknown";
 
 export function feedKind(feed: Pick<ContentFeedItem, "source">): FeedKind {
   if (feed.source === "reddit") return "reddit";
+  if (feed.source === "rss") return "rss";
   if (feed.source === "twitter") return "twitter";
   return "unknown";
+}
+
+/** Reddit y noticias publican; los demás (Twitter/X viejos) solo se pueden apagar o borrar. */
+export function isSupportedKind(kind: FeedKind): boolean {
+  return kind === "reddit" || kind === "rss";
 }
 
 /** sourceConfig llega como JSON libre: se lee con cuidado. */
@@ -80,12 +103,58 @@ export function feedSubreddit(feed: Pick<ContentFeedItem, "sourceConfig">): stri
   return configString(feed, "subreddit");
 }
 
-/** Nombre para mostrar: "r/memes", o algo genérico para feeds viejos. */
+function hostname(url: string | null): string | null {
+  if (!url) return null;
+  try {
+    return new URL(url).hostname.replace(/^www\./, "");
+  } catch {
+    return null;
+  }
+}
+
+function isNewsSection(value: string | null): value is NewsSection {
+  return !!value && (NEWS_SECTIONS as readonly string[]).includes(value);
+}
+
+/** Lo que guardó el servidor para un feed de noticias (sourceConfig). */
+export function feedNews(feed: Pick<ContentFeedItem, "sourceConfig">) {
+  const section = configString(feed, "section");
+  return {
+    url: configString(feed, "url"),
+    title: configString(feed, "title"),
+    siteUrl: configString(feed, "siteUrl"),
+    topic: configString(feed, "topic"),
+    section: isNewsSection(section) ? section : null,
+  };
+}
+
+/** Enlace para abrir el origen del feed (el subreddit o el sitio de noticias). */
+export function feedLink(feed: ContentFeedItem): string | null {
+  const kind = feedKind(feed);
+  if (kind === "reddit") {
+    const subreddit = feedSubreddit(feed);
+    return subreddit ? subredditUrl(subreddit) : null;
+  }
+  if (kind === "rss") {
+    const news = feedNews(feed);
+    const link = news.siteUrl ?? news.url;
+    return link && /^https?:\/\//i.test(link) ? link : null;
+  }
+  return null;
+}
+
+/** Nombre para mostrar: "r/memes", "Noticias · Tecnología", el nombre del sitio, o algo genérico para feeds viejos. */
 export function feedTitle(feed: ContentFeedItem): string {
   const kind = feedKind(feed);
   if (kind === "reddit") {
     const subreddit = feedSubreddit(feed);
     return subreddit ? `r/${subreddit}` : "Feed de Reddit sin subreddit";
+  }
+  if (kind === "rss") {
+    const news = feedNews(feed);
+    if (news.section) return `Noticias · ${NEWS_SECTION_LABELS[news.section]}`;
+    if (news.topic) return `Noticias · ${news.topic}`;
+    return news.title ?? hostname(news.url) ?? "Feed de noticias";
   }
   if (kind === "twitter") {
     const account = configString(feed, "username") ?? configString(feed, "account");
@@ -94,9 +163,9 @@ export function feedTitle(feed: ContentFeedItem): string {
   return `Feed de ${feed.source || "origen desconocido"}`;
 }
 
-/** Orden estable: Reddit primero (por subreddit), luego el resto. */
+/** Orden estable: noticias, Reddit (por nombre) y luego el resto. */
 export function sortFeeds(feeds: ContentFeedItem[]): ContentFeedItem[] {
-  const rank: Record<FeedKind, number> = { reddit: 0, twitter: 1, unknown: 2 };
+  const rank: Record<FeedKind, number> = { rss: 0, reddit: 1, twitter: 2, unknown: 3 };
   return [...feeds].sort((a, b) => {
     const byKind = rank[feedKind(a)] - rank[feedKind(b)];
     if (byKind !== 0) return byKind;

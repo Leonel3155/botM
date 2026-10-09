@@ -14,7 +14,7 @@ import { useChannelConfig, useContentFeeds, useDiscordChannels, useNow } from "@
 import { channelLabel } from "@/components/canales-redes/channel-picker";
 import { FeedCard } from "@/components/canales-redes/feed-card";
 import { FeedFormDialog, usableDefaultChannel, type FeedDialogMode } from "@/components/canales-redes/feed-form-dialog";
-import { CONTENT_FEED_LIMITS, feedKind, sortFeeds } from "@/components/canales-redes/feed-utils";
+import { CONTENT_FEED_LIMITS, feedKind, isSupportedKind, sortFeeds } from "@/components/canales-redes/feed-utils";
 import { useSelectedGuild } from "@/lib/guild";
 import { getApiErrorInfo, isApiError } from "@/lib/queryClient";
 import { cn } from "@/lib/utils";
@@ -58,8 +58,8 @@ export default function Social() {
   const feeds = useMemo(() => sortFeeds(feedsQuery.data ?? []), [feedsQuery.data]);
   const total = feeds.length;
   const atLimit = total >= MAX_FEEDS;
-  const activeCount = feeds.filter((feed) => feedKind(feed) === "reddit" && feed.enabled).length;
-  const legacyCount = feeds.filter((feed) => feedKind(feed) !== "reddit").length;
+  const activeCount = feeds.filter((feed) => isSupportedKind(feedKind(feed)) && feed.enabled).length;
+  const legacyCount = feeds.filter((feed) => !isSupportedKind(feedKind(feed))).length;
 
   const channels = channelsQuery.data;
   const channelsErrorKind = isApiError(channelsQuery.error) ? channelsQuery.error.kind : null;
@@ -114,7 +114,7 @@ export default function Social() {
     <div className="space-y-6">
       <PageHeader
         title="Redes sociales"
-        description="Comparte memes e imágenes de Reddit en tus canales para que siempre haya algo nuevo de qué hablar."
+        description="Comparte noticias y memes de Reddit en tus canales para que siempre haya algo nuevo de qué hablar."
         actions={
           <>
             <Button
@@ -174,17 +174,19 @@ export default function Social() {
         <CardContent className="space-y-3 text-sm text-muted-foreground">
           <ul className="list-disc space-y-1.5 pl-5">
             <li>
-              Cuando le toca a un feed, el bot mira lo más popular del subreddit y publica una imagen al azar en el
-              canal que elegiste.
+              <span className="text-foreground">Noticias:</span> cuando le toca a un feed, el bot lo revisa y publica
+              las noticias nuevas (hasta {CONTENT_FEED_LIMITS.newsMaxPerTurn} por turno) con título, resumen, imagen si
+              la hay y enlace. Nunca repite una noticia. Puedes usar secciones o temas de Google Noticias, o cualquier
+              sitio o canal de YouTube que tenga RSS. No hace falta ninguna clave.
             </li>
             <li>
-              Usa la API pública de Reddit, sin cuenta. Reddit puede limitar o bloquear esas consultas: si no responde
-              o no hay imágenes, ese turno no se publica nada.
+              <span className="text-foreground">Reddit:</span> el bot mira lo más popular del subreddit y publica una
+              imagen al azar. Usa la API pública de Reddit, sin cuenta; si Reddit no responde o no hay imágenes, ese
+              turno no se publica nada. Nunca comparte contenido para adultos (NSFW).
             </li>
-            <li>Solo comparte posts con imagen y nunca contenido para adultos (NSFW).</li>
             <li>
               Solo publica mientras el bot está conectado. «Último intento» se marca cada vez que le toca al feed,
-              aunque Reddit no haya devuelto nada esa vez.
+              aunque esa vez no haya habido nada nuevo.
             </li>
             <li>
               Si el canal ya no existe o el bot no puede escribir ahí, no publica nada, pero ese turno también cuenta
@@ -200,7 +202,7 @@ export default function Social() {
                 Puedes cambiarlo en{" "}
               </>
             ) : (
-              <>¿Tienes un canal para memes? Elígelo como canal de contenido en </>
+              <>¿Tienes un canal para noticias o memes? Elígelo como canal de contenido en </>
             )}
             <Link href="/canales" className="text-primary underline-offset-4 hover:underline">
               Canales
@@ -209,7 +211,7 @@ export default function Social() {
           </p>
           <p className="flex items-start gap-2">
             <Twitter className="mt-0.5 h-4 w-4 shrink-0" aria-hidden="true" />
-            <span>Twitter/X ya no está disponible: por ahora el bot solo publica desde Reddit.</span>
+            <span>Twitter/X no está disponible: X cobra por leer publicaciones. Usa noticias o Reddit.</span>
           </p>
         </CardContent>
       </Card>
@@ -273,8 +275,8 @@ export default function Social() {
         ) : feeds.length === 0 ? (
           <EmptyState
             icon={Rss}
-            title="Aún no tienes feeds de Reddit"
-            description="Crea uno y el bot compartirá imágenes de tu subreddit favorito cada cierto tiempo. Así el chat siempre tiene algo nuevo, aunque nadie haya escrito todavía."
+            title="Aún no tienes feeds"
+            description="Crea uno y el bot compartirá noticias de los temas que elijas o imágenes de tu subreddit favorito cada cierto tiempo. Así el chat siempre tiene algo nuevo, aunque nadie haya escrito todavía."
             action={createButton("Crear mi primer feed", "button-first-feed")}
             testId="state-no-feeds"
           />

@@ -2,7 +2,7 @@ import { useState, type ReactNode } from "react";
 import { useMutation } from "@tanstack/react-query";
 import { formatDistance } from "date-fns";
 import { es } from "date-fns/locale";
-import { AlertTriangle, ExternalLink, Loader2, Pencil, PowerOff, Rss, Trash2, Twitter } from "lucide-react";
+import { AlertTriangle, ExternalLink, Loader2, Newspaper, Pencil, PowerOff, Rss, Trash2, Twitter } from "lucide-react";
 import type { ContentFeedItem, ContentFeedResponse, ContentFeedsResponse, DiscordChannelItem } from "@shared/api";
 import {
   AlertDialog,
@@ -23,7 +23,7 @@ import { apiRequest, isApiError, queryClient } from "@/lib/queryClient";
 import { cn } from "@/lib/utils";
 import { errorText, feedsKey, invalidatePaths } from "./api";
 import { ChannelIssueNote, findChannel, getChannelIssue } from "./channel-picker";
-import { feedKind, feedSubreddit, feedTitle, formatInterval, parseDate, subredditUrl } from "./feed-utils";
+import { feedKind, feedLink, feedTitle, formatInterval, isSupportedKind, parseDate } from "./feed-utils";
 
 interface FeedCardProps {
   guildId: string;
@@ -71,8 +71,8 @@ export function FeedCard({ guildId, feed, channels, canEdit, botMissing = false,
   const [confirmDelete, setConfirmDelete] = useState(false);
   const kind = feedKind(feed);
   const title = feedTitle(feed);
-  const subreddit = feedSubreddit(feed);
-  const isLegacy = kind !== "reddit";
+  const link = feedLink(feed);
+  const isLegacy = !isSupportedKind(kind);
 
   const replaceInCache = (updated: ContentFeedResponse) => {
     queryClient.setQueryData<ContentFeedsResponse>(feedsKey(guildId), (old) =>
@@ -155,7 +155,7 @@ export function FeedCard({ guildId, feed, channels, canEdit, botMissing = false,
           ? { text: "Cuando vuelva el bot", className: "text-status-warning" }
           : null;
 
-  const Icon = kind === "twitter" ? Twitter : Rss;
+  const Icon = kind === "twitter" ? Twitter : kind === "rss" ? Newspaper : Rss;
 
   return (
     <Card className={cn("flex flex-col", !enabled && !isLegacy && "opacity-90")} data-testid={`card-feed-${feed.id}`}>
@@ -171,16 +171,19 @@ export function FeedCard({ guildId, feed, channels, canEdit, botMissing = false,
             <Icon className="h-5 w-5" aria-hidden="true" />
           </div>
           <div className="min-w-0 flex-1">
-            {kind === "reddit" && subreddit ? (
+            {link && !isLegacy ? (
               <a
-                href={subredditUrl(subreddit)}
+                href={link}
                 target="_blank"
                 rel="noopener noreferrer"
-                className="inline-flex max-w-full items-center gap-1 font-mono font-semibold text-foreground hover:text-primary"
+                className={cn(
+                  "inline-flex max-w-full items-center gap-1 font-semibold text-foreground hover:text-primary",
+                  kind === "reddit" && "font-mono",
+                )}
               >
                 <span className="truncate">{title}</span>
                 <ExternalLink className="h-3.5 w-3.5 shrink-0" aria-hidden="true" />
-                <span className="sr-only">(abre Reddit en otra pestaña)</span>
+                <span className="sr-only">{kind === "reddit" ? "(abre Reddit en otra pestaña)" : "(abre el sitio en otra pestaña)"}</span>
               </a>
             ) : (
               <p className="truncate font-semibold text-foreground">{title}</p>
@@ -319,7 +322,9 @@ export function FeedCard({ guildId, feed, channels, canEdit, botMissing = false,
             <AlertDialogDescription>
               {isLegacy
                 ? "El feed desaparece de la lista. No se puede deshacer."
-                : "El bot dejará de publicar desde este subreddit. Las publicaciones que ya hizo se quedan en Discord. No se puede deshacer."}
+                : kind === "rss"
+                  ? "El bot dejará de publicar estas noticias. Las que ya publicó se quedan en Discord. No se puede deshacer."
+                  : "El bot dejará de publicar desde este subreddit. Las publicaciones que ya hizo se quedan en Discord. No se puede deshacer."}
             </AlertDialogDescription>
           </AlertDialogHeader>
           <AlertDialogFooter className="gap-2 sm:space-x-0">

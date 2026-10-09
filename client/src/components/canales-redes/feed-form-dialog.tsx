@@ -3,7 +3,7 @@ import { useForm } from "react-hook-form";
 import { zodResolver } from "@hookform/resolvers/zod";
 import { z } from "zod";
 import { useMutation } from "@tanstack/react-query";
-import { ExternalLink, Info, Loader2 } from "lucide-react";
+import { ExternalLink, Image as ImageIcon, Info, Loader2, Newspaper } from "lucide-react";
 import type {
   ContentFeedCreateRequest,
   ContentFeedItem,
@@ -38,55 +38,175 @@ import { ChannelIssueNote, ChannelPicker, channelLabel, findChannel, getChannelI
 import {
   CONTENT_FEED_LIMITS,
   DEFAULT_POST_INTERVAL,
+  NEWS_SECTIONS,
+  NEWS_SECTION_LABELS,
+  NEWS_TOPIC_SUGGESTIONS,
   POST_INTERVAL_PRESETS,
   SHORT_INTERVAL_WARNING_MINUTES,
   feedKind,
+  feedNews,
   feedSubreddit,
+  feedTitle,
   formatInterval,
   formatIntervalShort,
   isValidSubreddit,
   normalizeSubreddit,
   subredditUrl,
+  type NewsSection,
 } from "./feed-utils";
 
-const { min: INTERVAL_MIN, max: INTERVAL_MAX } = CONTENT_FEED_LIMITS.postInterval;
+const { min: REDDIT_INTERVAL_MIN, max: INTERVAL_MAX } = CONTENT_FEED_LIMITS.postInterval;
+const NEWS_INTERVAL_MIN = CONTENT_FEED_LIMITS.newsMinInterval;
 
-function buildSchema(requireSubreddit: boolean) {
-  return z.object({
-    subreddit: requireSubreddit
-      ? z.string().superRefine((value, ctx) => {
-          const name = normalizeSubreddit(value);
-          if (!name) {
-            ctx.addIssue({ code: z.ZodIssueCode.custom, message: "Escribe el nombre de un subreddit." });
-          } else if (!isValidSubreddit(name)) {
-            ctx.addIssue({
-              code: z.ZodIssueCode.custom,
-              message: `"${name}" no es un nombre válido: usa de ${CONTENT_FEED_LIMITS.subredditMinLength} a ${CONTENT_FEED_LIMITS.subredditMaxLength} letras, números o guion bajo (_), sin espacios.`,
-            });
-          }
+type FeedType = "news" | "reddit";
+type NewsMode = "section" | "topic" | "url";
+
+const NEWS_MODES: { value: NewsMode; label: string }[] = [
+  { value: "section", label: "Sección" },
+  { value: "topic", label: "Tema" },
+  { value: "url", label: "Sitio o RSS" },
+];
+
+function intervalMin(type: FeedType): number {
+  return type === "news" ? NEWS_INTERVAL_MIN : REDDIT_INTERVAL_MIN;
+}
+
+/** En crear se valida lo del tipo elegido; en editar solo canal e intervalo. */
+function buildSchema(isCreate: boolean, editingType: FeedType) {
+  return z
+    .object({
+      type: z.enum(["news", "reddit"]),
+      subreddit: z.string(),
+      newsMode: z.enum(["section", "topic", "url"]),
+      section: z.string(),
+      topic: z.string(),
+      url: z.string(),
+      channelId: z.string().min(1, "Elige el canal donde se van a publicar."),
+      postInterval: z
+        .number({
+          required_error: "Escribe cada cuántos minutos.",
+          invalid_type_error: "Escribe cada cuántos minutos.",
         })
-      : z.string(),
-    channelId: z.string().min(1, "Elige el canal donde se van a publicar."),
-    postInterval: z
-      .number({
-        required_error: "Escribe cada cuántos minutos publicar.",
-        invalid_type_error: "Escribe cada cuántos minutos publicar.",
-      })
-      .int("Usa minutos enteros, sin decimales.")
-      .min(INTERVAL_MIN, `Lo mínimo es ${INTERVAL_MIN} ${INTERVAL_MIN === 1 ? "minuto" : "minutos"}.`)
-      .max(INTERVAL_MAX, `Lo máximo es ${INTERVAL_MAX} minutos (${INTERVAL_MAX / 60} horas).`),
-  });
+        .int("Usa minutos enteros, sin decimales.")
+        .max(INTERVAL_MAX, `Lo máximo es ${INTERVAL_MAX} minutos (${INTERVAL_MAX / 60} horas).`),
+    })
+    .superRefine((values, ctx) => {
+      const type = isCreate ? values.type : editingType;
+      const min = intervalMin(type);
+      if (Number.isFinite(values.postInterval) && values.postInterval < min) {
+        ctx.addIssue({
+          code: z.ZodIssueCode.custom,
+          path: ["postInterval"],
+          message:
+            type === "news"
+              ? `Las noticias se revisan como mucho cada ${min} minutos.`
+              : `Lo mínimo es ${min} ${min === 1 ? "minuto" : "minutos"}.`,
+        });
+      }
+      if (!isCreate) return;
+
+      if (type === "reddit") {
+        const name = normalizeSubreddit(values.subreddit);
+        if (!name) {
+          ctx.addIssue({ code: z.ZodIssueCode.custom, path: ["subreddit"], message: "Escribe el nombre de un subreddit." });
+        } else if (!isValidSubreddit(name)) {
+          ctx.addIssue({
+            code: z.ZodIssueCode.custom,
+            path: ["subreddit"],
+            message: `"${name}" no es un nombre válido: usa de ${CONTENT_FEED_LIMITS.subredditMinLength} a ${CONTENT_FEED_LIMITS.subredditMaxLength} letras, números o guion bajo (_), sin espacios.`,
+          });
+        }
+        return;
+      }
+
+      if (values.newsMode === "section") {
+        if (!(NEWS_SECTIONS as readonly string[]).includes(values.section)) {
+          ctx.addIssue({ code: z.ZodIssueCode.custom, path: ["section"], message: "Elige una sección." });
+        }
+      } else if (values.newsMode === "topic") {
+        const topic = values.topic.trim();
+        if (topic.length < CONTENT_FEED_LIMITS.newsTopicMinLength) {
+          ctx.addIssue({ code: z.ZodIssueCode.custom, path: ["topic"], message: "Escribe de qué quieres noticias." });
+        } else if (topic.length > CONTENT_FEED_LIMITS.newsTopicMaxLength) {
+          ctx.addIssue({
+            code: z.ZodIssueCode.custom,
+            path: ["topic"],
+            message: `El tema puede tener hasta ${CONTENT_FEED_LIMITS.newsTopicMaxLength} letras.`,
+          });
+        }
+      } else {
+        const url = values.url.trim();
+        if (url.length < 4 || !url.includes(".")) {
+          ctx.addIssue({ code: z.ZodIssueCode.custom, path: ["url"], message: "Pega el enlace del sitio o de su RSS." });
+        } else if (url.length > CONTENT_FEED_LIMITS.newsUrlMaxLength) {
+          ctx.addIssue({ code: z.ZodIssueCode.custom, path: ["url"], message: "Ese enlace es demasiado largo." });
+        }
+      }
+    });
 }
 
 type FeedFormValues = z.infer<ReturnType<typeof buildSchema>>;
 
 /** Campos del 400 del servidor → campos del formulario. */
-const SERVER_FIELD_MAP: Record<string, keyof FeedFormValues> = {
-  "sourceConfig.subreddit": "subreddit",
-  sourceConfig: "subreddit",
-  channelId: "channelId",
-  postInterval: "postInterval",
-};
+function serverField(field: string, values: FeedFormValues): keyof FeedFormValues | null {
+  switch (field) {
+    case "sourceConfig.subreddit":
+      return "subreddit";
+    case "sourceConfig.section":
+      return "section";
+    case "sourceConfig.topic":
+      return "topic";
+    case "sourceConfig.url":
+      return "url";
+    case "sourceConfig":
+      if (values.type === "reddit") return "subreddit";
+      return values.newsMode === "section" ? "section" : values.newsMode === "topic" ? "topic" : "url";
+    case "channelId":
+      return "channelId";
+    case "postInterval":
+      return "postInterval";
+    default:
+      return null;
+  }
+}
+
+/** Botones tipo "pastilla" para elegir una opción. */
+function ChoiceButtons<T extends string>({
+  options,
+  value,
+  onChange,
+  disabled,
+  label,
+}: {
+  options: readonly { value: T; label: string }[];
+  value: T | "";
+  onChange: (value: T) => void;
+  disabled?: boolean;
+  label: string;
+}) {
+  return (
+    <div className="flex flex-wrap gap-2" role="group" aria-label={label}>
+      {options.map((option) => {
+        const active = value === option.value;
+        return (
+          <Button
+            key={option.value}
+            type="button"
+            size="sm"
+            variant={active ? "default" : "outline"}
+            aria-pressed={active}
+            onClick={() => onChange(option.value)}
+            disabled={disabled}
+          >
+            {option.label}
+          </Button>
+        );
+      })}
+    </div>
+  );
+}
+
+const SECTION_OPTIONS = NEWS_SECTIONS.map((section) => ({ value: section, label: NEWS_SECTION_LABELS[section] }));
 
 export type FeedDialogMode =
   | { kind: "create"; defaultChannelId: string | null }
@@ -101,7 +221,7 @@ interface FeedFormDialogProps {
 }
 
 /**
- * Crear o editar un feed de Reddit. Se monta al abrirlo y se desmonta al cerrarlo,
+ * Crear o editar un feed (noticias o Reddit). Se monta al abrirlo y se desmonta al cerrarlo,
  * así el formulario siempre empieza limpio.
  */
 export function FeedFormDialog({ guildId, mode, existingFeeds, onClose }: FeedFormDialogProps) {
@@ -110,46 +230,77 @@ export function FeedFormDialog({ guildId, mode, existingFeeds, onClose }: FeedFo
   const channels = channelsQuery.data;
   const isCreate = mode.kind === "create";
   const editingFeed = mode.kind === "edit" ? mode.feed : null;
+  const editingType: FeedType = editingFeed && feedKind(editingFeed) === "rss" ? "news" : "reddit";
 
-  const schema = useMemo(() => buildSchema(isCreate), [isCreate]);
+  const schema = useMemo(() => buildSchema(isCreate, editingType), [isCreate, editingType]);
 
   const form = useForm<FeedFormValues>({
     resolver: zodResolver(schema),
     mode: "onTouched",
-    defaultValues: editingFeed
-      ? {
-          subreddit: feedSubreddit(editingFeed) ?? "",
-          channelId: editingFeed.channelId ?? "",
-          postInterval: editingFeed.postInterval,
-        }
-      : {
-          subreddit: "",
-          channelId: mode.kind === "create" && mode.defaultChannelId ? mode.defaultChannelId : "",
-          postInterval: DEFAULT_POST_INTERVAL,
-        },
+    defaultValues: {
+      type: editingFeed ? editingType : "news",
+      subreddit: editingFeed ? feedSubreddit(editingFeed) ?? "" : "",
+      newsMode: "section",
+      section: "",
+      topic: "",
+      url: "",
+      channelId: editingFeed
+        ? editingFeed.channelId ?? ""
+        : mode.kind === "create" && mode.defaultChannelId
+          ? mode.defaultChannelId
+          : "",
+      postInterval: editingFeed ? editingFeed.postInterval : DEFAULT_POST_INTERVAL,
+    },
   });
 
+  const watchedType = form.watch("type");
+  const type: FeedType = isCreate ? watchedType : editingType;
+  const newsMode = form.watch("newsMode");
+  const section = form.watch("section");
+  const topicInput = form.watch("topic");
+  const urlInput = form.watch("url");
   const subredditInput = form.watch("subreddit");
   const channelId = form.watch("channelId");
   const postInterval = form.watch("postInterval");
+  const minInterval = intervalMin(type);
 
   const subredditName = normalizeSubreddit(subredditInput ?? "");
   const subredditOk = isValidSubreddit(subredditName);
-  const duplicates = isCreate && subredditOk
-    ? existingFeeds.filter(
-        (feed) =>
-          feedKind(feed) === "reddit" && feedSubreddit(feed)?.toLowerCase() === subredditName.toLowerCase(),
-      )
-    : [];
+
+  // Feeds que ya publican lo mismo (solo para avisar; se puede crear igual)
+  const duplicates = !isCreate
+    ? []
+    : type === "reddit"
+      ? subredditOk
+        ? existingFeeds.filter(
+            (feed) =>
+              feedKind(feed) === "reddit" && feedSubreddit(feed)?.toLowerCase() === subredditName.toLowerCase(),
+          )
+        : []
+      : existingFeeds.filter((feed) => {
+          if (feedKind(feed) !== "rss") return false;
+          const news = feedNews(feed);
+          if (newsMode === "section") return !!section && news.section === section;
+          if (newsMode === "topic") {
+            const topic = topicInput.trim().toLowerCase();
+            return !!topic && news.topic?.toLowerCase() === topic;
+          }
+          const url = urlInput.trim().toLowerCase().replace(/^https?:\/\//, "").replace(/\/+$/, "");
+          return !!url && [news.url, news.siteUrl].some(
+            (value) => value?.toLowerCase().replace(/^https?:\/\//, "").replace(/\/+$/, "") === url,
+          );
+        });
   const duplicateWhere = duplicates.length > 0 ? channelLabel(channels, duplicates[0].channelId) : null;
+  const duplicateName = duplicates.length > 0 ? feedTitle(duplicates[0]) : "";
   const proposedDefault =
     mode.kind === "create" && !!mode.defaultChannelId && channelId === mode.defaultChannelId;
 
   const applyServerError = (error: unknown) => {
     const details = errorDetails(error);
+    const values = form.getValues();
     let mapped = false;
     for (const detail of details) {
-      const field = SERVER_FIELD_MAP[detail.field];
+      const field = serverField(detail.field, values);
       if (field) {
         form.setError(field, { type: "server", message: detail.message });
         mapped = true;
@@ -168,7 +319,10 @@ export function FeedFormDialog({ guildId, mode, existingFeeds, onClose }: FeedFo
       const where = channelLabel(channels, feed.channelId);
       toast({
         title: "¡Feed creado!",
-        description: `El bot publicará imágenes de r/${feedSubreddit(feed) ?? subredditName}${where ? ` en ${where}` : ""} ${formatInterval(feed.postInterval)}.`,
+        description:
+          feedKind(feed) === "rss"
+            ? `El bot revisará ${feedTitle(feed)} ${formatInterval(feed.postInterval)} y publicará lo nuevo${where ? ` en ${where}` : ""}. La primera noticia sale en el próximo minuto.`
+            : `El bot publicará imágenes de r/${feedSubreddit(feed) ?? subredditName}${where ? ` en ${where}` : ""} ${formatInterval(feed.postInterval)}.`,
       });
       onClose();
     },
@@ -208,11 +362,25 @@ export function FeedFormDialog({ guildId, mode, existingFeeds, onClose }: FeedFo
   const onSubmit = (values: FeedFormValues) => {
     form.clearErrors("root");
     if (mode.kind === "create") {
+      if (values.type === "reddit") {
+        createMutation.mutate({
+          source: "reddit",
+          channelId: values.channelId,
+          // El bot nunca publica contenido NSFW; se guarda explícito
+          sourceConfig: { subreddit: normalizeSubreddit(values.subreddit), filterNSFW: true },
+          postInterval: values.postInterval,
+        });
+        return;
+      }
       createMutation.mutate({
-        source: "reddit",
+        source: "rss",
         channelId: values.channelId,
-        // El bot nunca publica contenido NSFW; se guarda explícito
-        sourceConfig: { subreddit: normalizeSubreddit(values.subreddit), filterNSFW: true },
+        sourceConfig:
+          values.newsMode === "section"
+            ? { section: values.section as NewsSection }
+            : values.newsMode === "topic"
+              ? { topic: values.topic.trim() }
+              : { url: values.url.trim() },
         postInterval: values.postInterval,
       });
       return;
@@ -230,9 +398,21 @@ export function FeedFormDialog({ guildId, mode, existingFeeds, onClose }: FeedFo
     updateMutation.mutate({ feedId: feed.id, body });
   };
 
+  const setValue = <K extends keyof FeedFormValues>(name: K, value: FeedFormValues[K]) =>
+    form.setValue(name, value as never, { shouldDirty: true, shouldValidate: form.formState.isSubmitted });
+
+  const chooseType = (next: FeedType) => {
+    if (next === type) return;
+    setValue("type", next);
+    form.clearErrors();
+    // Las noticias no se revisan tan seguido como Reddit
+    const current = form.getValues("postInterval");
+    if (next === "news" && Number.isFinite(current) && current < NEWS_INTERVAL_MIN) setValue("postInterval", DEFAULT_POST_INTERVAL);
+  };
+
   const rootError = form.formState.errors.root?.server?.message;
   const channelIssue = getChannelIssue(channels, channelId || null);
-  const editingSubreddit = editingFeed ? feedSubreddit(editingFeed) : null;
+  const editingName = editingFeed ? feedTitle(editingFeed) : null;
 
   return (
     <Dialog open onOpenChange={(open) => !open && !pending && onClose()}>
@@ -241,79 +421,223 @@ export function FeedFormDialog({ guildId, mode, existingFeeds, onClose }: FeedFo
         data-testid="dialog-feed-form"
       >
         <DialogHeader>
-          <DialogTitle>
-            {isCreate ? "Nuevo feed de Reddit" : `Editar ${editingSubreddit ? `r/${editingSubreddit}` : "feed"}`}
-          </DialogTitle>
+          <DialogTitle>{isCreate ? "Nuevo feed" : `Editar ${editingName ?? "feed"}`}</DialogTitle>
           <DialogDescription>
-            Cada cierto tiempo, el bot toma una imagen al azar de lo más popular del subreddit y la publica en el
-            canal que elijas.
+            {type === "news"
+              ? "Cada cierto tiempo, el bot revisa el feed y publica las noticias nuevas en el canal que elijas."
+              : "Cada cierto tiempo, el bot toma una imagen al azar de lo más popular del subreddit y la publica en el canal que elijas."}
           </DialogDescription>
         </DialogHeader>
 
         <Form {...form}>
           <form onSubmit={form.handleSubmit(onSubmit)} className="space-y-5" noValidate>
-            {/* Subreddit */}
+            {/* Qué publica */}
             {isCreate ? (
-              <FormField
-                control={form.control}
-                name="subreddit"
-                render={({ field }) => (
-                  <FormItem>
-                    <FormLabel>Subreddit</FormLabel>
-                    <div className="relative">
-                      <span
-                        className="pointer-events-none absolute inset-y-0 left-3 flex items-center font-mono text-sm text-muted-foreground"
-                        aria-hidden="true"
+              <>
+                <div className="space-y-2">
+                  <p className="text-sm font-medium text-foreground">Qué quieres publicar</p>
+                  <div className="grid grid-cols-2 gap-2" role="group" aria-label="Tipo de feed">
+                    {(
+                      [
+                        { value: "news", label: "Noticias", Icon: Newspaper },
+                        { value: "reddit", label: "Memes de Reddit", Icon: ImageIcon },
+                      ] as const
+                    ).map(({ value, label, Icon }) => (
+                      <Button
+                        key={value}
+                        type="button"
+                        variant={type === value ? "default" : "outline"}
+                        aria-pressed={type === value}
+                        onClick={() => chooseType(value)}
+                        disabled={pending}
+                        data-testid={`button-feed-type-${value}`}
                       >
-                        r/
-                      </span>
-                      <FormControl>
-                        <Input
-                          {...field}
-                          className="pl-8 font-mono"
-                          placeholder="memes"
-                          autoComplete="off"
-                          autoCapitalize="none"
-                          spellCheck={false}
-                          maxLength={200}
-                          data-testid="input-subreddit"
-                        />
-                      </FormControl>
+                        <Icon aria-hidden="true" />
+                        {label}
+                      </Button>
+                    ))}
+                  </div>
+                </div>
+
+                {type === "news" ? (
+                  <div className="space-y-3">
+                    <div className="space-y-2">
+                      <p className="text-sm font-medium text-foreground">De dónde</p>
+                      <ChoiceButtons
+                        options={NEWS_MODES}
+                        value={newsMode}
+                        onChange={(value) => {
+                          setValue("newsMode", value);
+                          form.clearErrors(["section", "topic", "url"]);
+                        }}
+                        disabled={pending}
+                        label="De dónde salen las noticias"
+                      />
                     </div>
-                    <FormDescription>
-                      El nombre tal como aparece en Reddit (sin «r/»). También puedes pegar el enlace del subreddit.
-                    </FormDescription>
-                    {subredditOk && (
-                      <a
-                        href={subredditUrl(subredditName)}
-                        target="_blank"
-                        rel="noopener noreferrer"
-                        className="inline-flex items-center gap-1 text-xs text-primary underline-offset-4 hover:underline"
-                      >
-                        Ver r/{subredditName} en Reddit para comprobar que existe
-                        <ExternalLink className="h-3 w-3" aria-hidden="true" />
-                        <span className="sr-only">(se abre en otra pestaña)</span>
-                      </a>
+
+                    {newsMode === "section" && (
+                      <FormField
+                        control={form.control}
+                        name="section"
+                        render={({ field }) => (
+                          <FormItem>
+                            <FormLabel>Sección de Google Noticias</FormLabel>
+                            <ChoiceButtons
+                              options={SECTION_OPTIONS}
+                              value={field.value as NewsSection | ""}
+                              onChange={(value) => setValue("section", value)}
+                              disabled={pending}
+                              label="Sección"
+                            />
+                            <FormDescription>Las noticias más importantes de esa sección, en español (edición México).</FormDescription>
+                            <FormMessage />
+                          </FormItem>
+                        )}
+                      />
                     )}
+
+                    {newsMode === "topic" && (
+                      <FormField
+                        control={form.control}
+                        name="topic"
+                        render={({ field }) => (
+                          <FormItem>
+                            <FormLabel>Tema</FormLabel>
+                            <FormControl>
+                              <Input
+                                {...field}
+                                placeholder="videojuegos"
+                                autoComplete="off"
+                                maxLength={CONTENT_FEED_LIMITS.newsTopicMaxLength}
+                                data-testid="input-news-topic"
+                              />
+                            </FormControl>
+                            <div className="flex flex-wrap gap-1.5" role="group" aria-label="Temas sugeridos">
+                              {NEWS_TOPIC_SUGGESTIONS.map((suggestion) => (
+                                <Button
+                                  key={suggestion}
+                                  type="button"
+                                  size="sm"
+                                  variant="outline"
+                                  className="h-7 px-2 text-xs"
+                                  onClick={() => setValue("topic", suggestion)}
+                                  disabled={pending}
+                                >
+                                  {suggestion}
+                                </Button>
+                              ))}
+                            </div>
+                            <FormDescription>
+                              El bot busca ese tema en Google Noticias y publica lo de los últimos días.
+                            </FormDescription>
+                            <FormMessage />
+                          </FormItem>
+                        )}
+                      />
+                    )}
+
+                    {newsMode === "url" && (
+                      <FormField
+                        control={form.control}
+                        name="url"
+                        render={({ field }) => (
+                          <FormItem>
+                            <FormLabel>Enlace del sitio o de su RSS</FormLabel>
+                            <FormControl>
+                              <Input
+                                {...field}
+                                type="url"
+                                inputMode="url"
+                                className="font-mono"
+                                placeholder="https://www.xataka.com.mx"
+                                autoComplete="off"
+                                autoCapitalize="none"
+                                spellCheck={false}
+                                maxLength={CONTENT_FEED_LIMITS.newsUrlMaxLength}
+                                data-testid="input-news-url"
+                              />
+                            </FormControl>
+                            <FormDescription>
+                              Pega la página principal de un sitio de noticias o de un canal de YouTube y el bot busca
+                              su RSS solo. También sirve el enlace directo al RSS.
+                            </FormDescription>
+                            <FormMessage />
+                          </FormItem>
+                        )}
+                      />
+                    )}
+
                     {duplicates.length > 0 && (
                       <p className="text-xs text-status-warning">
-                        Ya tienes {duplicates.length === 1 ? "un feed" : `${duplicates.length} feeds`} de r/{subredditName}
-                        {duplicateWhere ? ` (en ${duplicateWhere})` : ""}. Puedes crear otro, pero es probable que se
-                        repitan imágenes.
+                        Ya tienes {duplicates.length === 1 ? "un feed" : `${duplicates.length} feeds`} de {duplicateName}
+                        {duplicateWhere ? ` (en ${duplicateWhere})` : ""}. Puedes crear otro, pero se repetirán las
+                        noticias.
                       </p>
                     )}
-                    <FormMessage />
-                  </FormItem>
+                  </div>
+                ) : (
+                  <FormField
+                    control={form.control}
+                    name="subreddit"
+                    render={({ field }) => (
+                      <FormItem>
+                        <FormLabel>Subreddit</FormLabel>
+                        <div className="relative">
+                          <span
+                            className="pointer-events-none absolute inset-y-0 left-3 flex items-center font-mono text-sm text-muted-foreground"
+                            aria-hidden="true"
+                          >
+                            r/
+                          </span>
+                          <FormControl>
+                            <Input
+                              {...field}
+                              className="pl-8 font-mono"
+                              placeholder="memes"
+                              autoComplete="off"
+                              autoCapitalize="none"
+                              spellCheck={false}
+                              maxLength={200}
+                              data-testid="input-subreddit"
+                            />
+                          </FormControl>
+                        </div>
+                        <FormDescription>
+                          El nombre tal como aparece en Reddit (sin «r/»). También puedes pegar el enlace del subreddit.
+                        </FormDescription>
+                        {subredditOk && (
+                          <a
+                            href={subredditUrl(subredditName)}
+                            target="_blank"
+                            rel="noopener noreferrer"
+                            className="inline-flex items-center gap-1 text-xs text-primary underline-offset-4 hover:underline"
+                          >
+                            Ver r/{subredditName} en Reddit para comprobar que existe
+                            <ExternalLink className="h-3 w-3" aria-hidden="true" />
+                            <span className="sr-only">(se abre en otra pestaña)</span>
+                          </a>
+                        )}
+                        {duplicates.length > 0 && (
+                          <p className="text-xs text-status-warning">
+                            Ya tienes {duplicates.length === 1 ? "un feed" : `${duplicates.length} feeds`} de r/{subredditName}
+                            {duplicateWhere ? ` (en ${duplicateWhere})` : ""}. Puedes crear otro, pero es probable que se
+                            repitan imágenes.
+                          </p>
+                        )}
+                        <FormMessage />
+                      </FormItem>
+                    )}
+                  />
                 )}
-              />
+              </>
             ) : (
               <div className="space-y-1">
-                <p className="text-sm font-medium text-foreground">Subreddit</p>
-                <p className="font-mono text-sm text-foreground">
-                  {editingSubreddit ? `r/${editingSubreddit}` : "Sin subreddit"}
-                </p>
+                <p className="text-sm font-medium text-foreground">{type === "news" ? "Noticias de" : "Subreddit"}</p>
+                <p className={cn("text-sm text-foreground", type === "reddit" && "font-mono")}>{editingName}</p>
                 <p className="text-xs text-muted-foreground">
-                  El subreddit no se puede cambiar. Si quieres otro, crea un feed nuevo y borra este.
+                  {type === "news"
+                    ? "El origen no se puede cambiar. Si quieres otro, crea un feed nuevo y borra este."
+                    : "El subreddit no se puede cambiar. Si quieres otro, crea un feed nuevo y borra este."}
                 </p>
               </div>
             )}
@@ -374,9 +698,9 @@ export function FeedFormDialog({ guildId, mode, existingFeeds, onClose }: FeedFo
               name="postInterval"
               render={({ field }) => (
                 <FormItem>
-                  <FormLabel>Cada cuánto publicar (minutos)</FormLabel>
+                  <FormLabel>{type === "news" ? "Cada cuánto revisar (minutos)" : "Cada cuánto publicar (minutos)"}</FormLabel>
                   <div className="flex flex-wrap gap-2" role="group" aria-label="Atajos de intervalo">
-                    {POST_INTERVAL_PRESETS.map((minutes) => {
+                    {POST_INTERVAL_PRESETS.filter((minutes) => minutes >= minInterval).map((minutes) => {
                       const active = field.value === minutes;
                       return (
                         <Button
@@ -398,7 +722,7 @@ export function FeedFormDialog({ guildId, mode, existingFeeds, onClose }: FeedFo
                       <Input
                         type="number"
                         inputMode="numeric"
-                        min={INTERVAL_MIN}
+                        min={minInterval}
                         max={INTERVAL_MAX}
                         step={1}
                         className="w-28 font-mono"
@@ -414,16 +738,17 @@ export function FeedFormDialog({ guildId, mode, existingFeeds, onClose }: FeedFo
                       />
                     </FormControl>
                     <span className="text-sm text-muted-foreground">
-                      {Number.isFinite(postInterval) && postInterval >= INTERVAL_MIN && postInterval <= INTERVAL_MAX
+                      {Number.isFinite(postInterval) && postInterval >= minInterval && postInterval <= INTERVAL_MAX
                         ? `= ${formatInterval(postInterval)}`
                         : "minutos"}
                     </span>
                   </div>
                   <FormDescription>
-                    Entre {INTERVAL_MIN} y {INTERVAL_MAX} minutos ({INTERVAL_MAX / 60} horas).
+                    Entre {minInterval} y {INTERVAL_MAX} minutos ({INTERVAL_MAX / 60} horas).
                   </FormDescription>
-                  {Number.isFinite(postInterval) &&
-                    postInterval >= INTERVAL_MIN &&
+                  {type === "reddit" &&
+                    Number.isFinite(postInterval) &&
+                    postInterval >= minInterval &&
                     postInterval < SHORT_INTERVAL_WARNING_MINUTES && (
                       <p className="text-xs text-status-warning">
                         Ojo: con un intervalo tan corto el canal se llena rápido y Reddit puede limitar al bot.
@@ -436,10 +761,18 @@ export function FeedFormDialog({ guildId, mode, existingFeeds, onClose }: FeedFo
 
             <p className="flex items-start gap-2 rounded-md border border-border bg-muted/40 p-3 text-xs text-muted-foreground">
               <Info className="mt-0.5 h-3.5 w-3.5 shrink-0 text-primary" aria-hidden="true" />
-              <span>
-                Solo se publican posts con imagen y nunca contenido para adultos (NSFW). Si en ese momento Reddit no
-                responde o no hay imágenes, ese turno se salta.
-              </span>
+              {type === "news" ? (
+                <span>
+                  En cada turno publica hasta {CONTENT_FEED_LIMITS.newsMaxPerTurn} noticias nuevas (las más recientes) y
+                  nunca repite. La primera vez publica la más reciente para que veas cómo queda; después, nada de más de
+                  3 días. Las de Google Noticias salen sin imagen; las de muchos sitios sí la traen.
+                </span>
+              ) : (
+                <span>
+                  Solo se publican posts con imagen y nunca contenido para adultos (NSFW). Si en ese momento Reddit no
+                  responde o no hay imágenes, ese turno se salta.
+                </span>
+              )}
             </p>
 
             {rootError && (
@@ -459,7 +792,15 @@ export function FeedFormDialog({ guildId, mode, existingFeeds, onClose }: FeedFo
                 data-testid="button-submit-feed"
               >
                 {pending && <Loader2 className="animate-spin" aria-hidden="true" />}
-                {isCreate ? (pending ? "Creando…" : "Crear feed") : pending ? "Guardando…" : "Guardar cambios"}
+                {isCreate
+                  ? pending
+                    ? type === "news"
+                      ? "Revisando el feed…"
+                      : "Creando…"
+                    : "Crear feed"
+                  : pending
+                    ? "Guardando…"
+                    : "Guardar cambios"}
               </Button>
             </DialogFooter>
           </form>

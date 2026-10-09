@@ -601,7 +601,7 @@ export interface CustomCommandToggleRequest {
 export type CustomCommandResponse = CustomCommandItem;
 
 // =============================================
-// Contenido automático (Reddit)
+// Contenido automático (Reddit y noticias por RSS)
 // =============================================
 
 /** Límites de los feeds de contenido (los mismos para el servidor y el panel). */
@@ -614,24 +614,84 @@ export const CONTENT_FEED_LIMITS = {
   subredditMaxLength: 21,
   /** Minutos entre publicaciones. */
   postInterval: { min: 1, max: 1440 },
+  /** Noticias: el bot no revisa un mismo sitio más seguido que esto (minutos). */
+  newsMinInterval: 10,
+  /** Noticias: cuántas publica como máximo en cada turno (las más nuevas; el resto las da por vistas). */
+  newsMaxPerTurn: 2,
+  newsUrlMaxLength: 500,
+  newsTopicMinLength: 2,
+  newsTopicMaxLength: 80,
 } as const;
+
+/** Secciones de Google Noticias que se pueden elegir sin escribir nada. */
+export const NEWS_SECTIONS = ["TOP", "NATION", "WORLD", "TECHNOLOGY", "SPORTS", "ENTERTAINMENT", "SCIENCE", "BUSINESS", "HEALTH"] as const;
+export type NewsSection = (typeof NEWS_SECTIONS)[number];
+
+export const NEWS_SECTION_LABELS: Record<NewsSection, string> = {
+  TOP: "Lo más importante",
+  NATION: "México",
+  WORLD: "Mundo",
+  TECHNOLOGY: "Tecnología",
+  SPORTS: "Deportes",
+  ENTERTAINMENT: "Entretenimiento",
+  SCIENCE: "Ciencia",
+  BUSINESS: "Economía",
+  HEALTH: "Salud",
+};
+
+/** Idioma y país de Google Noticias: español de Latinoamérica, edición de México. */
+export const GOOGLE_NEWS_EDITION = { hl: "es-419", gl: "MX", ceid: "MX:es-419" } as const;
+
+export type ContentFeedSource = "reddit" | "rss";
 
 export type ContentFeedItem = Jsonify<ContentFeed>;
 /** GET /api/social/:guildId/feeds */
 export type ContentFeedsResponse = ContentFeedItem[];
 
-/** POST /api/social/:guildId/feeds (máximo CONTENT_FEED_LIMITS.maxPerGuild por servidor; Twitter/X aún no está disponible) */
-export interface ContentFeedCreateRequest {
-  source: "reddit";
-  channelId: string;
-  sourceConfig: { subreddit: string; filterNSFW?: boolean };
-  /** Minutos entre publicaciones (CONTENT_FEED_LIMITS.postInterval). */
-  postInterval: number;
+/**
+ * sourceConfig de un feed de noticias tal como queda guardado.
+ * El servidor ya revisó que `url` sea un RSS/Atom que se puede leer.
+ */
+export interface NewsFeedConfig {
+  /** Dirección del RSS que lee el bot. */
+  url: string;
+  /** Nombre del feed (el que trae el propio RSS). */
+  title?: string;
+  /** Página del sitio, para enlazarla en el panel. */
+  siteUrl?: string;
+  /** Si se creó con un tema de Google Noticias. */
+  topic?: string;
+  /** Si se creó con una sección de Google Noticias. */
+  section?: NewsSection;
 }
+
+/**
+ * POST /api/social/:guildId/feeds (máximo CONTENT_FEED_LIMITS.maxPerGuild por servidor; Twitter/X aún no está disponible)
+ * Noticias: sourceConfig lleva una sola de estas tres cosas:
+ * - { section }: una sección de Google Noticias;
+ * - { topic }: un tema para buscar en Google Noticias (por ejemplo "videojuegos");
+ * - { url }: el enlace de un RSS o de la página de un sitio (el servidor busca su RSS).
+ * Si el enlace no lleva a un RSS que se pueda leer, responde 400 con details[0].field = "sourceConfig.url".
+ */
+export type ContentFeedCreateRequest =
+  | {
+      source: "reddit";
+      channelId: string;
+      sourceConfig: { subreddit: string; filterNSFW?: boolean };
+      /** Minutos entre publicaciones (CONTENT_FEED_LIMITS.postInterval). */
+      postInterval: number;
+    }
+  | {
+      source: "rss";
+      channelId: string;
+      sourceConfig: { section: NewsSection } | { topic: string } | { url: string };
+      /** Minutos entre revisiones (desde CONTENT_FEED_LIMITS.newsMinInterval). */
+      postInterval: number;
+    };
 /**
  * PATCH /api/social/:guildId/feeds/:feedId
  * Feeds viejos con source "twitter": solo aceptan { enabled: false } (400 con cualquier otro cambio);
- * se pueden borrar con DELETE.
+ * se pueden borrar con DELETE. En los de noticias postInterval va desde CONTENT_FEED_LIMITS.newsMinInterval.
  */
 export interface ContentFeedUpdateRequest {
   channelId?: string;
