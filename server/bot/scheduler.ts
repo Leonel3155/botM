@@ -9,6 +9,8 @@ import { dailyQuestions } from './services/dailyQuestion';
 import { resolveSendableChannel } from './services/channels';
 
 const SUBREDDIT_REGEX = new RegExp(CONTENT_FEED_LIMITS.subredditPattern);
+// Tiempo máximo de un turno de un feed (descarga incluida) antes de pasar al siguiente
+const FEED_TURN_TIMEOUT_MS = 90_000;
 // Noticias de más de 3 días no se publican (salvo la primera vez, para que se vea que el feed funciona)
 const NEWS_MAX_AGE_MS = 3 * 24 * 60 * 60 * 1000;
 
@@ -66,7 +68,11 @@ export class ContentScheduler {
           const intervalMs = feed.postInterval * 60 * 1000; // Convert minutes to milliseconds
 
           if (now - lastPosted >= intervalMs) {
-            await this.postContent(guild, feed);
+            // Un feed que se cuelga no puede frenar a los demás: pasado el tope se sigue con el siguiente
+            const timedOut = await withTimeout(this.postContent(guild, feed), FEED_TURN_TIMEOUT_MS);
+            if (timedOut) {
+              console.warn(`[FEEDS] Feed ${feed.id} (${guild.name}): tardó más de ${FEED_TURN_TIMEOUT_MS / 1000} s; sigo con los demás.`);
+            }
           }
         }
       }
@@ -250,6 +256,19 @@ function newsConfigOf(feed: ContentFeed): NewsFeedConfig | null {
 function newestFirst(items: FeedItem[]): FeedItem[] {
   if (items.some(item => !item.published)) return items;
   return [...items].sort((a, b) => b.published!.getTime() - a.published!.getTime());
+}
+
+// true si la tarea no terminó a tiempo (sigue en segundo plano, pero ya no se espera)
+async function withTimeout(task: Promise<unknown>, ms: number): Promise<boolean> {
+  let timer: NodeJS.Timeout | undefined;
+  const timeout = new Promise<true>((resolve) => {
+    timer = setTimeout(() => resolve(true), ms);
+  });
+  try {
+    return await Promise.race([task.then(() => false), timeout]);
+  } finally {
+    clearTimeout(timer);
+  }
 }
 
 // Los motivos de channels.ts vienen con formato de Discord (**negritas**); en el log van en texto plano

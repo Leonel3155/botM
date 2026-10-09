@@ -2,6 +2,7 @@ import { lookup as dnsLookup, type LookupAddress } from 'dns';
 import http from 'http';
 import https from 'https';
 import { BlockList, isIP, type LookupFunction } from 'net';
+import { pipeline, type Readable } from 'stream';
 import zlib from 'zlib';
 
 // Descargas de direcciones que escribe alguien en el panel (feeds RSS).
@@ -179,10 +180,10 @@ function requestOnce(
         return;
       }
 
-      let stream: NodeJS.ReadableStream = response;
-      if (encoding === 'gzip' || encoding === 'x-gzip') stream = response.pipe(zlib.createGunzip());
-      else if (encoding === 'deflate') stream = response.pipe(zlib.createInflate());
-      else if (encoding === 'br') stream = response.pipe(zlib.createBrotliDecompress());
+      let decoder: zlib.Gunzip | zlib.Inflate | zlib.BrotliDecompress | null = null;
+      if (encoding === 'gzip' || encoding === 'x-gzip') decoder = zlib.createGunzip();
+      else if (encoding === 'deflate') decoder = zlib.createInflate();
+      else if (encoding === 'br') decoder = zlib.createBrotliDecompress();
       else if (encoding && encoding !== 'identity') {
         response.destroy();
         reject(new SafeFetchError(`El sitio respondió en un formato que no entiendo (${encoding}).`));
@@ -192,13 +193,28 @@ function requestOnce(
       const chunks: Buffer[] = [];
       let size = 0;
       let finished = false;
+      // Si el sitio corta, tarda de más o manda de más, se suelta todo (también el descompresor,
+      // que si no seguiría inflando en segundo plano lo que ya recibió)
+      const onAbort = () => fail(new SafeFetchError(`${url.hostname} tardó demasiado en responder.`));
       const fail = (error: Error) => {
         if (finished) return;
         finished = true;
+        signal.removeEventListener('abort', onAbort);
         response.destroy();
+        decoder?.destroy();
         reject(error);
       };
+      signal.addEventListener('abort', onAbort, { once: true });
+      response.on('error', (error) => fail(error));
+
+      // pipeline (no pipe): si la respuesta se corta a medias, el descompresor también se entera
+      const stream: Readable = decoder
+        ? pipeline(response, decoder, (error) => {
+            if (error) fail(error);
+          })
+        : response;
       stream.on('data', (chunk: Buffer) => {
+        if (finished) return;
         size += chunk.length;
         if (size > options.maxBytes) {
           fail(new SafeFetchError('La página es demasiado grande para leerla.'));
@@ -210,6 +226,7 @@ function requestOnce(
       stream.on('end', () => {
         if (finished) return;
         finished = true;
+        signal.removeEventListener('abort', onAbort);
         resolve({ status, location: null, contentType, body: Buffer.concat(chunks) });
       });
     });
@@ -238,8 +255,10 @@ export async function safeFetchText(rawUrl: string, options: SafeFetchOptions = 
       if (signal.aborted) throw new SafeFetchError(`${url.hostname} tardó demasiado en responder.`);
       const code = (error as NodeJS.ErrnoException)?.code;
       if (code === 'ENOTFOUND' || code === 'EAI_AGAIN') throw new SafeFetchError(`No se encontró el sitio ${url.hostname}.`);
-      if (code === 'ECONNREFUSED' || code === 'ECONNRESET' || code === 'ETIMEDOUT') {
-        throw new SafeFetchError(`${url.hostname} no aceptó la conexión.`);
+      if (code === 'ECONNREFUSED') throw new SafeFetchError(`${url.hostname} no aceptó la conexión.`);
+      if (code === 'ETIMEDOUT') throw new SafeFetchError(`${url.hostname} tardó demasiado en responder.`);
+      if (code === 'ECONNRESET' || code === 'ERR_STREAM_PREMATURE_CLOSE' || (typeof code === 'string' && code.startsWith('Z_'))) {
+        throw new SafeFetchError(`${url.hostname} cortó la respuesta a medias.`);
       }
       if (typeof code === 'string' && /CERT|SSL|TLS/i.test(code)) {
         throw new SafeFetchError(`${url.hostname} tiene un certificado de seguridad inválido.`);

@@ -33,6 +33,8 @@ export interface ParsedFeed {
 
 const FEED_ACCEPT = 'application/rss+xml, application/atom+xml, application/rdf+xml, application/xml;q=0.9, text/xml;q=0.9, text/html;q=0.5, */*;q=0.1';
 const MAX_ITEMS = 100;
+// Tope de entradas que se leen de un feed (el de tamaño de la descarga ya lo limita, esto es por si acaso)
+const MAX_RAW_ITEMS = 2000;
 const SUMMARY_MAX = 300;
 
 const parser = new XMLParser({
@@ -211,6 +213,8 @@ function buildItem(item: Node, base: string | null, atom: boolean): FeedItem | n
   if (sourceName && summary === sourceName) summary = '';
   // Coletilla de WordPress: "The post X appeared first on Y." / "La entrada X se publicó primero en Y."
   summary = summary.replace(/\s*(The post|La entrada)\s.*\s(appeared first|se publicó primero|aparece primero)\b.*$/i, '').trim();
+  // Google Noticias no trae el texto de la nota, solo titulares de otros medios: no sirve de resumen
+  if (hostOf(link) === 'news.google.com') summary = '';
   if (summary.length < 25) summary = '';
 
   const idSource = guid ?? textOf(item.id) ?? textOf(item['yt:videoId']) ?? link ?? (title ? `${title}|${textOf(item.pubDate) ?? ''}` : null);
@@ -273,15 +277,22 @@ export function parseFeed(xml: string, baseUrl: string | null = null): ParsedFee
   }
 
   const items: FeedItem[] = [];
-  for (const raw of rawItems.slice(0, MAX_ITEMS)) {
+  const ids = new Set<string>();
+  for (const raw of rawItems.slice(0, MAX_RAW_ITEMS)) {
     if (!isNode(raw)) continue;
     const item = buildItem(raw, siteUrl ?? baseUrl, atom);
-    if (item) items.push(item);
+    // La misma nota dos veces en el feed cuenta una sola vez
+    if (!item || ids.has(item.sourceId)) continue;
+    ids.add(item.sourceId);
+    items.push(item);
   }
+  // Casi todos los feeds van de lo más nuevo a lo más viejo; los que van al revés se voltean
+  const dated = items.filter((item) => item.published);
+  if (dated.length >= 2 && dated[0].published!.getTime() < dated[dated.length - 1].published!.getTime()) items.reverse();
   return {
     title: title ? shorten(htmlToText(title), 200) : null,
     siteUrl,
-    items,
+    items: items.slice(0, MAX_ITEMS),
   };
 }
 

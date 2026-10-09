@@ -59,10 +59,12 @@ BotM es un bot de Discord con su propio **panel web en español** para administr
 - Variables: `{usuario}`, `{nombre}`, `{servidor}`, `{canal}` y `{miembros}`. Hasta 50 por servidor, con una espera de 5 segundos por persona.
 - Nunca mencionan a `@everyone`, `@here` ni a roles, y no pueden usar nombres de comandos del bot (como `bal` o `help`).
 
-### 🌐 Redes (Reddit)
+### 🌐 Redes (noticias y Reddit)
 
-- Feeds que comparten imágenes de un subreddit en un canal cada cierto tiempo (de 1 a 1440 minutos). Nunca publica contenido NSFW. Hasta 10 feeds por servidor.
-- Twitter/X no está disponible: el bot no publica nada de ahí.
+- **Noticias:** feeds que publican cada noticia nueva como tarjeta (título, resumen, imagen si la hay y enlace). Pueden salir de una sección de Google Noticias (México, Mundo, Tecnología, Deportes…), de un tema que escribas (por ejemplo "videojuegos") o de cualquier sitio o canal de YouTube con RSS: pegas la página y el bot encuentra su RSS. No hace falta ninguna clave. Revisa cada 10 a 1440 minutos, publica como mucho 2 noticias por turno (las más nuevas), nunca repite y no publica nada de más de 3 días (salvo la primera vez, que publica la más reciente para que veas cómo queda).
+- **Reddit:** feeds que comparten imágenes de un subreddit en un canal cada cierto tiempo (de 1 a 1440 minutos). Nunca publica contenido NSFW. Usa la página pública de Reddit, sin claves.
+- Hasta 10 feeds por servidor, sumando los dos tipos.
+- Twitter/X no está disponible: X cobra por leer publicaciones, así que el bot no publica nada de ahí.
 
 ### 🖥️ Panel web
 
@@ -76,11 +78,11 @@ Inicias sesión con Discord y solo ves los servidores donde eres dueño o tienes
 | **Bienvenida y pregunta del día** | Canal, mensaje y rol de bienvenida (con prueba); canal, hora y zona de la pregunta del día (con "publicar ahora"). |
 | **Niveles** | Ranking, cómo se reparten los niveles, reglas de XP y el interruptor de avisos al subir de nivel. |
 | **Economía** | Ranking de monedas, totales y el interruptor para prender o apagar la economía. |
-| **Redes sociales** | Crear, editar, pausar y borrar feeds de Reddit. |
+| **Redes sociales** | Crear, editar, pausar y borrar feeds de noticias y de Reddit. |
 | **Moderación** | Historial de lo que hizo el staff con los comandos del bot. |
 | **Seguridad** | Prender y configurar el anti-raid, terminar un modo raid y ver el historial. |
 | **Comandos personalizados** | Crear, editar, activar y borrar tus comandos. |
-| **Canales** | Canal de bienvenida, canal por defecto de Reddit y canal de moderación (donde llegan las alertas de raid). |
+| **Canales** | Canal de bienvenida, canal por defecto para noticias y Reddit, y canal de moderación (donde llegan las alertas de raid). |
 | **Ajustes** | Prefijo de los comandos (por defecto `&`), tu cuenta (cerrar sesión) y el estado del bot. |
 
 ---
@@ -373,6 +375,7 @@ Los ejemplos con todos los valores y comentarios están en [`.env.example`](.env
 | `GLOBAL_CONCURRENCY` | No | Cuántas tareas del bot pueden correr a la vez (por defecto `50`). Déjalo así. |
 | `GLOBAL_TIMEOUT_MS` | No | Tiempo máximo de cada tarea del bot en milisegundos (por defecto `120000`). Déjalo así. |
 | `TWITTER_BEARER_TOKEN` / `X_BEARER_TOKEN` | No | No se usan: Twitter/X está desactivado. |
+| `REDDIT_CLIENT_ID` / `REDDIT_CLIENT_SECRET` | No | No se usan: el bot lee Reddit sin claves. |
 
 `NODE_ENV` no va en el `.env`: `npm run dev` usa `development` y `npm start` usa `production` solos.
 
@@ -671,7 +674,8 @@ Ten en cuenta:
 - **Rol "Muteado" viejo:** si usabas la versión anterior, al conectarse el bot pasa a quienes aún tenían ese rol al aislamiento de Discord por el tiempo que les quedaba. El rol se queda en el servidor; puedes borrarlo a mano.
 - **Mientras el modo raid está activo** el bot no da la bienvenida ni el rol automático a quien entra. Si alguien legítimo entró en ese rato, dale el rol a mano.
 - **Lotería:** los boletos se acumulan, pero todavía no hay sorteos.
-- **Twitter/X:** no está disponible; solo hay feeds de Reddit.
+- **Twitter/X:** no está disponible; hay feeds de noticias y de Reddit.
+- **Noticias de sitios en tu red local:** por seguridad, el bot solo lee feeds de sitios públicos de internet (nunca de `localhost` ni de direcciones como `192.168.x.x`).
 - **Preguntas del día:** están en `server/bot/data/preguntasDelDia.ts`. Puedes agregar o quitar las que quieras; el bot recuerda cuáles ya salieron (si corriges el texto de una, cuenta como nueva).
 
 ---
@@ -691,12 +695,14 @@ botM/
 │   ├── schemaSync.ts        Crea y pone al día sus tablas al arrancar
 │   ├── routes.ts, routes/   API del panel (login, ajustes, estadísticas…)
 │   ├── services/reddit.ts   Lee las publicaciones de Reddit
+│   ├── services/rss.ts      Lee feeds de noticias (RSS/Atom, Google Noticias, YouTube)
+│   ├── services/safeFetch.ts Descarga páginas públicas con límites (nunca la red local)
 │   └── bot/
 │       ├── commands/        Comandos de barra y con prefijo
 │       ├── events/          XP, monedas y bienvenidas
 │       ├── middleware/      Anti-raid
 │       ├── data/            Preguntas del día
-│       └── scheduler.ts     Pregunta del día y feeds de Reddit (revisa cada minuto)
+│       └── scheduler.ts     Pregunta del día y feeds de noticias y Reddit (revisa cada minuto)
 ├── shared/
 │   ├── schema.ts            Tablas de la base de datos
 │   └── api.ts               Tipos que comparten el panel y el servidor

@@ -44,7 +44,7 @@ export const NAV_SECTIONS: NavSection[] = [
       { title: "Bienvenida y pregunta del día", href: "/comunidad", icon: MessageCircleHeart, description: "Saluda a los nuevos y anima la charla", guildScoped: true },
       { title: "Niveles", href: "/niveles", icon: BarChart3, description: "XP, ranking y avisos al subir de nivel", guildScoped: true },
       { title: "Economía", href: "/economia", icon: Coins, description: "Monedas, recompensa diaria y trabajos", guildScoped: true },
-      { title: "Redes sociales", href: "/redes", icon: Share2, description: "Publicaciones automáticas desde Reddit", guildScoped: true },
+      { title: "Redes sociales", href: "/redes", icon: Share2, description: "Noticias y memes de Reddit automáticos", guildScoped: true },
     ],
   },
   {

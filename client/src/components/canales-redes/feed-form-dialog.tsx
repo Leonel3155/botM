@@ -82,24 +82,29 @@ function buildSchema(isCreate: boolean, editingType: FeedType) {
       topic: z.string(),
       url: z.string(),
       channelId: z.string().min(1, "Elige el canal donde se van a publicar."),
-      postInterval: z
-        .number({
-          required_error: "Escribe cada cuántos minutos.",
-          invalid_type_error: "Escribe cada cuántos minutos.",
-        })
-        .int("Usa minutos enteros, sin decimales.")
-        .max(INTERVAL_MAX, `Lo máximo es ${INTERVAL_MAX} minutos (${INTERVAL_MAX / 60} horas).`),
+      // NaN = casilla vacía; se revisa abajo para que no tape los demás errores del formulario
+      postInterval: z.number().or(z.nan()),
     })
     .superRefine((values, ctx) => {
       const type = isCreate ? values.type : editingType;
       const min = intervalMin(type);
-      if (Number.isFinite(values.postInterval) && values.postInterval < min) {
+      if (!Number.isFinite(values.postInterval)) {
+        ctx.addIssue({ code: z.ZodIssueCode.custom, path: ["postInterval"], message: "Escribe cada cuántos minutos." });
+      } else if (!Number.isInteger(values.postInterval)) {
+        ctx.addIssue({ code: z.ZodIssueCode.custom, path: ["postInterval"], message: "Usa minutos enteros, sin decimales." });
+      } else if (values.postInterval > INTERVAL_MAX) {
+        ctx.addIssue({
+          code: z.ZodIssueCode.custom,
+          path: ["postInterval"],
+          message: `Lo máximo es ${INTERVAL_MAX} minutos (${INTERVAL_MAX / 60} horas).`,
+        });
+      } else if (values.postInterval < min) {
         ctx.addIssue({
           code: z.ZodIssueCode.custom,
           path: ["postInterval"],
           message:
             type === "news"
-              ? `Las noticias se revisan como mucho cada ${min} minutos.`
+              ? `Para noticias, lo mínimo es ${min} minutos.`
               : `Lo mínimo es ${min} ${min === 1 ? "minuto" : "minutos"}.`,
         });
       }
@@ -398,8 +403,14 @@ export function FeedFormDialog({ guildId, mode, existingFeeds, onClose }: FeedFo
     updateMutation.mutate({ feedId: feed.id, body });
   };
 
-  const setValue = <K extends keyof FeedFormValues>(name: K, value: FeedFormValues[K]) =>
-    form.setValue(name, value as never, { shouldDirty: true, shouldValidate: form.formState.isSubmitted });
+  // Valida al momento si ya se intentó enviar o si el campo ya se tocó (así no queda un error viejo debajo)
+  const setValue = <K extends keyof FeedFormValues>(name: K, value: FeedFormValues[K]) => {
+    const state = form.getFieldState(name);
+    form.setValue(name, value as never, {
+      shouldDirty: true,
+      shouldValidate: form.formState.isSubmitted || state.isTouched || !!state.error,
+    });
+  };
 
   const chooseType = (next: FeedType) => {
     if (next === type) return;
@@ -632,7 +643,7 @@ export function FeedFormDialog({ guildId, mode, existingFeeds, onClose }: FeedFo
               </>
             ) : (
               <div className="space-y-1">
-                <p className="text-sm font-medium text-foreground">{type === "news" ? "Noticias de" : "Subreddit"}</p>
+                <p className="text-sm font-medium text-foreground">{type === "news" ? "Origen" : "Subreddit"}</p>
                 <p className={cn("text-sm text-foreground", type === "reddit" && "font-mono")}>{editingName}</p>
                 <p className="text-xs text-muted-foreground">
                   {type === "news"

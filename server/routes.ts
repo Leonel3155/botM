@@ -133,7 +133,7 @@ const SUBREDDIT_REGEX = new RegExp(CONTENT_FEED_LIMITS.subredditPattern);
 // Reddit y noticias (RSS): Twitter/X no tiene acceso real a su API (publicaría contenido de relleno)
 const TWITTER_FEEDS_DISABLED_ERROR = 'Twitter/X todavía no está disponible: por ahora se puede usar Reddit o noticias por RSS.';
 
-const NEWS_MIN_INTERVAL_ERROR = `Las noticias se revisan como mucho cada ${CONTENT_FEED_LIMITS.newsMinInterval} minutos.`;
+const NEWS_MIN_INTERVAL_ERROR = `Para noticias, el intervalo mínimo es de ${CONTENT_FEED_LIMITS.newsMinInterval} minutos.`;
 
 const redditFeedSchema = z.object({
   source: z.literal('reddit'),
