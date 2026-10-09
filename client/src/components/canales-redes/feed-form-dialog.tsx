@@ -780,8 +780,9 @@ export function FeedFormDialog({ guildId, mode, existingFeeds, onClose }: FeedFo
                 </span>
               ) : (
                 <span>
-                  Solo se publican posts con imagen, y se salta lo que Reddit marca como NSFW. Si en ese momento
-                  Reddit no responde o no hay imágenes, ese turno se salta. Reddit apaga su RSS el 13 de noviembre de 2026.
+                  Solo se publican posts con imagen, y se salta lo que Reddit marca como NSFW. No uses subreddits para
+                  adultos: ahí Reddit no marca nada. Si en ese momento Reddit no responde o no hay imágenes, ese turno
+                  se salta. Reddit apaga su RSS el 13 de noviembre de 2026.
                 </span>
               )}
             </p>

@@ -1,8 +1,8 @@
 import { XMLParser } from 'fast-xml-parser';
 import type { IncomingHttpHeaders } from 'http';
 import type { MessageCreateOptions } from 'discord.js';
-import { decodeEntities, stripDoctype } from './rss';
-import { SafeFetchError, safeFetchText } from './safeFetch';
+import { decodeEntities, FeedError, parseFeed, stripDoctype, type ParsedFeed } from './rss';
+import { SafeFetchError, safeFetchText, type SafeFetchResult } from './safeFetch';
 
 // Reddit cerró en 2026 la lectura sin cuenta de sus listas en JSON (error 403 con cualquier User-Agent).
 // El RSS público (Atom) de cada subreddit sigue abierto y sin claves: de ahí salen los feeds de Reddit.
@@ -68,9 +68,17 @@ const LISTING_SIZE = 50;
 const MAX_ENTRIES = 200;
 const ATOM_ACCEPT = 'application/atom+xml, application/xml;q=0.9, text/xml;q=0.9, */*;q=0.1';
 const IMAGE_PATH = /\.(jpe?g|png|gif|webp)$/i;
+// Solo imágenes subidas a Reddit: la miniatura que se revisa es de esa misma imagen
+const IMAGE_HOST = 'i.redd.it';
 // Miniaturas de verdad (las que Reddit pone a modo de aviso vienen de redditstatic.com)
 const REDDIT_MEDIA_HOST = /(^|\.)(redditmedia\.com|redd\.it)$/i;
 const NSFW_TITLE = /\b(nsfw|nsfl)\b/i;
+// Subreddits que por el nombre son claramente para adultos (dentro de uno NSFW, Reddit no marca nada)
+const NSFW_SUBREDDIT_NAME = /nsfw|porn|gonewild|hentai|rule34|nude|onlyfans|xxx/i;
+/** Reddit apaga su RSS público este día (anunciado en septiembre de 2026). */
+export const REDDIT_RSS_SHUTDOWN_AT = Date.UTC(2026, 10, 13);
+export const REDDIT_RSS_SHUTDOWN_MESSAGE = 'Reddit apagó su RSS público el 13 de noviembre de 2026: los feeds de Reddit ya no pueden publicar.';
+const FEED_ACCEPT = 'application/rss+xml, application/atom+xml, application/xml;q=0.9, text/xml;q=0.9, */*;q=0.1';
 const REDDIT_ICON = 'https://www.redditstatic.com/desktop2x/img/favicon/favicon-32x32.png';
 
 const parser = new XMLParser({
@@ -147,9 +155,12 @@ function parseEntry(entry: Node, fallbackSubreddit: string): RedditPost | null {
   const id = /^t3_([a-z0-9]{1,16})$/i.exec(textOf(entry.id) ?? '')?.[1]?.toLowerCase();
   if (!id) return null;
 
-  // Cuerpo en HTML: "submitted by /u/x [link] [comments]"; [link] apunta a la imagen o al sitio enlazado
-  const html = textOf(entry.content) ?? '';
-  const linkHref = /<a\s[^>]*?href\s*=\s*"([^"]+)"[^>]*>\s*\[link\]\s*<\/a>/i.exec(html)?.[1];
+  // Cuerpo en HTML: [miniatura] [texto del post] "submitted by /u/x [link] [comments]". El [link] que vale es
+  // el del pie que pone Reddit (apunta a la imagen o al sitio enlazado); el texto del post, que escribe
+  // cualquiera, se quita antes para que no pueda colar otro "[link]".
+  const html = (textOf(entry.content) ?? '').replace(/<!--\s*SC_OFF\s*-->[\s\S]*?<!--\s*SC_ON\s*-->/gi, ' ');
+  const links = [...html.matchAll(/<a\s[^>]*?href\s*=\s*"([^"]+)"[^>]*>\s*\[link\]\s*<\/a>/gi)];
+  const linkHref = links.at(-1)?.[1];
   const imgSrc = /<img\b[^>]*?\ssrc\s*=\s*"([^"]+)"/i.exec(html)?.[1];
 
   const permalinkUrl = httpUrl(attr(entry.link, 'href'));
@@ -199,10 +210,29 @@ export function parseRedditFeed(xml: string, subreddit: string): RedditPost[] | 
   return posts;
 }
 
-/** Enlace directo a una imagen (i.redd.it o cualquier .jpg/.png/.gif/.webp). */
+/** Imagen subida a Reddit (https://i.redd.it/....jpg/.png/.gif/.webp). */
 export function isImagePost(post: RedditPost): boolean {
   const url = httpUrl(post.url);
-  return !!url && IMAGE_PATH.test(url.pathname);
+  return !!url && url.protocol === 'https:' && url.hostname.toLowerCase() === IMAGE_HOST && IMAGE_PATH.test(url.pathname);
+}
+
+/** Por el nombre, un subreddit para adultos (el filtro por miniaturas no sirve dentro de esos). */
+export function looksLikeNsfwSubreddit(name: string): boolean {
+  return NSFW_SUBREDDIT_NAME.test(name);
+}
+
+/** ¿Es una dirección de Reddit? (también sus feeds RSS de noticias van al ritmo de Reddit) */
+export function isRedditUrl(raw: string): boolean {
+  try {
+    const host = new URL(raw).hostname.toLowerCase();
+    return host === 'reddit.com' || host.endsWith('.reddit.com');
+  } catch {
+    return false;
+  }
+}
+
+function afterShutdown(): boolean {
+  return Date.now() >= REDDIT_RSS_SHUTDOWN_AT;
 }
 
 // El RSS no dice qué es NSFW. A quien lee sin cuenta, Reddit no le pone miniatura a las publicaciones
@@ -239,6 +269,9 @@ export class RedditService {
 
   /** Publicaciones de "hot" con imagen y sin señales de NSFW (van a canales normales del servidor). */
   async getImagePosts(subreddit: string): Promise<RedditPost[]> {
+    if (looksLikeNsfwSubreddit(subreddit)) {
+      throw new RedditError(`r/${subreddit} parece un subreddit para adultos; no publico de ahí en canales normales.`);
+    }
     const posts = await this.getHotPosts(subreddit);
     const images = posts.filter(isImagePost);
     // Hay subreddits que no muestran miniaturas a quien no tiene cuenta: ahí no hay forma de saber qué es NSFW
@@ -271,7 +304,6 @@ export class RedditService {
     const failure = this.failures.get(key);
     if (failure && Date.now() < failure.until) throw new RedditError(failure.message);
 
-    await this.waitTurn();
     try {
       const posts = await this.download(subreddit);
       this.failures.delete(key);
@@ -325,34 +357,66 @@ export class RedditService {
     return clamped;
   }
 
-  private async download(subreddit: string): Promise<RedditPost[]> {
-    const url = `${this.baseUrl}/r/${encodeURIComponent(subreddit)}/hot/.rss?limit=${LISTING_SIZE}`;
-    let page: Awaited<ReturnType<typeof safeFetchText>>;
+  /**
+   * Descarga una página de Reddit al ritmo que deja Reddit (una consulta a la vez, pausa tras un 429).
+   * Lanza RedditError con retrySoon si toca esperar, y SafeFetchError si Reddit contestó con otro error.
+   */
+  async fetchPaced(url: string, accept = ATOM_ACCEPT): Promise<SafeFetchResult> {
+    await this.waitTurn();
     try {
-      page = await safeFetchText(url, {
-        accept: ATOM_ACCEPT,
-        timeoutMs: REDDIT_TIMEOUT_MS,
-        allowPrivateHosts: this.allowPrivateHosts,
-      });
+      const page = await safeFetchText(url, { accept, timeoutMs: REDDIT_TIMEOUT_MS, allowPrivateHosts: this.allowPrivateHosts });
+      this.rateLimitStreak = 0;
+      this.paceFrom(page.headers);
+      return page;
     } catch (error) {
-      if (!(error instanceof SafeFetchError)) throw new RedditError('No pude conectar con Reddit.');
-      if (error.status === 429) {
+      if (error instanceof SafeFetchError && error.status === 429) {
         const pause = this.pauseAfterRateLimit(error);
         console.warn(`[REDDIT] Reddit pidió esperar (demasiadas consultas); vuelvo a preguntarle en ${minutes(pause)} min.`);
         throw new RedditError(`Reddit pidió esperar; vuelvo a preguntarle en ${minutes(pause)} min.`, { retrySoon: true });
       }
-      this.paceFrom(error.headers);
+      if (error instanceof SafeFetchError) this.paceFrom(error.headers);
+      throw error;
+    }
+  }
+
+  /** Un feed de noticias que está en reddit.com: se lee al mismo ritmo que los feeds de Reddit. */
+  async loadNewsFeed(url: string): Promise<ParsedFeed> {
+    let page: SafeFetchResult;
+    try {
+      page = await this.fetchPaced(url, FEED_ACCEPT);
+    } catch (error) {
+      if (error instanceof RedditError) throw error;
+      if (afterShutdown()) throw new FeedError(REDDIT_RSS_SHUTDOWN_MESSAGE);
+      if (error instanceof SafeFetchError) throw new FeedError(error.message);
+      throw new FeedError('No se pudo leer ese enlace.');
+    }
+    const feed = parseFeed(page.text, page.url);
+    if (!feed) throw new FeedError(afterShutdown() ? REDDIT_RSS_SHUTDOWN_MESSAGE : 'Ese enlace ya no devuelve un RSS válido.');
+    return feed;
+  }
+
+  private async download(subreddit: string): Promise<RedditPost[]> {
+    // obey_over18: que Reddit quite de la lista lo marcado NSFW (si lo hace caso, es un filtro más)
+    const url = `${this.baseUrl}/r/${encodeURIComponent(subreddit)}/hot/.rss?limit=${LISTING_SIZE}&obey_over18=true`;
+    let page: SafeFetchResult;
+    try {
+      page = await this.fetchPaced(url);
+    } catch (error) {
+      if (error instanceof RedditError) throw error;
+      // Después del apagado del RSS, cualquier error es por eso y no por el subreddit
+      if (afterShutdown()) throw new RedditError(REDDIT_RSS_SHUTDOWN_MESSAGE);
+      if (!(error instanceof SafeFetchError)) throw new RedditError('No pude conectar con Reddit.');
       if (error.status === 401 || error.status === 403) {
         throw new RedditError(`Reddit no deja leer r/${subreddit} (error ${error.status}): puede ser privado o estar en cuarentena, o Reddit está bloqueando la conexión.`);
       }
       if (error.status === 404 || error.status === 410) throw new RedditError(`r/${subreddit} no existe o fue cerrado.`);
       throw new RedditError(`No pude leer Reddit: ${error.message}`);
     }
-    this.rateLimitStreak = 0;
-    this.paceFrom(page.headers);
 
-    // Reddit manda a otra página (iniciar sesión, aviso +18, búsqueda) lo que no deja ver sin cuenta
-    const unreadable = `Reddit no deja leer r/${subreddit} sin cuenta: no existe, es privado, NSFW o está en cuarentena.`;
+    // Reddit manda a otra página (iniciar sesión, búsqueda) lo que no deja ver sin cuenta
+    const unreadable = afterShutdown()
+      ? REDDIT_RSS_SHUTDOWN_MESSAGE
+      : `Reddit no deja leer r/${subreddit} sin cuenta: no existe, es privado o está en cuarentena.`;
     const finalPath = new URL(page.url).pathname.toLowerCase();
     if (!finalPath.startsWith(`/r/${subreddit.toLowerCase()}/`)) throw new RedditError(unreadable);
     const posts = parseRedditFeed(page.text, subreddit);

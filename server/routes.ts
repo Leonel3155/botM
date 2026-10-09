@@ -20,6 +20,7 @@ import {
 } from "@shared/api";
 import { bot } from "./bot/index";
 import { FeedError, resolveNewsFeed } from "./services/rss";
+import { looksLikeNsfwSubreddit, REDDIT_RSS_SHUTDOWN_AT, REDDIT_RSS_SHUTDOWN_MESSAGE } from "./services/reddit";
 import { invalidateAntiRaidConfig, liftLockdown } from "./bot/middleware/antiRaid";
 import { invalidateCustomCommandsCache } from "./bot/customCommands";
 import { setupAuthRoutes } from "./routes/auth";
@@ -139,7 +140,8 @@ const redditFeedSchema = z.object({
   source: z.literal('reddit'),
   channelId: snowflakeSchema,
   sourceConfig: z.object({
-    subreddit: z.string().regex(SUBREDDIT_REGEX, 'El nombre del subreddit no es válido.'),
+    subreddit: z.string().regex(SUBREDDIT_REGEX, 'El nombre del subreddit no es válido.')
+      .refine((name) => !looksLikeNsfwSubreddit(name), 'Ese subreddit parece para adultos: el bot publica en canales normales y ahí no puede filtrar lo NSFW.'),
     filterNSFW: z.boolean().optional()
   }).strict(),
   postInterval: postIntervalSchema
@@ -610,6 +612,9 @@ export async function registerRoutes(app: Express, { sessionParser }: RegisterRo
       }
       const feedData = parseBody(contentFeedSchema, req, res);
       if (!feedData) return;
+      if (feedData.source === 'reddit' && Date.now() >= REDDIT_RSS_SHUTDOWN_AT) {
+        return res.status(400).json({ error: REDDIT_RSS_SHUTDOWN_MESSAGE, details: [{ field: 'sourceConfig.subreddit', message: REDDIT_RSS_SHUTDOWN_MESSAGE }] });
+      }
 
       const botGuild = getBotGuild(res);
       if (!findGuildTextChannel(botGuild, feedData.channelId)) {

@@ -62,7 +62,7 @@ BotM es un bot de Discord con su propio **panel web en español** para administr
 ### 🌐 Redes (noticias y Reddit)
 
 - **Noticias:** feeds que publican cada noticia nueva como tarjeta (título, resumen, imagen si la hay y enlace). Pueden salir de una sección de Google Noticias (México, Mundo, Tecnología, Deportes…), de un tema que escribas (por ejemplo "videojuegos") o de cualquier sitio o canal de YouTube con RSS: pegas la página y el bot encuentra su RSS. No hace falta ninguna clave. Revisa cada 10 a 1440 minutos, publica como mucho 2 noticias por turno (las más nuevas), nunca repite y no publica nada de más de 3 días (salvo la primera vez, que publica la más reciente para que veas cómo queda).
-- **Reddit:** feeds que comparten imágenes de un subreddit en un canal cada cierto tiempo (de 1 a 1440 minutos). Se salta lo que Reddit marca como NSFW. Lee el RSS público de Reddit, sin claves (Reddit cerró en 2026 la lectura sin cuenta por JSON y apaga el RSS el 13 de noviembre de 2026).
+- **Reddit:** feeds que comparten imágenes de un subreddit en un canal cada cierto tiempo (de 1 a 1440 minutos). Solo imágenes subidas a Reddit; en subreddits normales se salta lo que Reddit marca como NSFW (no uses subreddits para adultos). Lee el RSS público de Reddit, sin claves (Reddit cerró en 2026 la lectura sin cuenta por JSON y apaga el RSS el 13 de noviembre de 2026).
 - Hasta 10 feeds por servidor, sumando los dos tipos.
 - Twitter/X no está disponible: X cobra por leer publicaciones, así que el bot no publica nada de ahí.
 
@@ -682,8 +682,9 @@ Ten en cuenta:
 - **Lotería:** los boletos se acumulan, pero todavía no hay sorteos.
 - **Twitter/X:** no está disponible; hay feeds de noticias y de Reddit.
 - **Reddit:** Reddit anunció que **apaga su RSS el 13 de noviembre de 2026**; desde ese día los feeds de Reddit dejarán de publicar (en la consola saldrá por qué). Mientras tanto:
-  - Como el RSS no dice qué es NSFW, el bot solo publica imágenes a las que Reddit les pone miniatura (a quien lee sin cuenta no se la pone en las NSFW) y que no dicen NSFW en el título. Si un subreddit no muestra miniaturas a nadie sin cuenta, el bot no publica de ahí y lo dice en la consola. Ese filtro sirve para subreddits normales: no pongas un subreddit NSFW (dentro de uno así, Reddit sí pone miniaturas).
-  - Reddit deja leer su RSS más o menos una vez por minuto, contando todos los subreddits juntos. El bot va al ritmo que marca Reddit, reutiliza cada lista 10 minutos y, si Reddit pide esperar, espera (el feed lo vuelve a intentar al minuto siguiente, sin perder su turno). Con varios feeds de Reddit a la misma hora, salen uno por minuto.
+  - Como el RSS no dice qué es NSFW, el bot solo publica imágenes subidas a Reddit (`i.redd.it`) a las que Reddit les pone miniatura (a quien lee sin cuenta no se la pone en las NSFW) y que no dicen NSFW en el título. Si un subreddit no muestra miniaturas a nadie sin cuenta, el bot no publica de ahí y lo dice en la consola.
+  - Ese filtro solo sirve en subreddits normales: dentro de un subreddit para adultos Reddit no marca nada. El panel rechaza los nombres que claramente lo son (nsfw, porn, gonewild…), pero no puede reconocerlos todos: no pongas subreddits para adultos.
+  - Reddit deja leer su RSS más o menos una vez por minuto, contando todos los subreddits (y los feeds de noticias que apunten a reddit.com). El bot va al ritmo que marca Reddit, reutiliza cada lista 10 minutos y, si Reddit pide esperar, espera: el feed lo vuelve a intentar al minuto siguiente sin perder su turno, y pasa primero el que lleva más tiempo esperando. Con varios feeds de Reddit a la misma hora, salen uno por minuto; si alguno lleva más de 15 minutos esperando, sale un aviso en la consola.
 - **Noticias de sitios en tu red local:** por seguridad, el bot solo lee feeds de sitios públicos de internet (nunca de `localhost` ni de direcciones como `192.168.x.x`).
 - **Preguntas del día:** están en `server/bot/data/preguntasDelDia.ts`. Puedes agregar o quitar las que quieras; el bot recuerda cuáles ya salieron (si corriges el texto de una, cuenta como nueva).
 

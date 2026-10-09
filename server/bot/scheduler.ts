@@ -3,7 +3,7 @@ import type { ContentFeed } from '@shared/schema';
 import { CONTENT_FEED_LIMITS, type NewsFeedConfig } from '@shared/api';
 import { DiscordBot } from './index';
 import { storage } from '../storage';
-import { RedditError, redditService, type RedditPost } from '../services/reddit';
+import { isRedditUrl, RedditError, redditService, type RedditPost } from '../services/reddit';
 import { formatNewsItem, loadFeed, type FeedItem } from '../services/rss';
 import { dailyQuestions } from './services/dailyQuestion';
 import { resolveSendableChannel } from './services/channels';
@@ -13,12 +13,16 @@ const SUBREDDIT_REGEX = new RegExp(CONTENT_FEED_LIMITS.subredditPattern);
 const FEED_TURN_TIMEOUT_MS = 90_000;
 // Noticias de más de 3 días no se publican (salvo la primera vez, para que se vea que el feed funciona)
 const NEWS_MAX_AGE_MS = 3 * 24 * 60 * 60 * 1000;
+// Si un feed lleva este rato esperando turno con Reddit, se avisa en la consola (y luego cada tanto)
+const LATE_WARNING_MS = 15 * 60 * 1000;
 
 export class ContentScheduler {
   private bot: DiscordBot;
   private interval: NodeJS.Timeout | null = null;
   // Evita dos repasos de feeds a la vez si uno tarda más de un minuto (Reddit lento)
   private checkingContent = false;
+  // Feeds que Reddit dejó para después: desde cuándo esperan y cuándo se avisó por última vez
+  private readonly waitingForReddit = new Map<string, { since: number; warnedAt: number }>();
 
   constructor(bot: DiscordBot) {
     this.bot = bot;
@@ -56,24 +60,30 @@ export class ContentScheduler {
     if (this.checkingContent) return;
     this.checkingContent = true;
     try {
-      // Get all guilds the bot is in
+      const now = Date.now();
+      const due: { guild: Guild; feed: ContentFeed }[] = [];
       for (const [guildId, guild] of this.bot.client.guilds.cache) {
-        const feeds = await storage.getContentFeeds(guildId);
-
+        let feeds: ContentFeed[];
+        try {
+          feeds = await storage.getContentFeeds(guildId);
+        } catch (error) {
+          console.error(`[FEEDS] No pude leer los feeds de ${guild.name}:`, error);
+          continue;
+        }
         for (const feed of feeds) {
           if (!feed.enabled) continue;
+          if (now - lastPostedMs(feed) >= feed.postInterval * 60 * 1000) due.push({ guild, feed });
+        }
+      }
 
-          const now = Date.now();
-          const lastPosted = feed.lastPosted ? new Date(feed.lastPosted).getTime() : 0;
-          const intervalMs = feed.postInterval * 60 * 1000; // Convert minutes to milliseconds
-
-          if (now - lastPosted >= intervalMs) {
-            // Un feed que se cuelga no puede frenar a los demás: pasado el tope se sigue con el siguiente
-            const timedOut = await withTimeout(this.postContent(guild, feed), FEED_TURN_TIMEOUT_MS);
-            if (timedOut) {
-              console.warn(`[FEEDS] Feed ${feed.id} (${guild.name}): tardó más de ${FEED_TURN_TIMEOUT_MS / 1000} s; sigo con los demás.`);
-            }
-          }
+      // Primero el que lleva más tiempo sin turno: como Reddit deja una consulta por minuto, el feed que
+      // se quedó esperando pasa adelante y ninguno se queda sin publicar
+      due.sort((a, b) => lastPostedMs(a.feed) - lastPostedMs(b.feed));
+      for (const { guild, feed } of due) {
+        // Un feed que se cuelga no puede frenar a los demás: pasado el tope se sigue con el siguiente
+        const timedOut = await withTimeout(this.postContent(guild, feed), FEED_TURN_TIMEOUT_MS);
+        if (timedOut) {
+          console.warn(`[FEEDS] Feed ${feed.id} (${guild.name}): tardó más de ${FEED_TURN_TIMEOUT_MS / 1000} s; sigo con los demás.`);
         }
       }
     } catch (error) {
@@ -83,13 +93,37 @@ export class ContentScheduler {
     }
   }
 
+  // Reddit está ocupado o pidió esperar: el turno no cuenta (lastPosted vuelve a lo de antes) y el feed
+  // lo vuelve a intentar al minuto siguiente. Si la espera se alarga, se avisa en la consola.
+  private async waitForReddit(guild: Guild, feed: ContentFeed, label: string) {
+    await storage.updateContentFeed(feed.id, guild.id, { lastPosted: feed.lastPosted ?? null }).catch(() => undefined);
+    const now = Date.now();
+    const before = this.waitingForReddit.get(feed.id);
+    // Siempre un objeto nuevo: así postContent sabe que este turno se dejó para después
+    const waiting = { since: before?.since ?? now, warnedAt: before?.warnedAt ?? now };
+    if (now - waiting.warnedAt >= LATE_WARNING_MS) {
+      waiting.warnedAt = now;
+      console.warn(`[FEEDS] ${label}: lleva ${Math.round((now - waiting.since) / 60000)} min esperando turno con Reddit (deja una consulta por minuto y hay varios feeds).`);
+    }
+    this.waitingForReddit.set(feed.id, waiting);
+  }
+
   // Cada turno del feed cuenta como un intento (lastPosted = "último intento" en el panel), salga bien o mal:
   // si falla (canal borrado, sin permisos, Reddit sin respuesta o error al enviar) el siguiente intento
   // espera el intervalo completo del feed en vez de repetirse cada minuto. La excepción es cuando Reddit
   // está ocupado o pidió esperar: ahí no se llegó a intentar y el feed vuelve a probar al minuto siguiente.
   private async postContent(guild: Guild, feed: ContentFeed) {
     const label = `Feed ${feed.id} (${guild.name})`;
+    const waitingBefore = this.waitingForReddit.get(feed.id);
+    try {
+      await this.runTurn(guild, feed, label);
+    } finally {
+      // Si este turno no se volvió a dejar para después, ya no está esperando
+      if (this.waitingForReddit.get(feed.id) === waitingBefore) this.waitingForReddit.delete(feed.id);
+    }
+  }
 
+  private async runTurn(guild: Guild, feed: ContentFeed, label: string) {
     // Primero se marca el intento: así ni un error ni un reinicio a medias hacen que se reintente enseguida
     try {
       await storage.updateContentFeed(feed.id, guild.id, { lastPosted: new Date() });
@@ -127,9 +161,8 @@ export class ContentScheduler {
       try {
         posts = await redditService.getImagePosts(subreddit);
       } catch (error) {
-        // Reddit está ocupado o pidió esperar: no cuenta como intento, el feed vuelve a probar el siguiente minuto
         if (error instanceof RedditError && error.retrySoon) {
-          await storage.updateContentFeed(feed.id, guild.id, { lastPosted: feed.lastPosted ?? null }).catch(() => undefined);
+          await this.waitForReddit(guild, feed, label);
           return;
         }
         const reason = error instanceof Error ? error.message : String(error);
@@ -179,8 +212,12 @@ export class ContentScheduler {
 
     let items: FeedItem[];
     try {
-      items = (await loadFeed(config.url)).items;
+      items = (isRedditUrl(config.url) ? await redditService.loadNewsFeed(config.url) : await loadFeed(config.url)).items;
     } catch (error) {
+      if (error instanceof RedditError && error.retrySoon) {
+        await this.waitForReddit(guild, feed, label);
+        return;
+      }
       const reason = error instanceof Error ? error.message : String(error);
       console.warn(`[FEEDS] ${label}: no pude leer ${name}: ${reason} Lo vuelvo a intentar en ${feed.postInterval} min.`);
       return;
@@ -246,6 +283,10 @@ export class ContentScheduler {
 
     console.log('🛑 Content scheduler stopped');
   }
+}
+
+function lastPostedMs(feed: ContentFeed): number {
+  return feed.lastPosted ? new Date(feed.lastPosted).getTime() : 0;
 }
 
 // sourceConfig es JSON libre: el subreddit se lee con cuidado
