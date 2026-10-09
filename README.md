@@ -501,7 +501,7 @@ Tus **comandos personalizados** también se usan con el prefijo (por ejemplo `&r
 
 ### Solo en desarrollo
 
-Con `npm run dev` se registran además dos comandos de prueba, solo para administradores: `/stress` (prueba de carga de las colas del bot) y `/oauth-test` (enlaces para probar el login del panel). Con `npm start` el bot no los registra ni los atiende.
+Con `npm run dev` y `DISCORD_DEV_GUILD_ID` puesto se registran además dos comandos de prueba en tus servidores de prueba, solo para administradores: `/stress` (prueba de carga de las colas del bot) y `/oauth-test` (enlaces para probar el login del panel). Sin `DISCORD_DEV_GUILD_ID`, o con `npm start`, el bot no los registra ni los atiende.
 
 ---
 
@@ -573,9 +573,15 @@ Si el problema era el token o los intents, el bot no lo reintenta: corrige el `.
 - Los comandos con 🔒 no se le muestran a quien no tiene el permiso: es a propósito.
 - Si invitaste al bot con otro enlace, vuelve a invitarlo con el del paso 8 (necesita el scope `applications.commands`).
 
-### Veo cada comando repetido dos veces
+### Veo comandos repetidos o viejos que ya no hacen nada
 
-Pasa si se registraron globales **y** como comandos de prueba de tu servidor (`DISCORD_DEV_GUILD_ID`). El bot quita las copias de prueba al arrancar en modo producción mientras `DISCORD_DEV_GUILD_ID` sigue puesto: ejecuta una vez `npm run build` y `npm start` con esa variable puesta. En desarrollo, si dejas `DISCORD_DEV_GUILD_ID` puesto desde el principio, no se repiten.
+Discord guarda los comandos de una aplicación en dos listas: la global y una por servidor. Si la aplicación era de otro bot (por ejemplo, reciclaste un bot viejo), sus comandos por servidor siguen ahí y salen junto a los nuevos: repetidos (`/balance`, `/ban`…) o sin respuesta (`/play`, `/radio`…).
+
+BotM los limpia solo: cada vez que arranca y registra sus comandos globales, vacía la lista por servidor de cada servidor donde está, y en la consola sale `🧹 Quitados … comandos viejos del servidor …`. Con `npm run dev` y `DISCORD_DEV_GUILD_ID` puesto, deja solo los de tus servidores de prueba. Después recarga Discord con **Ctrl + R**.
+
+Si `DISCORD_DEV_GUILD_ID` está puesto y además hay comandos globales de antes, en tu servidor de prueba salen repetidos con `npm run dev`. Para quitar las copias de prueba ejecuta una vez `npm run build` y `npm start` con esa variable puesta, o deja `DISCORD_DEV_GUILD_ID` vacío.
+
+Si los comandos repetidos son de **otro bot** que sigue en tu servidor (al escribir `/` sale con otro nombre e ícono), BotM no puede tocarlos: expulsa ese bot del servidor.
 
 ### El login dice "El inicio de sesión caducó" (`invalid_state`)
 

@@ -67,8 +67,9 @@ export async function setupCommands(bot: DiscordBot) {
     ...preguntaDelDiaCommands,
     ...anuncioCommands,
     selftest,
-    // Diagnósticos solo para desarrollo: /stress satura las colas y /oauth-test muestra URLs internas
-    ...(isDevelopment ? [stress, oauthTest] : []),
+    // Diagnósticos solo para desarrollo: /stress satura las colas y /oauth-test muestra URLs internas.
+    // Solo con servidores de prueba, para que no salgan en el servidor de verdad si BotM vive en npm run dev.
+    ...(isDevelopment && devGuildIds().length > 0 ? [stress, oauthTest] : []),
   ];
 
   // Registrar los comandos en el bot (un comando roto no impide cargar los demás)
@@ -118,6 +119,8 @@ async function registerSlashCommands(commands: BotCommand[]) {
       for (const guildId of guildIds) {
         await putCommands(rest, Routes.applicationGuildCommands(clientId, guildId), bodies, `en el servidor ${guildId}`);
       }
+      // Fuera de los servidores de prueba ningún comando por servidor es de este bot
+      await removeStaleGuildCommands(rest, clientId, { keep: guildIds, alsoCheck: [] });
       return;
     }
 
@@ -126,14 +129,12 @@ async function registerSlashCommands(commands: BotCommand[]) {
     }
     const registered = await putCommands(rest, Routes.applicationCommands(clientId), bodies, 'globalmente');
 
-    // Los comandos registrados por servidor durante el desarrollo saldrían repetidos (y /stress y
-    // /oauth-test quedarían sin respuesta): se quitan todos, pero solo si los globales ya están
-    if (!isDevelopment && guildIds.length > 0) {
-      if (registered) {
-        await removeGuildCopies(rest, clientId, guildIds);
-      } else {
-        console.warn('⚠️ No quito los comandos de desarrollo de los servidores porque los globales no se registraron.');
-      }
+    // Con los globales registrados, cualquier comando guardado por servidor sobra: saldría repetido o sin
+    // respuesta. Se quitan solo si los globales ya están, para no dejar a nadie sin comandos.
+    if (registered) {
+      await removeStaleGuildCommands(rest, clientId, { keep: [], alsoCheck: isDevelopment ? [] : guildIds });
+    } else {
+      console.warn('⚠️ No reviso los comandos viejos de los servidores porque los globales no se registraron.');
     }
   } catch (error) {
     console.error('❌ Error inesperado al registrar los comandos de barra:', error);
@@ -195,18 +196,59 @@ function rejectedIndexes(error: unknown): Set<number> {
   return indexes;
 }
 
-// En producción el bot no usa comandos por servidor: se deja vacía la lista de cada servidor de desarrollo
-async function removeGuildCopies(rest: REST, clientId: string, guildIds: string[]) {
-  for (const guildId of guildIds) {
+type GuildSummary = { id: string; name?: string };
+
+// Servidores donde está el bot, por la API (no hace falta esperar a que el bot se conecte)
+async function listBotGuilds(rest: REST): Promise<GuildSummary[]> {
+  const guilds: GuildSummary[] = [];
+  let after: string | undefined;
+  for (let page = 0; page < 50; page++) {
+    const query = new URLSearchParams({ limit: '200' });
+    if (after) query.set('after', after);
+    const batch = await rest.get(Routes.userGuilds(), { query }) as GuildSummary[];
+    guilds.push(...batch);
+    if (batch.length < 200) break;
+    after = batch[batch.length - 1].id;
+  }
+  return guilds;
+}
+
+// Comandos guardados por servidor que el bot ya no usa: los que dejó el bot anterior si la aplicación es
+// reciclada, o copias de prueba de DISCORD_DEV_GUILD_ID. Salen repetidos junto a los nuevos o no hacen
+// nada, así que se vacía la lista de cada servidor (menos los de `keep`). `alsoCheck` añade servidores
+// que quizá ya no salen en la lista del bot.
+async function removeStaleGuildCommands(
+  rest: REST,
+  clientId: string,
+  { keep, alsoCheck }: { keep: string[]; alsoCheck: string[] }
+) {
+  let guilds: GuildSummary[];
+  try {
+    guilds = await listBotGuilds(rest);
+  } catch (error) {
+    console.error(`⚠️ No se pudo revisar si quedan comandos viejos en los servidores: ${describeRestError(error)}`);
+    return;
+  }
+  const known = new Set(guilds.map(guild => guild.id));
+  for (const id of alsoCheck) {
+    if (!known.has(id)) guilds.push({ id });
+  }
+
+  const kept = new Set(keep);
+  for (const guild of guilds) {
+    if (kept.has(guild.id)) continue;
+    const label = guild.name ? `"${guild.name}"` : guild.id;
     try {
-      const route = Routes.applicationGuildCommands(clientId, guildId);
+      const route = Routes.applicationGuildCommands(clientId, guild.id);
       const existing = await rest.get(route) as { id: string; name: string }[];
       if (existing.length > 0) {
         await rest.put(route, { body: [] });
-        console.log(`🧹 Quitados ${existing.length} comandos de desarrollo del servidor ${guildId}`);
+        console.log(`🧹 Quitados ${existing.length} comandos viejos del servidor ${label}: ${existing.map(c => `/${c.name}`).join(', ')}`);
       }
     } catch (error) {
-      console.error(`⚠️ No se pudieron revisar los comandos de desarrollo del servidor ${guildId}:`, error);
+      // 50001 (Missing Access): el bot entró ahí sin el scope applications.commands; no hay comandos que limpiar
+      if (error instanceof DiscordAPIError && error.code === 50001) continue;
+      console.error(`⚠️ No se pudieron revisar los comandos viejos del servidor ${label}: ${describeRestError(error)}`);
     }
   }
 }
