@@ -371,7 +371,7 @@ export function FeedFormDialog({ guildId, mode, existingFeeds, onClose }: FeedFo
         createMutation.mutate({
           source: "reddit",
           channelId: values.channelId,
-          // El bot nunca publica contenido NSFW; se guarda explícito
+          // El bot se salta lo marcado como NSFW; se guarda explícito
           sourceConfig: { subreddit: normalizeSubreddit(values.subreddit), filterNSFW: true },
           postInterval: values.postInterval,
         });
@@ -780,8 +780,8 @@ export function FeedFormDialog({ guildId, mode, existingFeeds, onClose }: FeedFo
                 </span>
               ) : (
                 <span>
-                  Solo se publican posts con imagen y nunca contenido para adultos (NSFW). Si en ese momento Reddit no
-                  responde o no hay imágenes, ese turno se salta.
+                  Solo se publican posts con imagen, y se salta lo que Reddit marca como NSFW o spoiler. Si en ese
+                  momento Reddit no responde o no hay imágenes, ese turno se salta.
                 </span>
               )}
             </p>

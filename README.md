@@ -62,7 +62,7 @@ BotM es un bot de Discord con su propio **panel web en español** para administr
 ### 🌐 Redes (noticias y Reddit)
 
 - **Noticias:** feeds que publican cada noticia nueva como tarjeta (título, resumen, imagen si la hay y enlace). Pueden salir de una sección de Google Noticias (México, Mundo, Tecnología, Deportes…), de un tema que escribas (por ejemplo "videojuegos") o de cualquier sitio o canal de YouTube con RSS: pegas la página y el bot encuentra su RSS. No hace falta ninguna clave. Revisa cada 10 a 1440 minutos, publica como mucho 2 noticias por turno (las más nuevas), nunca repite y no publica nada de más de 3 días (salvo la primera vez, que publica la más reciente para que veas cómo queda).
-- **Reddit:** feeds que comparten imágenes de un subreddit en un canal cada cierto tiempo (de 1 a 1440 minutos). Nunca publica contenido NSFW. Usa la página pública de Reddit, sin claves.
+- **Reddit:** feeds que comparten imágenes de un subreddit en un canal cada cierto tiempo (de 1 a 1440 minutos). Se salta lo que Reddit marca como NSFW o spoiler. Lee el RSS público de Reddit, sin claves (Reddit cerró en 2026 la lectura sin cuenta por JSON).
 - Hasta 10 feeds por servidor, sumando los dos tipos.
 - Twitter/X no está disponible: X cobra por leer publicaciones, así que el bot no publica nada de ahí.
 
@@ -375,7 +375,7 @@ Los ejemplos con todos los valores y comentarios están en [`.env.example`](.env
 | `GLOBAL_CONCURRENCY` | No | Cuántas tareas del bot pueden correr a la vez (por defecto `50`). Déjalo así. |
 | `GLOBAL_TIMEOUT_MS` | No | Tiempo máximo de cada tarea del bot en milisegundos (por defecto `120000`). Déjalo así. |
 | `TWITTER_BEARER_TOKEN` / `X_BEARER_TOKEN` | No | No se usan: Twitter/X está desactivado. |
-| `REDDIT_CLIENT_ID` / `REDDIT_CLIENT_SECRET` | No | No se usan: el bot lee Reddit sin claves. |
+| `REDDIT_CLIENT_ID` / `REDDIT_CLIENT_SECRET` | No | No se usan: el bot lee el RSS público de Reddit, sin claves. |
 
 `NODE_ENV` no va en el `.env`: `npm run dev` usa `development` y `npm start` usa `production` solos.
 
@@ -681,6 +681,7 @@ Ten en cuenta:
 - **Mientras el modo raid está activo** el bot no da la bienvenida ni el rol automático a quien entra. Si alguien legítimo entró en ese rato, dale el rol a mano.
 - **Lotería:** los boletos se acumulan, pero todavía no hay sorteos.
 - **Twitter/X:** no está disponible; hay feeds de noticias y de Reddit.
+- **Reddit:** como el RSS no dice qué es NSFW, el bot solo publica imágenes a las que Reddit les pone miniatura (a quien lee sin cuenta no se la pone en las NSFW ni en las de spoiler) y que no dicen NSFW en el título. Reddit también limita cuántas veces se le pide el RSS: el bot deja unos segundos entre consultas, reutiliza cada lista 10 minutos y, si Reddit pide esperar, se espera. Con feeds de Reddit cada pocos minutos, las imágenes salen de la misma lista hasta que se renueva.
 - **Noticias de sitios en tu red local:** por seguridad, el bot solo lee feeds de sitios públicos de internet (nunca de `localhost` ni de direcciones como `192.168.x.x`).
 - **Preguntas del día:** están en `server/bot/data/preguntasDelDia.ts`. Puedes agregar o quitar las que quieras; el bot recuerda cuáles ya salieron (si corriges el texto de una, cuenta como nueva).
 
@@ -700,7 +701,7 @@ botM/
 │   ├── dataFolder.ts        Carpeta de esa base y su candado (una sola copia de BotM a la vez)
 │   ├── schemaSync.ts        Crea y pone al día sus tablas al arrancar
 │   ├── routes.ts, routes/   API del panel (login, ajustes, estadísticas…)
-│   ├── services/reddit.ts   Lee las publicaciones de Reddit
+│   ├── services/reddit.ts   Lee el RSS de Reddit (espaciado, con pausa si Reddit pide esperar)
 │   ├── services/rss.ts      Lee feeds de noticias (RSS/Atom, Google Noticias, YouTube)
 │   ├── services/safeFetch.ts Descarga páginas públicas con límites (nunca la red local)
 │   └── bot/

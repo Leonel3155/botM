@@ -10,9 +10,16 @@ import zlib from 'zlib';
 // redirija ahí o el nombre resuelva a una IP privada. Con tope de tamaño y de tiempo.
 
 export class SafeFetchError extends Error {
-  constructor(message: string) {
+  /** Código HTTP cuando el sitio respondió con error. */
+  readonly status: number | null;
+  /** Cuánto pidió esperar el sitio (cabecera Retry-After), si lo dijo. */
+  readonly retryAfterMs: number | null;
+
+  constructor(message: string, details: { status?: number; retryAfterMs?: number | null } = {}) {
     super(message);
     this.name = 'SafeFetchError';
+    this.status = details.status ?? null;
+    this.retryAfterMs = details.retryAfterMs ?? null;
   }
 }
 
@@ -138,11 +145,28 @@ function decodeBody(body: Buffer, contentType: string): string {
   return decoder.decode(body);
 }
 
+interface RawResponse {
+  status: number;
+  location: string | null;
+  contentType: string;
+  body: Buffer | null;
+  retryAfter: string | null;
+}
+
+/** Retry-After en segundos o como fecha → milisegundos (null si no viene o no se entiende). */
+function parseRetryAfter(raw: string | null): number | null {
+  if (!raw) return null;
+  const value = raw.trim();
+  if (/^\d+$/.test(value)) return Number(value) * 1000;
+  const date = Date.parse(value);
+  return Number.isNaN(date) ? null : Math.max(0, date - Date.now());
+}
+
 function requestOnce(
   url: URL,
   options: Required<Omit<SafeFetchOptions, 'allowPrivateHosts'>> & { allowPrivateHosts: boolean },
   signal: AbortSignal,
-): Promise<{ status: number; location: string | null; contentType: string; body: Buffer | null }> {
+): Promise<RawResponse> {
   return new Promise((resolve, reject) => {
     const client = url.protocol === 'https:' ? https : http;
     const request = client.request(url, {
@@ -163,12 +187,12 @@ function requestOnce(
       const contentType = String(response.headers['content-type'] ?? '');
       if (status >= 300 && status < 400) {
         response.resume();
-        resolve({ status, location: response.headers.location ?? null, contentType, body: null });
+        resolve({ status, location: response.headers.location ?? null, contentType, body: null, retryAfter: null });
         return;
       }
       if (status < 200 || status >= 300) {
         response.resume();
-        resolve({ status, location: null, contentType, body: null });
+        resolve({ status, location: null, contentType, body: null, retryAfter: response.headers['retry-after'] ?? null });
         return;
       }
 
@@ -227,7 +251,7 @@ function requestOnce(
         if (finished) return;
         finished = true;
         signal.removeEventListener('abort', onAbort);
-        resolve({ status, location: null, contentType, body: Buffer.concat(chunks) });
+        resolve({ status, location: null, contentType, body: Buffer.concat(chunks), retryAfter: null });
       });
     });
     request.end();
@@ -247,7 +271,7 @@ export async function safeFetchText(rawUrl: string, options: SafeFetchOptions = 
   let url = checkFetchableUrl(rawUrl, settings.allowPrivateHosts);
 
   for (let redirects = 0; ; redirects++) {
-    let result: Awaited<ReturnType<typeof requestOnce>>;
+    let result: RawResponse;
     try {
       result = await requestOnce(url, settings, signal);
     } catch (error) {
@@ -278,10 +302,11 @@ export async function safeFetchText(rawUrl: string, options: SafeFetchOptions = 
       url = checkFetchableUrl(next, settings.allowPrivateHosts);
       continue;
     }
-    if (result.status === 404 || result.status === 410) throw new SafeFetchError(`Esa página no existe en ${url.hostname} (error ${result.status}).`);
-    if (result.status === 401 || result.status === 403) throw new SafeFetchError(`${url.hostname} no deja leer esa página (error ${result.status}).`);
-    if (result.status === 429) throw new SafeFetchError(`${url.hostname} pidió que esperemos un rato (demasiadas consultas).`);
-    if (!result.body) throw new SafeFetchError(`${url.hostname} respondió con un error (${result.status}).`);
+    const details = { status: result.status, retryAfterMs: parseRetryAfter(result.retryAfter) };
+    if (result.status === 404 || result.status === 410) throw new SafeFetchError(`Esa página no existe en ${url.hostname} (error ${result.status}).`, details);
+    if (result.status === 401 || result.status === 403) throw new SafeFetchError(`${url.hostname} no deja leer esa página (error ${result.status}).`, details);
+    if (result.status === 429) throw new SafeFetchError(`${url.hostname} pidió que esperemos un rato (demasiadas consultas).`, details);
+    if (!result.body) throw new SafeFetchError(`${url.hostname} respondió con un error (${result.status}).`, details);
 
     return {
       url: url.toString(),

@@ -3,7 +3,7 @@ import type { ContentFeed } from '@shared/schema';
 import { CONTENT_FEED_LIMITS, type NewsFeedConfig } from '@shared/api';
 import { DiscordBot } from './index';
 import { storage } from '../storage';
-import { redditService } from '../services/reddit';
+import { redditService, type RedditPost } from '../services/reddit';
 import { formatNewsItem, loadFeed, type FeedItem } from '../services/rss';
 import { dailyQuestions } from './services/dailyQuestion';
 import { resolveSendableChannel } from './services/channels';
@@ -122,9 +122,16 @@ export class ContentScheduler {
         return;
       }
 
-      const posts = await redditService.getImagePosts(subreddit);
+      let posts: RedditPost[];
+      try {
+        posts = await redditService.getImagePosts(subreddit);
+      } catch (error) {
+        const reason = error instanceof Error ? error.message : String(error);
+        console.warn(`[FEEDS] ${label}: no pude leer r/${subreddit}. ${reason} Lo vuelvo a intentar en ${feed.postInterval} min.`);
+        return;
+      }
       if (posts.length === 0) {
-        console.warn(`[FEEDS] ${label}: Reddit no devolvió ninguna imagen de r/${subreddit}; lo vuelvo a intentar en ${feed.postInterval} min.`);
+        console.warn(`[FEEDS] ${label}: ahora no hay imágenes que pueda publicar en r/${subreddit}; lo vuelvo a intentar en ${feed.postInterval} min.`);
         return;
       }
 
@@ -145,7 +152,7 @@ export class ContentScheduler {
         sourceId: content.id,
         messageId: sent.id,
         title: content.title.slice(0, 300),
-        url: `https://reddit.com${content.permalink}`,
+        url: `https://www.reddit.com${content.permalink}`,
       }).catch((error) => {
         console.error(`[FEEDS] ${label}: no se pudo apuntar la publicación (podría repetirse):`, error);
       });

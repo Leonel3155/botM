@@ -106,7 +106,7 @@ const NAMED_ENTITIES: Record<string, string> = {
   Aacute: 'Á', Eacute: 'É', Iacute: 'Í', Oacute: 'Ó', Uacute: 'Ú', Ntilde: 'Ñ', Uuml: 'Ü', middot: '·', bull: '•',
 };
 
-function decodeEntities(text: string): string {
+export function decodeEntities(text: string): string {
   return text.replace(/&(#x[0-9a-f]+|#\d+|[a-z]+);/gi, (match, code: string) => {
     if (code[0] === '#') {
       const value = code[1] === 'x' || code[1] === 'X' ? parseInt(code.slice(2), 16) : parseInt(code.slice(1), 10);
@@ -232,7 +232,7 @@ function buildItem(item: Node, base: string | null, atom: boolean): FeedItem | n
 }
 
 // Un DOCTYPE con entidades propias no hace falta en un feed y es una forma conocida de hacer explotar un parser
-function stripDoctype(xml: string): string {
+export function stripDoctype(xml: string): string {
   return xml.replace(/<!DOCTYPE[^[>]*(\[[\s\S]*?\])?\s*>/gi, '');
 }
 
