@@ -1,12 +1,15 @@
 import { XMLParser } from 'fast-xml-parser';
+import type { IncomingHttpHeaders } from 'http';
 import type { MessageCreateOptions } from 'discord.js';
 import { decodeEntities, stripDoctype } from './rss';
 import { SafeFetchError, safeFetchText } from './safeFetch';
 
 // Reddit cerró en 2026 la lectura sin cuenta de sus listas en JSON (error 403 con cualquier User-Agent).
 // El RSS público (Atom) de cada subreddit sigue abierto y sin claves: de ahí salen los feeds de Reddit.
-// Reddit contesta 429 si se le pide RSS muy seguido, así que las consultas van espaciadas, cada lista
-// se reutiliza unos minutos y, si Reddit pide esperar, no se le pregunta nada hasta que pase ese rato.
+// Ese RSS deja hacer más o menos una consulta por minuto (contando todos los subreddits juntos) y
+// contesta 429 si se le pide más: las consultas van de una en una, al ritmo que marcan sus cabeceras
+// x-ratelimit-*, cada lista se reutiliza unos minutos y, si Reddit pide esperar, se espera.
+// Reddit anunció que apaga el RSS el 13 de noviembre de 2026.
 
 export interface RedditPost {
   /** ID de Reddit sin el "t3_" (el mismo que daba el JSON: lo ya publicado no se repite). */
@@ -19,21 +22,27 @@ export interface RedditPost {
   author: string | null;
   subreddit: string;
   createdAt: Date | null;
-  /** Miniatura que pone Reddit (no la pone en las NSFW ni en las de spoiler). */
+  /** Miniatura que pone Reddit (a quien lee sin cuenta no se la pone en las NSFW). */
   thumbnail: string | null;
 }
 
 export class RedditError extends Error {
-  constructor(message: string) {
+  /** No se llegó a leer porque Reddit está ocupado o pidió esperar: el feed puede volver a intentarlo pronto. */
+  readonly retrySoon: boolean;
+
+  constructor(message: string, options: { retrySoon?: boolean } = {}) {
     super(message);
     this.name = 'RedditError';
+    this.retrySoon = options.retrySoon ?? false;
   }
 }
 
 export interface RedditServiceOptions {
   baseUrl?: string;
-  /** Espera mínima entre dos consultas a Reddit. */
+  /** Espera entre dos consultas cuando Reddit no dice cuántas quedan. */
   minGapMs?: number;
+  /** Lo más que una consulta espera su turno; si falta más, se deja para el siguiente minuto. */
+  maxWaitMs?: number;
   /** Cuánto se reutiliza la lista de un subreddit antes de volver a pedirla. */
   cacheMs?: number;
   /** Solo para pruebas locales. */
@@ -41,14 +50,18 @@ export interface RedditServiceOptions {
 }
 
 const REDDIT_TIMEOUT_MS = 15_000;
-const MIN_GAP_MS = 20_000;
+// Sin cabeceras de límite, una consulta por minuto (lo que deja Reddit desde 2026)
+const MIN_GAP_MS = 60_000;
+// Con cabeceras que dicen que aún quedan consultas, apenas un respiro entre una y otra
+const SHORT_GAP_MS = 2_000;
+const MAX_WAIT_MS = 20_000;
 const CACHE_MS = 10 * 60_000;
 // Si Reddit falla, se sigue usando la última lista leída mientras no tenga más de esto
 const STALE_MS = 60 * 60_000;
 // Tras un error con un subreddit (no existe, privado, caído) no se le vuelve a preguntar en este rato
 const ERROR_BACKOFF_MS = 5 * 60_000;
-// Pausa cuando Reddit contesta 429: la que pida (Retry-After) dentro de estos límites
-const RATE_PAUSE_DEFAULT_MS = 5 * 60_000;
+// Pausa tras un 429: la que diga Reddit; si no dice, 2 min y el doble cada vez que se repite
+const RATE_PAUSE_BASE_MS = 2 * 60_000;
 const RATE_PAUSE_MIN_MS = 60_000;
 const RATE_PAUSE_MAX_MS = 30 * 60_000;
 const LISTING_SIZE = 50;
@@ -124,6 +137,11 @@ function shorten(text: string, max: number): string {
   return text.length <= max ? text : `${text.slice(0, max - 1).trimEnd()}…`;
 }
 
+function headerValue(headers: IncomingHttpHeaders, name: string): string | undefined {
+  const value = headers[name];
+  return Array.isArray(value) ? value[0] : value;
+}
+
 /** Una entrada del Atom de Reddit → publicación (o null si no es una publicación). */
 function parseEntry(entry: Node, fallbackSubreddit: string): RedditPost | null {
   const id = /^t3_([a-z0-9]{1,16})$/i.exec(textOf(entry.id) ?? '')?.[1]?.toLowerCase();
@@ -187,8 +205,8 @@ export function isImagePost(post: RedditPost): boolean {
   return !!url && IMAGE_PATH.test(url.pathname);
 }
 
-// El RSS no dice qué es NSFW. A quien lee sin cuenta, Reddit no le pone miniatura en las publicaciones
-// NSFW ni en las de spoiler, así que solo pasan las que traen una miniatura de Reddit sin difuminar
+// El RSS no dice qué es NSFW. A quien lee sin cuenta, Reddit no le pone miniatura a las publicaciones
+// NSFW (fuera de subreddits NSFW), así que solo pasan las que traen una miniatura de Reddit sin difuminar
 // y no dicen NSFW/NSFL en el título.
 export function looksSafeForWork(post: RedditPost): boolean {
   if (NSFW_TITLE.test(post.title)) return false;
@@ -200,17 +218,21 @@ export function looksSafeForWork(post: RedditPost): boolean {
 export class RedditService {
   private readonly baseUrl: string;
   private readonly minGapMs: number;
+  private readonly maxWaitMs: number;
   private readonly cacheMs: number;
   private readonly allowPrivateHosts: boolean;
   private readonly lists = new Map<string, { posts: RedditPost[]; fetchedAt: number }>();
   private readonly failures = new Map<string, { message: string; until: number }>();
+  // Cuándo se puede volver a consultar (por el ritmo normal o por una pausa tras un 429)
+  private nextRequestAt = 0;
   private pausedUntil = 0;
-  private lastRequestAt = 0;
+  private rateLimitStreak = 0;
   private queue: Promise<void> = Promise.resolve();
 
   constructor(options: RedditServiceOptions = {}) {
     this.baseUrl = (options.baseUrl ?? 'https://www.reddit.com').replace(/\/+$/, '');
     this.minGapMs = options.minGapMs ?? MIN_GAP_MS;
+    this.maxWaitMs = options.maxWaitMs ?? MAX_WAIT_MS;
     this.cacheMs = options.cacheMs ?? CACHE_MS;
     this.allowPrivateHosts = options.allowPrivateHosts ?? false;
   }
@@ -218,7 +240,12 @@ export class RedditService {
   /** Publicaciones de "hot" con imagen y sin señales de NSFW (van a canales normales del servidor). */
   async getImagePosts(subreddit: string): Promise<RedditPost[]> {
     const posts = await this.getHotPosts(subreddit);
-    return posts.filter((post) => isImagePost(post) && looksSafeForWork(post));
+    const images = posts.filter(isImagePost);
+    // Hay subreddits que no muestran miniaturas a quien no tiene cuenta: ahí no hay forma de saber qué es NSFW
+    if (images.length > 0 && !posts.some((post) => post.thumbnail)) {
+      throw new RedditError(`r/${subreddit} no muestra miniaturas a quien no tiene cuenta, y sin ellas no puedo saber qué es NSFW; por seguridad no publico de ahí.`);
+    }
+    return images.filter(looksSafeForWork);
   }
 
   /** Lista "hot" del subreddit (todas las publicaciones). Lanza RedditError si no se puede leer. */
@@ -250,31 +277,52 @@ export class RedditService {
       this.failures.delete(key);
       return posts;
     } catch (error) {
-      const message = error instanceof RedditError ? error.message : 'No pude leer Reddit.';
-      // Un 429 ya pausa todas las consultas; lo demás se recuerda solo para este subreddit
-      if (Date.now() >= this.pausedUntil) this.failures.set(key, { message, until: Date.now() + ERROR_BACKOFF_MS });
-      throw error instanceof RedditError ? error : new RedditError(message);
+      const redditError = error instanceof RedditError ? error : new RedditError('No pude leer Reddit.');
+      // Lo que no es "espera un poco" se recuerda un rato para este subreddit, para no insistir
+      if (!redditError.retrySoon) this.failures.set(key, { message: redditError.message, until: Date.now() + ERROR_BACKOFF_MS });
+      throw redditError;
     }
   }
 
-  // Una consulta a la vez y con espacio entre ellas, para que Reddit no conteste 429
+  // Una consulta a la vez y al ritmo que deja Reddit. Si el turno tarda, mejor dejarlo para el siguiente minuto
+  // que frenar los demás feeds.
   private waitTurn(): Promise<void> {
     const turn = this.queue.then(async () => {
-      this.throwIfPaused();
-      const wait = this.lastRequestAt + this.minGapMs - Date.now();
+      const paused = this.pausedUntil - Date.now();
+      if (paused > 0) {
+        throw new RedditError(`Reddit pidió esperar; vuelvo a preguntarle en ${minutes(paused)} min.`, { retrySoon: true });
+      }
+      const wait = this.nextRequestAt - Date.now();
+      if (wait > this.maxWaitMs) throw new RedditError('Reddit está atendiendo otra consulta.', { retrySoon: true });
       if (wait > 0) await sleep(wait);
-      this.throwIfPaused();
-      this.lastRequestAt = Date.now();
+      // Mientras no se sepa qué contestó Reddit, la siguiente espera lo normal
+      this.nextRequestAt = Date.now() + this.minGapMs;
     });
     this.queue = turn.catch(() => undefined);
     return turn;
   }
 
-  private throwIfPaused() {
-    const left = this.pausedUntil - Date.now();
-    if (left > 0) {
-      throw new RedditError(`Reddit pidió esperar por demasiadas consultas; no le pregunto nada en ${minutes(left)} min.`);
+  // x-ratelimit-remaining / x-ratelimit-reset: cuántas consultas quedan y en cuántos segundos se renuevan
+  private paceFrom(headers: IncomingHttpHeaders) {
+    const remaining = Number(headerValue(headers, 'x-ratelimit-remaining'));
+    const reset = Number(headerValue(headers, 'x-ratelimit-reset'));
+    if (!Number.isFinite(remaining)) return;
+    if (remaining >= 1) {
+      this.nextRequestAt = Date.now() + SHORT_GAP_MS;
+    } else if (Number.isFinite(reset) && reset >= 0) {
+      this.nextRequestAt = Date.now() + Math.min(RATE_PAUSE_MAX_MS, (reset + 1) * 1000);
     }
+  }
+
+  private pauseAfterRateLimit(error: SafeFetchError): number {
+    this.rateLimitStreak++;
+    const reset = Number(headerValue(error.headers, 'x-ratelimit-reset'));
+    const told = Number.isFinite(reset) && reset > 0 ? (reset + 1) * 1000 : error.retryAfterMs;
+    const pause = told && told > 0 ? told : RATE_PAUSE_BASE_MS * 2 ** (this.rateLimitStreak - 1);
+    const clamped = Math.min(RATE_PAUSE_MAX_MS, Math.max(RATE_PAUSE_MIN_MS, pause));
+    this.pausedUntil = Date.now() + clamped;
+    this.nextRequestAt = this.pausedUntil;
+    return clamped;
   }
 
   private async download(subreddit: string): Promise<RedditPost[]> {
@@ -289,16 +337,19 @@ export class RedditService {
     } catch (error) {
       if (!(error instanceof SafeFetchError)) throw new RedditError('No pude conectar con Reddit.');
       if (error.status === 429) {
-        const pause = Math.min(RATE_PAUSE_MAX_MS, Math.max(RATE_PAUSE_MIN_MS, error.retryAfterMs ?? RATE_PAUSE_DEFAULT_MS));
-        this.pausedUntil = Date.now() + pause;
-        throw new RedditError(`Reddit pidió esperar por demasiadas consultas; no le pregunto nada en ${minutes(pause)} min.`);
+        const pause = this.pauseAfterRateLimit(error);
+        console.warn(`[REDDIT] Reddit pidió esperar (demasiadas consultas); vuelvo a preguntarle en ${minutes(pause)} min.`);
+        throw new RedditError(`Reddit pidió esperar; vuelvo a preguntarle en ${minutes(pause)} min.`, { retrySoon: true });
       }
+      this.paceFrom(error.headers);
       if (error.status === 401 || error.status === 403) {
-        throw new RedditError(`Reddit no deja leer r/${subreddit} (error ${error.status}): puede ser privado, o Reddit está bloqueando la conexión.`);
+        throw new RedditError(`Reddit no deja leer r/${subreddit} (error ${error.status}): puede ser privado o estar en cuarentena, o Reddit está bloqueando la conexión.`);
       }
       if (error.status === 404 || error.status === 410) throw new RedditError(`r/${subreddit} no existe o fue cerrado.`);
       throw new RedditError(`No pude leer Reddit: ${error.message}`);
     }
+    this.rateLimitStreak = 0;
+    this.paceFrom(page.headers);
 
     // Reddit manda a otra página (iniciar sesión, aviso +18, búsqueda) lo que no deja ver sin cuenta
     const unreadable = `Reddit no deja leer r/${subreddit} sin cuenta: no existe, es privado, NSFW o está en cuarentena.`;

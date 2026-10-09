@@ -3,7 +3,7 @@ import type { ContentFeed } from '@shared/schema';
 import { CONTENT_FEED_LIMITS, type NewsFeedConfig } from '@shared/api';
 import { DiscordBot } from './index';
 import { storage } from '../storage';
-import { redditService, type RedditPost } from '../services/reddit';
+import { RedditError, redditService, type RedditPost } from '../services/reddit';
 import { formatNewsItem, loadFeed, type FeedItem } from '../services/rss';
 import { dailyQuestions } from './services/dailyQuestion';
 import { resolveSendableChannel } from './services/channels';
@@ -85,7 +85,8 @@ export class ContentScheduler {
 
   // Cada turno del feed cuenta como un intento (lastPosted = "último intento" en el panel), salga bien o mal:
   // si falla (canal borrado, sin permisos, Reddit sin respuesta o error al enviar) el siguiente intento
-  // espera el intervalo completo del feed en vez de repetirse cada minuto.
+  // espera el intervalo completo del feed en vez de repetirse cada minuto. La excepción es cuando Reddit
+  // está ocupado o pidió esperar: ahí no se llegó a intentar y el feed vuelve a probar al minuto siguiente.
   private async postContent(guild: Guild, feed: ContentFeed) {
     const label = `Feed ${feed.id} (${guild.name})`;
 
@@ -126,6 +127,11 @@ export class ContentScheduler {
       try {
         posts = await redditService.getImagePosts(subreddit);
       } catch (error) {
+        // Reddit está ocupado o pidió esperar: no cuenta como intento, el feed vuelve a probar el siguiente minuto
+        if (error instanceof RedditError && error.retrySoon) {
+          await storage.updateContentFeed(feed.id, guild.id, { lastPosted: feed.lastPosted ?? null }).catch(() => undefined);
+          return;
+        }
         const reason = error instanceof Error ? error.message : String(error);
         console.warn(`[FEEDS] ${label}: no pude leer r/${subreddit}. ${reason} Lo vuelvo a intentar en ${feed.postInterval} min.`);
         return;

@@ -182,7 +182,7 @@ export default function Social() {
             <li>
               <span className="text-foreground">Reddit:</span> el bot mira lo más popular del subreddit y publica una
               imagen al azar. Lee el RSS público de Reddit, sin cuenta; si Reddit no responde o no hay imágenes, ese
-              turno no se publica nada. Se salta lo que Reddit marca como NSFW o spoiler.
+              turno no se publica nada. Se salta lo que Reddit marca como NSFW.
             </li>
             <li>
               Solo publica mientras el bot está conectado. «Último intento» se marca cada vez que le toca al feed,

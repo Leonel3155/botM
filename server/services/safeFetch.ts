@@ -1,5 +1,5 @@
 import { lookup as dnsLookup, type LookupAddress } from 'dns';
-import http from 'http';
+import http, { type IncomingHttpHeaders } from 'http';
 import https from 'https';
 import { BlockList, isIP, type LookupFunction } from 'net';
 import { pipeline, type Readable } from 'stream';
@@ -14,12 +14,18 @@ export class SafeFetchError extends Error {
   readonly status: number | null;
   /** Cuánto pidió esperar el sitio (cabecera Retry-After), si lo dijo. */
   readonly retryAfterMs: number | null;
+  /** Cabeceras de esa respuesta de error. */
+  readonly headers: IncomingHttpHeaders;
 
-  constructor(message: string, details: { status?: number; retryAfterMs?: number | null } = {}) {
+  constructor(
+    message: string,
+    details: { status?: number; retryAfterMs?: number | null; headers?: IncomingHttpHeaders } = {},
+  ) {
     super(message);
     this.name = 'SafeFetchError';
     this.status = details.status ?? null;
     this.retryAfterMs = details.retryAfterMs ?? null;
+    this.headers = details.headers ?? {};
   }
 }
 
@@ -39,6 +45,7 @@ export interface SafeFetchResult {
   url: string;
   status: number;
   contentType: string;
+  headers: IncomingHttpHeaders;
   text: string;
 }
 
@@ -150,7 +157,7 @@ interface RawResponse {
   location: string | null;
   contentType: string;
   body: Buffer | null;
-  retryAfter: string | null;
+  headers: IncomingHttpHeaders;
 }
 
 /** Retry-After en segundos o como fecha → milisegundos (null si no viene o no se entiende). */
@@ -187,12 +194,12 @@ function requestOnce(
       const contentType = String(response.headers['content-type'] ?? '');
       if (status >= 300 && status < 400) {
         response.resume();
-        resolve({ status, location: response.headers.location ?? null, contentType, body: null, retryAfter: null });
+        resolve({ status, location: response.headers.location ?? null, contentType, body: null, headers: response.headers });
         return;
       }
       if (status < 200 || status >= 300) {
         response.resume();
-        resolve({ status, location: null, contentType, body: null, retryAfter: response.headers['retry-after'] ?? null });
+        resolve({ status, location: null, contentType, body: null, headers: response.headers });
         return;
       }
 
@@ -251,7 +258,7 @@ function requestOnce(
         if (finished) return;
         finished = true;
         signal.removeEventListener('abort', onAbort);
-        resolve({ status, location: null, contentType, body: Buffer.concat(chunks), retryAfter: null });
+        resolve({ status, location: null, contentType, body: Buffer.concat(chunks), headers: response.headers });
       });
     });
     request.end();
@@ -302,7 +309,7 @@ export async function safeFetchText(rawUrl: string, options: SafeFetchOptions = 
       url = checkFetchableUrl(next, settings.allowPrivateHosts);
       continue;
     }
-    const details = { status: result.status, retryAfterMs: parseRetryAfter(result.retryAfter) };
+    const details = { status: result.status, retryAfterMs: parseRetryAfter(result.headers['retry-after'] ?? null), headers: result.headers };
     if (result.status === 404 || result.status === 410) throw new SafeFetchError(`Esa página no existe en ${url.hostname} (error ${result.status}).`, details);
     if (result.status === 401 || result.status === 403) throw new SafeFetchError(`${url.hostname} no deja leer esa página (error ${result.status}).`, details);
     if (result.status === 429) throw new SafeFetchError(`${url.hostname} pidió que esperemos un rato (demasiadas consultas).`, details);
@@ -312,6 +319,7 @@ export async function safeFetchText(rawUrl: string, options: SafeFetchOptions = 
       url: url.toString(),
       status: result.status,
       contentType: result.contentType,
+      headers: result.headers,
       text: decodeBody(result.body, result.contentType),
     };
   }
