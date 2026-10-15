@@ -26,6 +26,15 @@ BotM es un bot de Discord con su propio **panel web en español** para administr
 - **`/anuncio`**: publica un anuncio bonito con título, texto, imagen, color y, si quieres, mención a `@everyone`, `@here` o un rol.
 - **`/evento`**: crea un evento de Discord (en un canal de voz o en un lugar externo) y lo anuncia con un botón para marcar "Me interesa".
 
+### 🎉 Diversión
+
+- **Interacciones**: `/abrazar`, `/besar`, `/cachetada`, `/acariciar`, `/golpear`, `/morder`, `/saludar`, `/chocar`, `/picar` y `/acurrucar` a alguien con un GIF anime, y cuenta cuántas veces se lo hiciste. `/reaccion` muestra cómo te sientes (feliz, llorar, bailar…). Se apagan en el panel (**Diversión**).
+- **Cumpleaños**: cada quien guarda su fecha con `/cumple guardar`. A la hora que elijas (en la zona horaria del servidor) el bot felicita en un canal y, si quieres, da un rol por 24 horas. Quien nació el 29 de febrero celebra el 28 en años no bisiestos.
+- **Recordatorios**: `/recordar crear` con tiempos como `10m`, `1h30m` o `2 horas y 30 minutos` (hasta 365 días, 25 por persona). Avisa en el canal y, si no puede, por mensaje directo.
+- **Encuestas**: `/encuesta` crea una encuesta nativa de Discord con hasta 10 opciones.
+- **Starboard**: cuando un mensaje junta suficientes ⭐ (o el emoji que elijas), el bot lo copia a un canal de "lo mejor". La reacción del propio autor no cuenta, y nunca copia de un canal +18 a uno normal.
+- **Confesiones**: `/confesar` publica un mensaje anónimo numerado en el canal que elijas. Pasa por el filtro de palabras. Los admins pueden ver quién escribió una con `/confesion autor`, y eso queda en el registro.
+
 ### 🎭 Autorroles
 
 - Desde el panel (**Autorroles**) armas un mensaje con un botón por rol y el bot lo publica en el canal que elijas. Quien pulsa un botón se pone ese rol, y si lo vuelve a pulsar se lo quita. Los botones siguen funcionando aunque reinicies el bot.
@@ -37,11 +46,13 @@ BotM es un bot de Discord con su propio **panel web en español** para administr
 
 - Cada mensaje da entre 15 y 25 XP (solo cuenta un mensaje por minuto por persona, así el spam no sirve). Cada nivel pide 10 % más XP que el anterior.
 - Al subir de nivel se ganan monedas (nivel² × 50) y boletos si la economía está prendida, y el bot lo anuncia en el chat (puedes apagar esos avisos en el panel).
+- **XP por voz** (opcional, en el panel): 5 XP por minuto en un canal de voz con al menos otra persona, sin estar ensordecido ni en el canal AFK.
 - Desde el nivel 100 se puede usar `/prestige`: vuelves al nivel 1 y ganas +10 % de XP por mensaje en cada prestigio (máximo +100 %).
 
 ### 💰 Economía y juegos
 
 - Monedas virtuales con cartera y banco (lo del banco no te lo pueden robar). Se ganan platicando, con `/daily`, `/work`, `/crime`… y se pueden regalar, depositar o intentar robar.
+- `/daily` da un bono por racha: +5 % por cada día seguido después del primero, hasta +50 %.
 - Juegos: blackjack, tragamonedas, ruleta europea, dado y ruleta rusa.
 - **Tienda**: los artículos se crean solo desde el panel (**Tienda**): nombre, emoji, precio, unidades (o sin límite) y, si quieres, un rol que se da al comprarlo. Se compra con `/comprar` usando la cartera; los artículos sin rol se guardan en `/inventario`. Un artículo con rol se compra una sola vez y, si el bot no puede dar el rol, no cobra.
 - Comandos de administración para dar, quitar o reiniciar monedas.
@@ -52,7 +63,21 @@ BotM es un bot de Discord con su propio **panel web en español** para administr
 
 - `/clear`, `/kick`, `/ban` (también a alguien que ya se fue, con su ID), `/mute` (con el aislamiento temporal de Discord, hasta 1 semana), `/unmute`, `/lockdown` (bloquea el canal y al desbloquear deja los permisos como estaban) y `/warn` / `/warnings`.
 - Cada comando pide su propio permiso de Discord, y nadie puede usarlos contra alguien con un rol igual o más alto que el suyo (el dueño del servidor sí).
-- Cada acción queda guardada y la ves en el panel, en **Moderación**.
+- Cada acción queda guardada y la ves en el panel, en **Moderación**, donde también puedes quitar una advertencia. `/clearwarns` borra todas las de alguien.
+
+### 🤖 Moderación automática
+
+Se configura en el panel, en **Moderación automática**:
+
+- **Registro del servidor**: manda a un canal lo que pasa (mensajes borrados y editados, quién entra y sale, cambios de roles y las acciones de moderación). Eliges qué eventos.
+- **Filtro de palabras**: borra mensajes con palabras prohibidas (entiende acentos y trucos como `p3nd3j0`; `*palabra` atrapa todo lo que empiece así), invitaciones de Discord y, si quieres, cualquier enlace. Puedes eximir roles y hacer que cada borrado cuente como advertencia.
+- **Castigos automáticos**: al llegar a cierto número de advertencias aísla, expulsa o banea solo. Las reglas se editan en el panel (por defecto: 3 advertencias = aislar 1 hora, 5 = expulsar).
+
+### 🔞 Contenido +18
+
+- `/nsfw` publica una ilustración anime para adultos (de waifu.pics, en categorías fijas; no se puede buscar por etiquetas).
+- **Doble candado**: solo funciona si un admin lo prende en el panel (**Contenido +18**) y elige el canal, **y** ese canal está marcado en Discord como "con restricción de edad". Si falta cualquiera de las dos, no publica nada. Discord además esconde el comando en los canales normales.
+- Cada imagen queda registrada (quién la pidió, dónde y cuándo) y la ves en el panel.
 
 ### 🛡️ Anti-raid
 
@@ -84,12 +109,15 @@ Inicias sesión con Discord y solo ves los servidores donde eres dueño o tienes
 | **Estadísticas** | Gráficas de cómo se reparten los niveles, quién tiene más monedas, y la moderación y las alertas de raid de los últimos 30 días. |
 | **Servidores** | Elige con qué servidor trabajar e invita al bot a los que todavía no lo tienen. |
 | **Bienvenida y pregunta del día** | Canal, mensaje y rol de bienvenida (con prueba); canal, hora y zona de la pregunta del día (con "publicar ahora"). |
-| **Niveles** | Ranking, cómo se reparten los niveles, reglas de XP y el interruptor de avisos al subir de nivel. |
+| **Niveles** | Ranking, cómo se reparten los niveles, reglas de XP, el interruptor de avisos al subir de nivel y el de XP por voz. |
+| **Diversión** | Interacciones, cumpleaños, starboard y confesiones. |
 | **Autorroles** | Crear, editar y borrar los mensajes con botones para ponerse roles. |
 | **Economía** | Ranking de monedas, totales y el interruptor para prender o apagar la economía. |
 | **Tienda** | Agregar, editar, pausar y borrar los artículos que se compran con monedas. |
 | **Redes sociales** | Crear, editar, pausar y borrar feeds de noticias y de Reddit. |
-| **Moderación** | Historial de lo que hizo el staff con los comandos del bot. |
+| **Moderación** | Historial de lo que hizo el staff con los comandos del bot, y quitar advertencias. |
+| **Moderación automática** | Registro del servidor, filtro de palabras y castigos automáticos. |
+| **Contenido +18** | Prender `/nsfw`, elegir los canales +18 donde se permite y ver lo último que se publicó. |
 | **Seguridad** | Prender y configurar el anti-raid, terminar un modo raid y ver el historial. |
 | **Comandos personalizados** | Crear, editar, activar y borrar tus comandos. |
 | **Canales** | Canal de bienvenida, canal por defecto para noticias y Reddit, y canal de moderación (donde llegan las alertas de raid). |
@@ -424,6 +452,20 @@ Las opciones entre `< >` son obligatorias y las de `[ ]` opcionales.
 | `/evento crear <nombre> <fecha> […]` | Crea un evento de Discord y lo anuncia con botón "Me interesa". Fecha: `AAAA-MM-DD HH:mm` o `DD/MM/AAAA HH:mm` en la zona del servidor. Opciones: descripción, duración, lugar, canal de voz, canal del anuncio, mención y si se anuncia. | 🔒 Gestionar eventos (o Crear eventos / Gestionar servidor) |
 | `/evento lista` | Muestra los próximos eventos del servidor. | Todos |
 
+### Diversión
+
+| Comando | Qué hace | Quién |
+| --- | --- | --- |
+| `/abrazar` `/besar` `/cachetada` `/acariciar` `/golpear` `/morder` `/saludar` `/chocar` `/picar` `/acurrucar` `<usuario>` | Interacción con GIF y contador. | Todos |
+| `/reaccion <tipo>` | GIF de cómo te sientes. | Todos |
+| `/cumple guardar <dia> <mes>` · `/cumple borrar` | Guarda o borra tu cumpleaños. | Todos |
+| `/cumple ver [usuario]` · `/cumple proximos` | El cumpleaños de alguien o los que vienen. | Todos |
+| `/recordar crear <en> <que>` · `/recordar lista` · `/recordar borrar <recordatorio>` | Tus recordatorios. | Todos |
+| `/encuesta <pregunta> <opciones> [horas] [varias]` | Encuesta de Discord (opciones separadas con `;`). | Todos |
+| `/confesar <texto>` | Confesión anónima en el canal de confesiones. | Todos |
+| `/confesion autor <numero>` | Quién escribió una confesión (queda en el registro). | 🔒 Administrador |
+| `/nsfw <categoria>` | Imagen +18. Solo en canales +18 autorizados en el panel. | Todos (en esos canales) |
+
 ### Niveles y prestigio
 
 | Comando | Qué hace | Quién |
@@ -485,7 +527,8 @@ Además del permiso de Discord, el bot pide que quien lo usa tenga un rol llamad
 | `/unmute <usuario>` | Quita el aislamiento antes de tiempo (o el rol "Muteado" de versiones viejas). | 🔒 Aislar temporalmente a miembros |
 | `/lockdown <accion>` | Bloquea (o desbloquea) el canal actual y sus hilos para que solo el staff escriba. | 🔒 Gestionar canales |
 | `/warn <usuario> [razon]` | Registra una advertencia. | 🔒 Aislar temporalmente a miembros |
-| `/warnings <usuario>` | Historial de advertencias y otras acciones de alguien. | 🔒 Aislar temporalmente a miembros |
+| `/warnings <usuario>` | Historial de advertencias (y cuántas siguen vigentes) y otras acciones de alguien. | 🔒 Aislar temporalmente a miembros |
+| `/clearwarns <usuario>` | Quita todas las advertencias vigentes de alguien. | 🔒 Aislar temporalmente a miembros |
 
 ### Seguridad y diagnóstico
 
