@@ -79,7 +79,7 @@ export async function execute(interaction: ChatInputCommandInteraction, bot: Dis
     `**Permisos**: ${missing.length ? '❌ Faltan: ' + missing.join(', ') : '✅ Todos los permisos necesarios'}`,
     `**Servidor**: ${interaction.guild ? '✅ ' + interaction.guild.name : '❌ No encontrado'}`,
     `**Usuario**: ${interaction.user ? '✅ ' + interaction.user.tag : '❌ No encontrado'}`,
-    '\n**Autorroles, tienda y versión**',
+    '\n**Autorroles, tienda, Reddit y versión**',
     formatCheckLines(features),
     '\n**ESTADO GENERAL**: ' + (dbOk && missing.length === 0 && commandCount > 0 && featuresOk ? '🟢 TODO FUNCIONANDO' : '🟡 REQUIERE ATENCIÓN')
   ].join('\n');

@@ -70,7 +70,7 @@ BotM es un bot de Discord con su propio **panel web en español** para administr
 ### 🌐 Redes (noticias y Reddit)
 
 - **Noticias:** feeds que publican cada noticia nueva como tarjeta (título, resumen, imagen si la hay y enlace). Pueden salir de una sección de Google Noticias (México, Mundo, Tecnología, Deportes…), de un tema que escribas (por ejemplo "videojuegos") o de cualquier sitio o canal de YouTube con RSS: pegas la página y el bot encuentra su RSS. No hace falta ninguna clave. Revisa cada 10 a 1440 minutos, publica como mucho 2 noticias por turno (las más nuevas), nunca repite y no publica nada de más de 3 días (salvo la primera vez, que publica la más reciente para que veas cómo queda).
-- **Reddit:** feeds que comparten imágenes de un subreddit en un canal cada cierto tiempo (de 1 a 1440 minutos). Solo imágenes subidas a Reddit; en subreddits normales se salta lo que Reddit marca como NSFW (no uses subreddits para adultos). Lee el RSS público de Reddit, sin claves (Reddit cerró en 2026 la lectura sin cuenta por JSON y apaga el RSS el 13 de noviembre de 2026).
+- **Reddit:** feeds que comparten imágenes de un subreddit en un canal cada cierto tiempo (de 1 a 1440 minutos). Solo imágenes subidas a Reddit; en subreddits normales se salta lo que Reddit marca como NSFW (no uses subreddits para adultos). Con [claves de Reddit](#claves-de-reddit-para-que-los-memes-sigan-después-del-13-de-noviembre) usa la API oficial; sin ellas lee el RSS público, que Reddit apaga el 13 de noviembre de 2026.
 - Hasta 10 feeds por servidor, sumando los dos tipos.
 - Twitter/X no está disponible: X cobra por leer publicaciones, así que el bot no publica nada de ahí.
 
@@ -386,7 +386,8 @@ Los ejemplos con todos los valores y comentarios están en [`.env.example`](.env
 | `GLOBAL_CONCURRENCY` | No | Cuántas tareas del bot pueden correr a la vez (por defecto `50`). Déjalo así. |
 | `GLOBAL_TIMEOUT_MS` | No | Tiempo máximo de cada tarea del bot en milisegundos (por defecto `120000`). Déjalo así. |
 | `TWITTER_BEARER_TOKEN` / `X_BEARER_TOKEN` | No | No se usan: Twitter/X está desactivado. |
-| `REDDIT_CLIENT_ID` / `REDDIT_CLIENT_SECRET` | No | No se usan: el bot lee el RSS público de Reddit, sin claves. |
+| `REDDIT_CLIENT_ID` / `REDDIT_CLIENT_SECRET` | No | Claves de tu app de Reddit. Con ellas los feeds de Reddit usan la API oficial y siguen funcionando después del 13 de noviembre de 2026; sin ellas leen el RSS público, que ese día se apaga. Ver [Claves de Reddit](#claves-de-reddit-para-que-los-memes-sigan-después-del-13-de-noviembre). |
+| `REDDIT_USERNAME` | No | Tu usuario de Reddit (sin `u/`). Reddit pide que las apps lo digan al conectarse. |
 
 `NODE_ENV` no va en el `.env`: `npm run dev` usa `development` y `npm start` usa `production` solos.
 
@@ -648,6 +649,26 @@ El panel guarda una cookie al pulsar "Iniciar sesión" y la revisa cuando Discor
 
 ---
 
+## Claves de Reddit (para que los memes sigan después del 13 de noviembre)
+
+Reddit apaga su RSS público el 13 de noviembre de 2026. Para que los feeds de Reddit sigan publicando, BotM se conecta a la API oficial con una app tuya de Reddit (gratis para un bot personal):
+
+1. Entra a Reddit con tu cuenta y abre <https://www.reddit.com/prefs/apps>.
+2. Pulsa **create another app…** (o **create an app**) y llena:
+   - **name:** `BotM`
+   - Tipo: **script**
+   - **redirect uri:** `http://localhost:8080` (Reddit lo pide, pero BotM no lo usa)
+3. Pulsa **create app**. El texto raro que sale debajo de "personal use script" es el **client ID**, y el de **secret** es el secreto. Si Reddit te pide llenar una solicitud de acceso a la API antes de dejarte crear la app, llénala (uso personal, un bot de Discord que comparte imágenes de subreddits) y vuelve aquí cuando te la aprueben.
+4. Ponlos en el `.env`:
+   ```
+   REDDIT_CLIENT_ID=el-client-id
+   REDDIT_CLIENT_SECRET=el-secreto
+   REDDIT_USERNAME=tu-usuario
+   ```
+5. Cierra BotM y ábrelo otra vez. En la consola (y en `/selftest`) debe salir `✅ Reddit: conectado con la API oficial`.
+
+Con las claves, el bot sabe de verdad qué publicación es NSFW (Reddit lo marca, también en subreddits para adultos) y se salta esas y las marcadas como spoiler. No compartas el secreto con nadie: es como una contraseña de tu app.
+
 ## Actualizar BotM
 
 **Desde Discord:** usa `/actualizar ahora`. BotM baja los cambios de GitHub, instala las dependencias nuevas si hacen falta y se reinicia solo (el panel web pide iniciar sesión otra vez). Solo lo puede usar el dueño del bot, es decir, quien lo creó en Discord Developer Portal. Con `/actualizar revisar` ves qué hay de nuevo sin instalar nada.
@@ -704,7 +725,7 @@ Ten en cuenta:
 - **Mientras el modo raid está activo** el bot no da la bienvenida ni el rol automático a quien entra. Si alguien legítimo entró en ese rato, dale el rol a mano.
 - **Lotería:** los boletos se acumulan, pero todavía no hay sorteos.
 - **Twitter/X:** no está disponible; hay feeds de noticias y de Reddit.
-- **Reddit:** Reddit anunció que **apaga su RSS el 13 de noviembre de 2026**; desde ese día los feeds de Reddit dejarán de publicar (en la consola saldrá por qué). Mientras tanto:
+- **Reddit:** Reddit anunció que **apaga su RSS el 13 de noviembre de 2026**; desde ese día los feeds de Reddit solo publican si pusiste [claves de Reddit](#claves-de-reddit-para-que-los-memes-sigan-después-del-13-de-noviembre) (la consola y `/selftest` avisan si faltan). Sin claves, mientras dure el RSS:
   - Como el RSS no dice qué es NSFW, el bot solo publica imágenes subidas a Reddit (`i.redd.it`) a las que Reddit les pone miniatura (a quien lee sin cuenta no se la pone en las NSFW) y que no dicen NSFW en el título. Si un subreddit no muestra miniaturas a nadie sin cuenta, el bot no publica de ahí y lo dice en la consola.
   - Ese filtro solo sirve en subreddits normales: dentro de un subreddit para adultos Reddit no marca nada. El panel rechaza los nombres que claramente lo son (nsfw, porn, gonewild…), pero no puede reconocerlos todos: no pongas subreddits para adultos.
   - Reddit deja leer su RSS más o menos una vez por minuto, contando todos los subreddits (y los feeds de noticias que apunten a reddit.com). El bot va al ritmo que marca Reddit, reutiliza cada lista 10 minutos y, si Reddit pide esperar, espera: el feed lo vuelve a intentar al minuto siguiente sin perder su turno, y pasa primero el que lleva más tiempo esperando. Con varios feeds de Reddit a la misma hora, salen uno por minuto; si alguno lleva más de 15 minutos esperando, sale un aviso en la consola.

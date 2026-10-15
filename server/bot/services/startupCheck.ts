@@ -1,13 +1,15 @@
-// Revisión de lo nuevo (autorroles, tienda y actualizaciones): sale en la consola al arrancar el bot
+// Revisión de lo nuevo (autorroles, tienda, Reddit y actualizaciones): sale en la consola al arrancar el bot
 // y también en /selftest. Solo lee: no cambia nada en Discord ni en la base de datos.
 import { DiscordAPIError, RESTJSONErrorCodes, type Client, type Guild } from 'discord.js';
-import { sql } from 'drizzle-orm';
+import { count, eq, sql } from 'drizzle-orm';
+import { contentFeeds } from '@shared/schema';
 import { db } from '../../db';
 import { listRolePanels } from './rolePanels';
 import { listShopItems } from './shop';
 import { checkGrantableRole } from './roles';
 import { resolveSendableChannel } from './channels';
 import { lastUpdateStatus } from './updater';
+import { RedditError, redditService, REDDIT_RSS_SHUTDOWN_AT } from '../../services/reddit';
 
 export type CheckLevel = 'ok' | 'warn' | 'error';
 
@@ -97,6 +99,25 @@ function updateLine(): CheckLine | null {
   return { level: 'ok', text: 'BotM está en la última versión' };
 }
 
+async function redditLine(): Promise<CheckLine | null> {
+  if (redditService.usesApi) {
+    try {
+      await redditService.checkCredentials();
+      return { level: 'ok', text: 'Reddit: conectado con la API oficial (tus claves funcionan)' };
+    } catch (error) {
+      const message = error instanceof RedditError ? error.message : String(error);
+      return { level: 'error', text: `Reddit: ${message}` };
+    }
+  }
+  const [row] = await db.select({ total: count() }).from(contentFeeds).where(eq(contentFeeds.source, 'reddit'));
+  const total = row?.total ?? 0;
+  if (total === 0) return null;
+  const fix = 'Pon REDDIT_CLIENT_ID y REDDIT_CLIENT_SECRET en el .env (README, sección «Claves de Reddit»).';
+  return Date.now() >= REDDIT_RSS_SHUTDOWN_AT
+    ? { level: 'error', text: `Reddit: apagó su RSS y ${total} feed(s) de Reddit ya no publican. ${fix}` }
+    : { level: 'warn', text: `Reddit: sin claves, ${total} feed(s) de Reddit dejan de publicar el 13 de noviembre (Reddit apaga su RSS). ${fix}` };
+}
+
 /** Todo lo que se puede revisar de un servidor (para /selftest). */
 export async function runFeatureChecks(guild: Guild | null, commandNames: string[]): Promise<CheckLine[]> {
   const lines: CheckLine[] = [await checkTables()];
@@ -105,6 +126,12 @@ export async function runFeatureChecks(guild: Guild | null, commandNames: string
     ? { level: 'ok', text: 'Comandos /tienda, /comprar, /inventario y /actualizar cargados' }
     : { level: 'error', text: `No se cargaron: ${missing.map((name) => `/${name}`).join(', ')}` });
   if (guild && lines[0].level === 'ok') lines.push(...await checkGuildFeatures(guild));
+  try {
+    const reddit = await redditLine();
+    if (reddit) lines.push(reddit);
+  } catch (error) {
+    lines.push({ level: 'warn', text: `Reddit: no pude revisarlo (${error instanceof Error ? error.message : String(error)})` });
+  }
   const update = updateLine();
   if (update) lines.push(update);
   return lines;
@@ -125,7 +152,7 @@ export async function runStartupChecks(client: Client, commandNames: string[]): 
       }
     }
     const problems = lines.filter((line) => line.level !== 'ok').length;
-    console.log(`🧪 Revisión de autorroles, tienda y actualizaciones (${problems === 0 ? 'todo bien' : `${problems} aviso(s)`}):`);
+    console.log(`🧪 Revisión de autorroles, tienda, Reddit y actualizaciones (${problems === 0 ? 'todo bien' : `${problems} aviso(s)`}):`);
     for (const line of lines) console.log(`   ${ICON[line.level]} ${line.text}`);
   } catch (error) {
     console.error('⚠️ No se pudo hacer la revisión al arrancar:', error);

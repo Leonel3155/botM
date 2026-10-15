@@ -38,6 +38,10 @@ export interface SafeFetchOptions {
   accept?: string;
   /** Solo para pruebas locales: deja pasar direcciones privadas. */
   allowPrivateHosts?: boolean;
+  /** Cabeceras extra (p. ej. Authorization). Si una redirección cambia de sitio, no se mandan allá. */
+  headers?: Record<string, string>;
+  /** POST con este cuerpo (application/x-www-form-urlencoded). Un POST nunca sigue redirecciones. */
+  form?: string;
 }
 
 export interface SafeFetchResult {
@@ -171,13 +175,14 @@ function parseRetryAfter(raw: string | null): number | null {
 
 function requestOnce(
   url: URL,
-  options: Required<Omit<SafeFetchOptions, 'allowPrivateHosts'>> & { allowPrivateHosts: boolean },
+  options: Required<Omit<SafeFetchOptions, 'allowPrivateHosts' | 'headers' | 'form'>> & { allowPrivateHosts: boolean },
   signal: AbortSignal,
+  extra: { headers: Record<string, string>; form?: string },
 ): Promise<RawResponse> {
   return new Promise((resolve, reject) => {
     const client = url.protocol === 'https:' ? https : http;
     const request = client.request(url, {
-      method: 'GET',
+      method: extra.form === undefined ? 'GET' : 'POST',
       signal,
       agent: false,
       lookup: options.allowPrivateHosts ? undefined : publicOnlyLookup,
@@ -185,6 +190,11 @@ function requestOnce(
         'User-Agent': USER_AGENT,
         Accept: options.accept,
         'Accept-Encoding': 'gzip, deflate, br',
+        ...(extra.form === undefined ? {} : {
+          'Content-Type': 'application/x-www-form-urlencoded',
+          'Content-Length': String(Buffer.byteLength(extra.form)),
+        }),
+        ...extra.headers,
       },
     });
 
@@ -261,7 +271,7 @@ function requestOnce(
         resolve({ status, location: null, contentType, body: Buffer.concat(chunks), headers: response.headers });
       });
     });
-    request.end();
+    request.end(extra.form);
   });
 }
 
@@ -276,11 +286,12 @@ export async function safeFetchText(rawUrl: string, options: SafeFetchOptions = 
   };
   const signal = AbortSignal.timeout(settings.timeoutMs);
   let url = checkFetchableUrl(rawUrl, settings.allowPrivateHosts);
+  let headers = options.headers ?? {};
 
   for (let redirects = 0; ; redirects++) {
     let result: RawResponse;
     try {
-      result = await requestOnce(url, settings, signal);
+      result = await requestOnce(url, settings, signal, { headers, form: options.form });
     } catch (error) {
       if (error instanceof SafeFetchError) throw error;
       if (signal.aborted) throw new SafeFetchError(`${url.hostname} tardó demasiado en responder.`);
@@ -299,6 +310,7 @@ export async function safeFetchText(rawUrl: string, options: SafeFetchOptions = 
 
     if (result.status >= 300 && result.status < 400) {
       if (!result.location) throw new SafeFetchError(`${url.hostname} redirigió a ninguna parte.`);
+      if (options.form !== undefined) throw new SafeFetchError(`${url.hostname} redirigió la consulta a otra página.`, { status: result.status, headers: result.headers });
       if (redirects >= settings.maxRedirects) throw new SafeFetchError('El enlace redirige demasiadas veces.');
       let next: string;
       try {
@@ -306,7 +318,10 @@ export async function safeFetchText(rawUrl: string, options: SafeFetchOptions = 
       } catch {
         throw new SafeFetchError(`${url.hostname} redirigió a un enlace inválido.`);
       }
-      url = checkFetchableUrl(next, settings.allowPrivateHosts);
+      const nextUrl = checkFetchableUrl(next, settings.allowPrivateHosts);
+      // Claves y sesiones (Authorization) solo van al sitio al que se le pidió
+      if (nextUrl.host !== url.host || nextUrl.protocol !== url.protocol) headers = {};
+      url = nextUrl;
       continue;
     }
     const details = { status: result.status, retryAfterMs: parseRetryAfter(result.headers['retry-after'] ?? null), headers: result.headers };
