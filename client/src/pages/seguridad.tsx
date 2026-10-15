@@ -17,6 +17,7 @@ import {
 } from "@/components/moderacion-seguridad/query-keys";
 import { RaidEventsTimeline } from "@/components/moderacion-seguridad/raid-events-timeline";
 import { useNow } from "@/components/moderacion-seguridad/utils";
+import { useBotAvailability } from "@/components/ajustes-resumen/bot-status";
 import { useSelectedGuild } from "@/lib/guild";
 import { cn } from "@/lib/utils";
 
@@ -40,7 +41,8 @@ export default function Seguridad() {
   const { guildId, guild } = useSelectedGuild();
   const queryClient = useQueryClient();
   const now = useNow(15_000);
-  const botInGuild = guild?.botInGuild ?? true;
+  const availability = useBotAvailability(guildId, guild?.botInGuild);
+  const botInGuild = availability.canEdit;
 
   const antiRaid = useQuery<AntiRaidResponse>({
     queryKey: antiRaidKey(guildId),
@@ -101,8 +103,8 @@ export default function Seguridad() {
 
           <div className="grid grid-cols-1 gap-6 lg:grid-cols-3">
             <div className="min-w-0 space-y-6 lg:col-span-2">
-              <AntiRaidStatusCard guildId={guildId} data={data} botInGuild={botInGuild} />
-              <AntiRaidSettingsForm guildId={guildId} data={data} botInGuild={botInGuild} />
+              <AntiRaidStatusCard guildId={guildId} data={data} botInGuild={botInGuild} blockedText={availability.blocked} />
+              <AntiRaidSettingsForm guildId={guildId} data={data} botInGuild={botInGuild} blockedText={availability.blocked} />
             </div>
             <div className="min-w-0 lg:self-start">
               <AntiRaidHelp />

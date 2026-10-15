@@ -38,6 +38,7 @@ import { roleLabel } from "@/components/comunidad/role-field";
 import { formatCoins } from "@/components/niveles-economia/format";
 import { errorMessage } from "@/components/comandos/utils";
 import { useToast } from "@/hooks/use-toast";
+import { useBotAvailability } from "@/components/ajustes-resumen/bot-status";
 import { useSelectedGuild } from "@/lib/guild";
 import { apiRequest, queryClient } from "@/lib/queryClient";
 import { cn } from "@/lib/utils";
@@ -400,7 +401,8 @@ export default function Tienda() {
   const { guildId, guild } = useSelectedGuild();
   const [dialogOpen, setDialogOpen] = useState(false);
   const [editing, setEditing] = useState<ShopItemItem | null>(null);
-  const botInGuild = guild?.botInGuild ?? true;
+  const availability = useBotAvailability(guildId, guild?.botInGuild);
+  const botInGuild = availability.canEdit;
 
   const query = useQuery<ShopItemsResponse>({ queryKey: shopKey(guildId), staleTime: 0 });
   const rolesQuery = useQuery<DiscordRolesResponse>({ queryKey: rolesKey(guildId), enabled: botInGuild, staleTime: 60_000 });
@@ -475,7 +477,7 @@ export default function Tienda() {
       )}
       {!botInGuild && (
         <Alert>
-          <AlertDescription>Invita al bot a este servidor para poder agregar artículos.</AlertDescription>
+          <AlertDescription>{availability.blocked}</AlertDescription>
         </Alert>
       )}
       {atLimit && (

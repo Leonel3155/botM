@@ -169,10 +169,11 @@ interface AntiRaidSettingsFormProps {
   guildId: string;
   data: AntiRaidResponse;
   botInGuild: boolean;
+  blockedText?: string | null;
 }
 
 /** Cuándo se detecta un raid, qué hace el bot y dónde avisa. */
-export function AntiRaidSettingsForm({ guildId, data, botInGuild }: AntiRaidSettingsFormProps) {
+export function AntiRaidSettingsForm({ guildId, data, botInGuild, blockedText }: AntiRaidSettingsFormProps) {
   const { toast } = useToast();
   const update = useAntiRaidUpdate(guildId);
   const [warnings, setWarnings] = useState<string[]>([]);
@@ -499,7 +500,7 @@ export function AntiRaidSettingsForm({ guildId, data, botInGuild }: AntiRaidSett
             <div className="flex flex-col-reverse gap-3 border-t border-border pt-4 sm:flex-row sm:items-center sm:justify-between">
               <p className="text-xs text-muted-foreground" aria-live="polite">
                 {!botInGuild
-                  ? "Invita al bot al servidor para poder guardar."
+                  ? blockedText ?? "Invita al bot al servidor para poder guardar."
                   : isDirty
                     ? "Tienes cambios sin guardar."
                     : "Todo está guardado."}

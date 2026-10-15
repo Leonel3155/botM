@@ -506,6 +506,9 @@ export const MODERATION_ACTION_LABELS: Record<string, string> = {
   clear: "Borrado de mensajes",
   lockdown: "Canal bloqueado",
   unlock: "Canal desbloqueado",
+  clearwarns: "Advertencias borradas",
+  filter: "Filtro de palabras",
+  confession_lookup: "Autor de confesión consultado",
 };
 
 /** GET /api/moderation/:guildId/actions?type=&userId=&moderatorId=&limit=1..100&before=<cursor> */

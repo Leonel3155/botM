@@ -1,5 +1,5 @@
 import type { Guild } from '@shared/schema';
-import { storage } from '../../storage';
+import { onGuildChanged, storage } from '../../storage';
 
 // Ajustes del servidor (prefijo, economía, avisos de nivel) con una caché corta.
 // Así no consultamos la base de datos en cada mensaje; los cambios del panel se notan en segundos.
@@ -9,6 +9,19 @@ const cache = new Map<string, { at: number; guild: Guild | undefined }>();
 // Si una consulta lleva demasiado tiempo colgada se lanza otra, para no quedar atados a ella para siempre.
 const INFLIGHT_MAX_AGE_MS = 10_000;
 const inflight = new Map<string, { at: number; promise: Promise<Guild | undefined> }>();
+
+// Cuándo se guardó algo nuevo: una consulta que empezó antes ya trae datos viejos y no se guarda en la caché
+const forgottenAt = new Map<string, number>();
+
+/** Olvida lo guardado en memoria de ese servidor (al cambiar algo en el panel o con un comando). */
+export function forgetGuildSettings(guildId: string): void {
+  cache.delete(guildId);
+  inflight.delete(guildId);
+  forgottenAt.set(guildId, Date.now());
+  if (forgottenAt.size > 5_000) forgottenAt.clear();
+}
+
+onGuildChanged(forgetGuildSettings);
 
 function load(guildId: string): Promise<Guild | undefined> {
   const current = inflight.get(guildId);
@@ -20,7 +33,8 @@ function load(guildId: string): Promise<Guild | undefined> {
     .then((guild) => {
       // Una consulta más vieja que la que ya está en caché no la pisa
       const cached = cache.get(guildId);
-      if (!cached || cached.at <= startedAt) cache.set(guildId, { at: startedAt, guild });
+      const forgotten = forgottenAt.get(guildId) ?? 0;
+      if (startedAt >= forgotten && (!cached || cached.at <= startedAt)) cache.set(guildId, { at: startedAt, guild });
       if (cache.size > 5_000) {
         const now = Date.now();
         for (const [id, entry] of cache) {

@@ -1,7 +1,7 @@
 import type { NextFunction, Request, Response } from "express";
 import type { IncomingHttpHeaders, IncomingMessage } from "http";
 import type { Session, SessionData } from "express-session";
-import type { Guild as DiscordGuild, GuildBasedChannel } from "discord.js";
+import { ChannelType, type Guild as DiscordGuild, type GuildBasedChannel } from "discord.js";
 import { z } from "zod";
 import { bot } from "../bot/index";
 import { storage } from "../storage";
@@ -410,7 +410,8 @@ export function isBotInGuild(guildId: string): boolean {
 /** Canal de texto que pertenece a ese servidor (para no configurar canales de otro servidor). */
 export function findGuildTextChannel(guild: DiscordGuild, channelId: string): GuildBasedChannel | null {
   const channel = guild.channels.cache.get(channelId);
-  return channel && channel.isTextBased() ? channel : null;
+  // isTextBased() también es true en canales de voz (tienen chat): solo texto y anuncios
+  return channel && (channel.type === ChannelType.GuildText || channel.type === ChannelType.GuildAnnouncement) ? channel : null;
 }
 
 /** Crea la fila del servidor en la BD si aún no existe, con los datos reales del bot. */

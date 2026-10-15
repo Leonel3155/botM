@@ -23,6 +23,7 @@ import {
   useExtrasQuery,
   useRolesQuery,
 } from "@/components/extras/shared";
+import { useBotAvailability } from "@/components/ajustes-resumen/bot-status";
 import { useSelectedGuild } from "@/lib/guild";
 
 const FIELDS = [
@@ -62,7 +63,8 @@ function AutomodHeader() {
 }
 
 export default function Automod() {
-  const { guildId } = useSelectedGuild();
+  const { guildId, guild } = useSelectedGuild();
+  const availability = useBotAvailability(guildId, guild?.botInGuild);
   const extrasQuery = useExtrasQuery(guildId);
   const channelsQuery = useChannelsQuery(guildId);
   const rolesQuery = useRolesQuery(guildId);
@@ -115,6 +117,10 @@ export default function Automod() {
   return (
     <div className="space-y-6 pb-4">
       <AutomodHeader />
+
+      {availability.blocked && (
+        <Alert><AlertDescription>{availability.blocked}</AlertDescription></Alert>
+      )}
 
       <FeatureCard
         icon={ClipboardList}

@@ -17,7 +17,13 @@ const MODERATION_COMMANDS: CommandHelp[] = [
   {
     usage: "/warn usuario [razon]",
     logsAs: "warn",
-    description: "Deja una advertencia con su motivo. No castiga a nadie, pero queda en el historial para que el equipo lo tenga en cuenta.",
+    description: "Deja una advertencia con su motivo. Queda en el historial y, si activas los castigos automáticos (Moderación automática), al juntar varias se aplica el castigo solo.",
+    permission: "Moderar miembros",
+  },
+  {
+    usage: "/clearwarns usuario",
+    logsAs: "clearwarns",
+    description: "Quita todas las advertencias vigentes de alguien: siguen en el historial, pero ya no cuentan. Para quitar solo una, usa \"Quitar\" en el historial de abajo.",
     permission: "Moderar miembros",
   },
   {

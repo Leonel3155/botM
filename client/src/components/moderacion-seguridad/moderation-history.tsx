@@ -1,5 +1,5 @@
 import { useMemo, useRef, useState, type ReactNode } from "react";
-import { useInfiniteQuery, useQuery } from "@tanstack/react-query";
+import { useInfiniteQuery, useMutation, useQuery } from "@tanstack/react-query";
 import { Filter, FilterX, Gavel, Hash, History, Info, Loader2, Search, X } from "lucide-react";
 import {
   MODERATION_ACTION_LABELS,
@@ -16,7 +16,8 @@ import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from "@
 import { Tooltip, TooltipContent, TooltipTrigger } from "@/components/ui/tooltip";
 import { ApiErrorState } from "@/components/api-error-state";
 import { EmptyState } from "@/components/empty-state";
-import { apiRequest } from "@/lib/queryClient";
+import { apiRequest, queryClient } from "@/lib/queryClient";
+import { useToast } from "@/hooks/use-toast";
 import { cn } from "@/lib/utils";
 import { ActionBadge, MuteStatus, actionLabel, actionStyle, isChannelAction } from "./moderation-meta";
 import { analyticsKey, moderationActionsKey } from "./query-keys";
@@ -56,6 +57,32 @@ function FilterByUserButton({ action, onFilter }: { action: ModerationActionItem
       </TooltipTrigger>
       <TooltipContent>{label}</TooltipContent>
     </Tooltip>
+  );
+}
+
+/** Advertencia vigente (cuenta para los castigos automáticos) con botón para quitarla, o "Quitada". */
+function WarnStatus({ action, guildId }: { action: ModerationActionItem; guildId: string }) {
+  const { toast } = useToast();
+  const remove = useMutation({
+    mutationFn: () => apiRequest("POST", `/api/moderation/${guildId}/actions/${action.id}/remove-warning`),
+    onSuccess: () => {
+      void queryClient.invalidateQueries({ queryKey: moderationActionsKey(guildId) });
+      toast({ title: "Advertencia quitada", description: "Ya no cuenta para los castigos automáticos." });
+    },
+    onError: (error) => toast({ variant: "destructive", title: "No se pudo quitar", description: error instanceof Error ? error.message : String(error) }),
+  });
+  if (action.type !== "warn") return null;
+  if (!action.active) return <span className="text-xs text-muted-foreground">Quitada</span>;
+  return (
+    <button
+      type="button"
+      className="text-xs text-primary underline-offset-2 hover:underline disabled:opacity-50"
+      onClick={() => remove.mutate()}
+      disabled={remove.isPending}
+      data-testid={`button-remove-warning-${action.id}`}
+    >
+      {remove.isPending ? "Quitando…" : "Vigente · Quitar"}
+    </button>
   );
 }
 
@@ -293,6 +320,7 @@ export function ModerationHistory({ guildId }: { guildId: string }) {
                     <div className="flex flex-col items-start gap-1.5">
                       <ActionBadge type={action.type} duration={action.duration} />
                       <MuteStatus action={action} now={now} />
+                      <WarnStatus action={action} guildId={guildId} />
                     </div>
                   </TableCell>
                   <TableCell className="max-w-[220px] px-3 py-3 align-top">
@@ -333,6 +361,7 @@ export function ModerationHistory({ guildId }: { guildId: string }) {
                 <RelativeTime value={action.createdAt} now={now} className="font-mono text-xs text-muted-foreground" />
               </div>
               <MuteStatus action={action} now={now} />
+              <WarnStatus action={action} guildId={guildId} />
               {isChannelAction(action.type) ? (
                 <ChannelTarget />
               ) : (

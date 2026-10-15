@@ -81,7 +81,7 @@ export function AppSidebar() {
 
       <SidebarContent>
         {NAV_SECTIONS.map((section) => (
-          <SidebarGroup key={section.label}>
+          <SidebarGroup key={section.label} className="py-1">
             <SidebarGroupLabel className="uppercase tracking-wide">{section.label}</SidebarGroupLabel>
             <SidebarGroupContent>
               <SidebarMenu>
@@ -90,7 +90,7 @@ export function AppSidebar() {
                     <SidebarMenuButton
                       asChild
                       isActive={activeHref === item.href}
-                      className="relative h-9 rounded-l-none border-l-2 border-transparent pl-3 text-muted-foreground hover:text-sidebar-foreground data-[active=true]:border-primary data-[active=true]:bg-sidebar-accent data-[active=true]:text-sidebar-foreground data-[active=true]:[&>svg]:text-primary"
+                      className="relative h-8 rounded-l-none border-l-2 border-transparent pl-3 text-muted-foreground hover:text-sidebar-foreground data-[active=true]:border-primary data-[active=true]:bg-sidebar-accent data-[active=true]:text-sidebar-foreground data-[active=true]:[&>svg]:text-primary"
                       data-testid={`link-nav-${item.href === "/" ? "resumen" : item.href.slice(1)}`}
                     >
                       <Link href={item.href} onClick={closeOnMobile}>

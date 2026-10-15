@@ -40,6 +40,7 @@ import { RichSelectItem } from "@/components/comunidad/rich-select-item";
 import { channelLabel, postableChannels } from "@/components/comunidad/channel-field";
 import { errorMessage } from "@/components/comandos/utils";
 import { useToast } from "@/hooks/use-toast";
+import { useBotAvailability } from "@/components/ajustes-resumen/bot-status";
 import { useSelectedGuild } from "@/lib/guild";
 import { apiRequest, queryClient } from "@/lib/queryClient";
 import { cn } from "@/lib/utils";
@@ -354,9 +355,11 @@ interface PanelCardProps {
   channels: DiscordChannelsResponse | undefined;
   roles: DiscordRolesResponse | undefined;
   onEdit: (panel: RolePanelItem) => void;
+  /** El bot está conectado (si no, borrar deja el mensaje en Discord). */
+  botOnline: boolean;
 }
 
-function PanelCard({ guildId, panel, channels, roles, onEdit }: PanelCardProps) {
+function PanelCard({ guildId, panel, channels, roles, onEdit, botOnline }: PanelCardProps) {
   const { toast } = useToast();
   const [confirming, setConfirming] = useState(false);
   const roleById = new Map((roles ?? []).map((role) => [role.id, role]));
@@ -426,8 +429,9 @@ function PanelCard({ guildId, panel, channels, roles, onEdit }: PanelCardProps) 
           <AlertDialogHeader>
             <AlertDialogTitle>¿Borrar «{panel.title}»?</AlertDialogTitle>
             <AlertDialogDescription>
-              Quito el mensaje de Discord. Nadie pierde los roles que ya se puso, pero ya no podrán ponérselos ni quitárselos
-              con este panel.
+              {botOnline
+                ? "Quito el mensaje de Discord. Nadie pierde los roles que ya se puso, pero ya no podrán ponérselos ni quitárselos con este panel."
+                : "El bot está desconectado, así que el mensaje se queda en Discord con botones que ya no harán nada: bórralo a mano. Nadie pierde los roles que ya se puso."}
             </AlertDialogDescription>
           </AlertDialogHeader>
           <AlertDialogFooter>
@@ -455,7 +459,8 @@ export default function Autorroles() {
   const { guildId, guild } = useSelectedGuild();
   const [dialogOpen, setDialogOpen] = useState(false);
   const [editing, setEditing] = useState<RolePanelItem | null>(null);
-  const botInGuild = guild?.botInGuild ?? true;
+  const availability = useBotAvailability(guildId, guild?.botInGuild);
+  const botInGuild = availability.canEdit;
 
   const query = useQuery<RolePanelsResponse>({ queryKey: panelsKey(guildId), staleTime: 0 });
   const channelsQuery = useQuery<DiscordChannelsResponse>({
@@ -535,7 +540,7 @@ export default function Autorroles() {
 
       {!botInGuild && (
         <Alert>
-          <AlertDescription>Invita al bot a este servidor para poder publicar paneles de roles.</AlertDescription>
+          <AlertDescription>{availability.blocked}</AlertDescription>
         </Alert>
       )}
       {atLimit && (
@@ -562,6 +567,7 @@ export default function Autorroles() {
           {panels.map((panel) => (
             <PanelCard
               key={panel.id}
+              botOnline={availability.presence !== "offline"}
               guildId={guildId}
               panel={panel}
               channels={channelsQuery.data}

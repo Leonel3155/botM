@@ -135,3 +135,21 @@ export function BotDetailRows({ stats, loading, failed }: BotDetailsProps) {
     </>
   );
 }
+
+/**
+ * Para las páginas que cambian algo en Discord: la lista de servidores dice "el bot no está" también
+ * cuando solo está desconectado, así que aquí se distingue con el resumen. `blocked` es null si se
+ * puede editar; si no, el motivo en una frase.
+ */
+export function useBotAvailability(guildId: string, botInGuildFromList: boolean | undefined) {
+  const stats = useDashboardStats(guildId);
+  const presence = getBotPresence(stats.data, { loading: stats.isLoading, listBotInGuild: botInGuildFromList ?? true });
+  const blocked =
+    presence === "offline"
+      ? "El bot está desconectado ahora mismo. En cuanto se conecte vas a poder guardar cambios."
+      : presence === "missing"
+        ? "Invita al bot a este servidor para poder cambiar esto."
+        : null;
+  // Mientras se revisa, se deja editar (si el bot no está, el servidor lo dirá al guardar)
+  return { presence, canEdit: blocked === null, blocked };
+}
