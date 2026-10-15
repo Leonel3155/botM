@@ -6,6 +6,8 @@ import { setupCustomCommands } from './customCommands';
 import { migrateLegacyMutes } from './commands/moderation';
 import { refundPendingBets } from './services/economy';
 import { handleRolePanelButton, isRolePanelButton } from './services/rolePanels';
+import { runStartupChecks } from './services/startupCheck';
+import { startUpdateChecks } from './services/updater';
 import { installProcessErrorHandlers, isTransientError } from './utils/processErrors';
 
 // Un error suelto (p. ej. Discord caído un momento) no debe tumbar el bot ni el panel
@@ -44,6 +46,7 @@ export class DiscordBot {
   public commands: Collection<string, any>;
   public prefixHandler: any;
   private stopping = false;
+  private startupChecked = false;
 
   constructor() {
     this.client = new Client({
@@ -82,6 +85,12 @@ export class DiscordBot {
       // Lo que quedó a medias si el bot se apagó: apuestas de blackjack y mutes con el rol viejo
       void refundPendingBets();
       void migrateLegacyMutes(this.client);
+      // Versión nueva en GitHub y revisión de autorroles y tienda (solo la primera vez que se conecta)
+      if (!this.startupChecked) {
+        this.startupChecked = true;
+        startUpdateChecks();
+        setTimeout(() => void runStartupChecks(this.client, [...this.commands.keys()]), 10_000).unref();
+      }
     };
     if (this.client.isReady()) onReady();
     else this.client.once(Events.ClientReady, onReady);

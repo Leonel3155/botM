@@ -21,6 +21,7 @@ import { preguntaDelDiaCommands } from './preguntaDelDia';
 import { anuncioCommands } from './anuncios';
 import { tiendaCommands } from './tienda';
 import selftest from './selftest';
+import actualizar from './actualizar';
 import stress from './stress';
 import oauthTest from './oauth-test';
 import { ECONOMY_DISABLED_MESSAGE, isEconomyEnabledQuick } from '../services/guildSettings';
@@ -72,6 +73,7 @@ export async function setupCommands(bot: DiscordBot) {
     ...preguntaDelDiaCommands,
     ...anuncioCommands,
     selftest,
+    actualizar,
     // Diagnósticos solo para desarrollo: /stress satura las colas y /oauth-test muestra URLs internas.
     // Solo con servidores de prueba, para que no salgan en el servidor de verdad si BotM vive en npm run dev.
     ...(isDevelopment && devGuildIds().length > 0 ? [stress, oauthTest] : []),

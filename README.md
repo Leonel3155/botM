@@ -370,6 +370,7 @@ Los ejemplos con todos los valores y comentarios están en [`.env.example`](.env
 | `DISCORD_CLIENT_SECRET` | Sí | Client Secret (Developer Portal → OAuth2). Lo usa el login del panel. Secreto. |
 | `DATABASE_URL` | No | Déjala vacía para usar la base de datos de BotM (recomendado). Ponla solo para usar otra base PostgreSQL: la connection string de Neon, una instalada en tu computadora, Supabase, Railway… (ver el [paso 3](#3-la-base-de-datos-no-hace-falta-hacer-nada)). Secreta. |
 | `DATABASE_DIR` | No | Carpeta de la base de datos de BotM (solo sin `DATABASE_URL`). Por defecto, la carpeta `data` del proyecto; si el proyecto está dentro de OneDrive, Dropbox, Google Drive o iCloud Drive, `%LOCALAPPDATA%\BotM\data` (en Mac y Linux, `~/.local/share/botm/data`), la misma para todas las copias del proyecto que estén en la nube. Una ruta relativa cuenta desde la carpeta del proyecto (BotM deja dentro un `.gitignore` para que la base nunca se suba a GitHub). Escríbela sin comillas. |
+| `AUTO_UPDATE` | No | Con `1`, BotM instala solo las versiones nuevas de GitHub (revisa al arrancar y cada 6 horas) y se reinicia. Sin ella solo avisa en la consola y tú usas `/actualizar ahora`. |
 | `SESSION_SECRET` | Sí | Clave aleatoria para firmar las sesiones del panel. Sin ella el programa no arranca; usa al menos 32 caracteres. |
 | `APP_URL` | Recomendada | Dirección pública del servidor, sin `/` al final. Por defecto `http://localhost:` + `PORT`. Discord vuelve del login a `APP_URL/auth/discord/callback`. |
 | `FRONTEND_URL` | Recomendada | Dirección del panel. Pon lo mismo que en `APP_URL` (el panel y el servidor van juntos). Por defecto, igual que `APP_URL`. |
@@ -493,7 +494,9 @@ Además del permiso de Discord, el bot pide que quien lo usa tenga un rol llamad
 | `/antiraid activar` · `/antiraid desactivar` | Prende o apaga la protección (desactivar también termina un modo raid activo). | 🔒 Gestionar servidor |
 | `/antiraid configurar […]` | Ajusta cuántas entradas (`entradas`, 3-100) en cuántos segundos (`segundos`, 5-300) cuentan como raid, la `accion`, el `canal` de alertas, la `duracion` del modo raid (1-1440 min) y la `edad_cuenta` mínima (0-365 días). | 🔒 Gestionar servidor |
 | `/antiraid levantar` | Termina ahora el modo raid activo. | 🔒 Gestionar servidor |
-| `/selftest` | Revisa la base de datos, los comandos registrados y los permisos del bot. | 🔒 Administrador |
+| `/selftest` | Revisa la base de datos, los comandos registrados y los permisos del bot, y también los autorroles, la tienda y si hay versión nueva. | 🔒 Administrador |
+| `/actualizar revisar` | Dice si hay cambios nuevos de BotM en GitHub, sin instalar nada. | 🔒 Dueño del bot |
+| `/actualizar ahora` | Baja la versión nueva, instala lo que haga falta y reinicia el bot solo. | 🔒 Dueño del bot |
 
 ### Comandos con prefijo
 
@@ -647,7 +650,13 @@ El panel guarda una cookie al pulsar "Iniciar sesión" y la revisa cuando Discor
 
 ## Actualizar BotM
 
-Detén el programa (Ctrl + C) y ejecuta en la carpeta del proyecto:
+**Desde Discord:** usa `/actualizar ahora`. BotM baja los cambios de GitHub, instala las dependencias nuevas si hacen falta y se reinicia solo (el panel web pide iniciar sesión otra vez). Solo lo puede usar el dueño del bot, es decir, quien lo creó en Discord Developer Portal. Con `/actualizar revisar` ves qué hay de nuevo sin instalar nada.
+
+- Al arrancar, y luego cada 6 horas, BotM revisa si hay versión nueva y lo avisa en la consola. Si pones `AUTO_UPDATE=1` en el `.env`, la instala y se reinicia solo.
+- No se actualiza solo si cambiaste archivos del proyecto a mano (para no pisarlos) ni si usas `DATABASE_URL` y la versión cambia las tablas: en ese caso te dice que corras `npm run db:push`.
+- Al arrancar también sale en la consola una revisión de los autorroles y la tienda (🧪): si un panel perdió su mensaje o el bot ya no puede dar un rol, ahí lo ves.
+
+**A mano:** detén el programa (Ctrl + C) y ejecuta en la carpeta del proyecto:
 
 ```powershell
 git pull
