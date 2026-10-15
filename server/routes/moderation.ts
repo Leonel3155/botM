@@ -3,7 +3,7 @@ import { z } from "zod";
 import type { ModerationActionsResponse } from "@shared/api";
 import { storage } from "../storage";
 import { requireAuth, requireGuildAdmin, isSnowflake, parseLimit, parseQuery } from "./middleware";
-import { decodeCursor, encodeCursor, toModerationActionItem } from "./helpers";
+import { decodeCursor, encodeCursor, isRowId, toModerationActionItem } from "./helpers";
 
 const guildAdmin = [requireAuth, requireGuildAdmin];
 
@@ -57,6 +57,20 @@ export function setupModerationRoutes(app: Express) {
     } catch (error) {
       console.error("[MODERATION-ACTIONS-ERROR]", error);
       res.status(500).json({ error: "No se pudieron obtener las acciones de moderación." });
+    }
+  });
+
+  // Quitar una advertencia: deja de contar para los castigos automáticos (como /clearwarns, pero solo una)
+  app.post("/api/moderation/:guildId/actions/:actionId/remove-warning", ...guildAdmin, async (req: Request, res: Response) => {
+    try {
+      const { guildId, actionId } = req.params;
+      if (!isRowId(actionId)) return res.status(400).json({ error: "El ID de la advertencia no es válido." });
+      const removed = await storage.deactivateWarning(guildId, actionId);
+      if (!removed) return res.status(404).json({ error: "Esa advertencia no existe o ya estaba quitada." });
+      res.json({ success: true });
+    } catch (error) {
+      console.error("[MODERATION-ACTIONS-ERROR]", error);
+      res.status(500).json({ error: "No se pudo quitar la advertencia." });
     }
   });
 }

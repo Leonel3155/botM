@@ -21,7 +21,7 @@ export const DAILY_BASE_REWARD = 500;
 export const DAILY_REWARD_PER_LEVEL = 10;
 
 export type EconomyRow = typeof userEconomy.$inferSelect;
-type Tx = Parameters<Parameters<typeof db.transaction>[0]>[0];
+export type Tx = Parameters<Parameters<typeof db.transaction>[0]>[0];
 
 // ===== Utilidades =====
 
@@ -183,8 +183,17 @@ async function getUserLevelNumber(guildId: string, userId: string): Promise<numb
 // ===== Recompensa diaria (la usan /daily y &daily) =====
 
 export type DailyResult =
-  | { ok: true; reward: number; levelBonus: number; streak: number; streakLost: boolean; balance: number }
+  | { ok: true; reward: number; levelBonus: number; streakBonus: number; streak: number; streakLost: boolean; balance: number }
   | { ok: false; retryInMs: number };
+
+// Bono por racha: +5 % por cada día seguido después del primero, hasta +50 % (11 días)
+export const DAILY_STREAK_BONUS_STEP = 0.05;
+export const DAILY_STREAK_BONUS_MAX_DAYS = 10;
+
+export function streakBonusFor(reward: number, streak: number): number {
+  const days = Math.min(Math.max(streak - 1, 0), DAILY_STREAK_BONUS_MAX_DAYS);
+  return Math.floor(reward * days * DAILY_STREAK_BONUS_STEP);
+}
 
 export function dailyRewardFor(level: number): { reward: number; levelBonus: number } {
   const levelBonus = Math.max(1, Math.floor(level)) * DAILY_REWARD_PER_LEVEL;
@@ -218,14 +227,16 @@ export async function claimDaily(guildId: string, userId: string): Promise<Daily
     const check = evaluateDaily(row.lastDaily, row.dailyStreak, now);
     if (!check.ok) return check;
 
-    const balance = clampCoins(toCoins(row.balance) + reward);
+    const streakBonus = streakBonusFor(reward, check.streak);
+    const total = reward + streakBonus;
+    const balance = clampCoins(toCoins(row.balance) + total);
     await saveAccount(tx, row, {
       balance,
-      earned: reward,
+      earned: total,
       dailyStreak: check.streak,
       lastDaily: new Date(now),
     });
-    return { ok: true as const, reward, levelBonus, streak: check.streak, streakLost: check.streakLost, balance };
+    return { ok: true as const, reward: total, levelBonus, streakBonus, streak: check.streak, streakLost: check.streakLost, balance };
   });
 }
 
@@ -532,6 +543,46 @@ export async function settleBet(guildId: string, userId: string, bet: number, pa
     });
   } catch (error) {
     throw new SettleError(!bodyDone || isStatementRejected(error), error);
+  }
+}
+
+// ===== Compras (tienda) =====
+
+/** Lánzalo dentro de `apply` de spendFromWallet para cancelar la compra: no se cobra nada. */
+export class PurchaseRejected extends Error {
+  constructor(message: string) {
+    super(message);
+    this.name = 'PurchaseRejected';
+  }
+}
+
+export type PurchaseResult<T> =
+  | { ok: true; balance: number; info: T }
+  | { ok: false; reason: 'insufficient'; available: number }
+  | { ok: false; reason: 'rejected'; message: string };
+
+/**
+ * Cobra `cost` de la cartera y, en la misma transacción, aplica lo comprado (`apply`). Si `apply` falla,
+ * no se cobra. Úsalo dentro de economyTask.
+ */
+export async function spendFromWallet<T>(
+  guildId: string,
+  userId: string,
+  cost: number,
+  apply: (tx: Tx) => Promise<T>
+): Promise<PurchaseResult<T>> {
+  try {
+    return await db.transaction(async (tx) => {
+      const row = await lockAccount(tx, guildId, userId);
+      const wallet = toCoins(row.balance);
+      if (cost > wallet) return { ok: false as const, reason: 'insufficient' as const, available: wallet };
+      const info = await apply(tx);
+      await saveAccount(tx, row, { balance: wallet - cost });
+      return { ok: true as const, balance: wallet - cost, info };
+    });
+  } catch (error) {
+    if (error instanceof PurchaseRejected) return { ok: false, reason: 'rejected', message: error.message };
+    throw error;
   }
 }
 

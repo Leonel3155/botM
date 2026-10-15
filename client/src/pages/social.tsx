@@ -181,8 +181,9 @@ export default function Social() {
             </li>
             <li>
               <span className="text-foreground">Reddit:</span> el bot mira lo más popular del subreddit y publica una
-              imagen al azar. Lee el RSS público de Reddit, sin cuenta; si Reddit no responde o no hay imágenes, ese
-              turno no se publica nada. Se salta lo que Reddit marca como NSFW; no uses subreddits para adultos, ahí Reddit no marca nada.
+              imagen al azar. Con claves de Reddit en el .env usa la API oficial; sin ellas lee el RSS público, que
+              Reddit apaga el 13 de noviembre de 2026. Si Reddit no responde o no hay imágenes, ese turno no se publica
+              nada. Se salta lo que Reddit marca como NSFW; no uses subreddits para adultos.
             </li>
             <li>
               Solo publica mientras el bot está conectado. «Último intento» se marca cada vez que le toca al feed,

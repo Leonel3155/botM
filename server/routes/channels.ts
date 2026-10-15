@@ -173,7 +173,8 @@ export function setupChannelRoutes(app: Express, { broadcast }: { broadcast: Bro
             name: channel.name,
             type,
             category: channel.parent?.name || 'Sin categoría',
-            botCanPost: type !== 'voice' && checkSendableChannel(channel).ok
+            botCanPost: type !== 'voice' && checkSendableChannel(channel).ok,
+            nsfw: 'nsfw' in channel && channel.nsfw === true,
           };
         });
 

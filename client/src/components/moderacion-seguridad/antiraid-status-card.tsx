@@ -20,10 +20,11 @@ interface AntiRaidStatusCardProps {
   data: AntiRaidResponse;
   /** El bot está en el servidor (sin él no se puede guardar) */
   botInGuild: boolean;
+  blockedText?: string | null;
 }
 
 /** Interruptor principal de la protección + la regla actual explicada en una frase. */
-export function AntiRaidStatusCard({ guildId, data, botInGuild }: AntiRaidStatusCardProps) {
+export function AntiRaidStatusCard({ guildId, data, botInGuild, blockedText }: AntiRaidStatusCardProps) {
   const { toast } = useToast();
   const update = useAntiRaidUpdate(guildId);
   const [confirmDisableOpen, setConfirmDisableOpen] = useState(false);
@@ -135,7 +136,7 @@ export function AntiRaidStatusCard({ guildId, data, botInGuild }: AntiRaidStatus
         </div>
 
         {!botInGuild && (
-          <p className="text-xs text-status-warning">Invita al bot al servidor para poder cambiar la protección.</p>
+          <p className="text-xs text-status-warning">{blockedText ?? "Invita al bot al servidor para poder cambiar la protección."}</p>
         )}
       </CardContent>
 

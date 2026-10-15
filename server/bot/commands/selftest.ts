@@ -6,15 +6,17 @@ import {
   REST,
   Routes
 } from 'discord.js';
+import type { DiscordBot } from '../index';
 import { db } from '../../db';
 import { sql } from 'drizzle-orm';
+import { formatCheckLines, runFeatureChecks } from '../services/startupCheck';
 
 export const data = new SlashCommandBuilder()
   .setName('selftest')
   .setDescription('🔧 Diagnóstico del bot (base de datos, comandos y permisos)')
   .setDefaultMemberPermissions(PermissionFlagsBits.Administrator);
 
-export async function execute(interaction: ChatInputCommandInteraction) {
+export async function execute(interaction: ChatInputCommandInteraction, bot: DiscordBot) {
   if (!interaction.memberPermissions?.has('Administrator')) {
     await interaction.reply({ content: '⛔ Solo los administradores pueden usar este comando.', flags: MessageFlags.Ephemeral });
     return;
@@ -66,6 +68,10 @@ export async function execute(interaction: ChatInputCommandInteraction) {
       ? `✅ ${globalCount} globales${guildCount ? ` + ${guildCount} de este servidor` : ''}`
       : '❌ No se encontraron comandos';
 
+  // Autorroles, tienda y actualizaciones de este servidor
+  const features = await runFeatureChecks(interaction.guild, [...bot.commands.keys()]);
+  const featuresOk = features.every(line => line.level === 'ok');
+
   const result = [
     '🔧 **DIAGNÓSTICO DEL BOT**\n',
     `**Base de datos**: ${dbOk ? '✅ Conectada' : '❌ Error: ' + dbError}`,
@@ -73,10 +79,12 @@ export async function execute(interaction: ChatInputCommandInteraction) {
     `**Permisos**: ${missing.length ? '❌ Faltan: ' + missing.join(', ') : '✅ Todos los permisos necesarios'}`,
     `**Servidor**: ${interaction.guild ? '✅ ' + interaction.guild.name : '❌ No encontrado'}`,
     `**Usuario**: ${interaction.user ? '✅ ' + interaction.user.tag : '❌ No encontrado'}`,
-    '\n**ESTADO GENERAL**: ' + (dbOk && missing.length === 0 && commandCount > 0 ? '🟢 TODO FUNCIONANDO' : '🟡 REQUIERE ATENCIÓN')
+    '\n**Autorroles, tienda, Reddit y versión**',
+    formatCheckLines(features),
+    '\n**ESTADO GENERAL**: ' + (dbOk && missing.length === 0 && commandCount > 0 && featuresOk ? '🟢 TODO FUNCIONANDO' : '🟡 REQUIERE ATENCIÓN')
   ].join('\n');
 
-  await interaction.editReply(result);
+  await interaction.editReply(result.length > 2000 ? `${result.slice(0, 1990)}…` : result);
 }
 
 export default { data, execute };

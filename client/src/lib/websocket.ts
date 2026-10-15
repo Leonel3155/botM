@@ -85,6 +85,10 @@ const GUILD_INVALIDATIONS: Record<GuildUpdateType, (guildId: string) => string[]
   feedsUpdated: (guildId) => [`/api/social/${guildId}`],
   // Lista de comandos y el total que sale en el resumen (counts.customCommands)
   customCommandsUpdated: (guildId) => [`/api/custom-commands/${guildId}`, `/api/dashboard/${guildId}`],
+  // Autorroles (/api/role-panels/{id}) y tienda (/api/shop/{id})
+  rolePanelsUpdated: (guildId) => [`/api/role-panels/${guildId}`],
+  shopUpdated: (guildId) => [`/api/shop/${guildId}`],
+  extrasUpdated: (guildId) => [`/api/guilds/${guildId}/extras`],
 };
 
 function isGuildUpdateType(type: string): type is GuildUpdateType {

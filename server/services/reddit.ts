@@ -10,6 +10,10 @@ import { SafeFetchError, safeFetchText, type SafeFetchResult } from './safeFetch
 // contesta 429 si se le pide más: las consultas van de una en una, al ritmo que marcan sus cabeceras
 // x-ratelimit-*, cada lista se reutiliza unos minutos y, si Reddit pide esperar, se espera.
 // Reddit anunció que apaga el RSS el 13 de noviembre de 2026.
+//
+// Con REDDIT_CLIENT_ID y REDDIT_CLIENT_SECRET en el .env (una app de Reddit del dueño del bot), los feeds
+// usan la API oficial en vez del RSS: sigue funcionando después del apagado, deja unas 100 consultas por
+// minuto y dice de verdad qué publicación es NSFW (over_18).
 
 export interface RedditPost {
   /** ID de Reddit sin el "t3_" (el mismo que daba el JSON: lo ya publicado no se repite). */
@@ -24,6 +28,24 @@ export interface RedditPost {
   createdAt: Date | null;
   /** Miniatura que pone Reddit (a quien lee sin cuenta no se la pone en las NSFW). */
   thumbnail: string | null;
+  /** Lo que dice la API oficial (over_18, también en subreddits NSFW). El RSS no lo dice: undefined. */
+  nsfw?: boolean;
+}
+
+export interface RedditCredentials {
+  clientId: string;
+  clientSecret: string;
+  /** Tu usuario de Reddit: Reddit pide que vaya en el User-Agent de las apps. */
+  username: string | null;
+}
+
+/** Claves de la app de Reddit del .env (o null si faltan). */
+export function credentialsFromEnv(env: NodeJS.ProcessEnv = process.env): RedditCredentials | null {
+  const clientId = env.REDDIT_CLIENT_ID?.trim();
+  const clientSecret = env.REDDIT_CLIENT_SECRET?.trim();
+  if (!clientId || !clientSecret) return null;
+  const username = env.REDDIT_USERNAME?.trim().replace(/^\/?u\//i, '');
+  return { clientId, clientSecret, username: username && /^[\w-]{3,20}$/.test(username) ? username : null };
 }
 
 export class RedditError extends Error {
@@ -47,6 +69,10 @@ export interface RedditServiceOptions {
   cacheMs?: number;
   /** Solo para pruebas locales. */
   allowPrivateHosts?: boolean;
+  /** Claves de la API oficial. Sin pasarlas se leen del .env; con null se usa el RSS. */
+  credentials?: RedditCredentials | null;
+  apiBaseUrl?: string;
+  tokenUrl?: string;
 }
 
 const REDDIT_TIMEOUT_MS = 15_000;
@@ -79,6 +105,12 @@ const NSFW_SUBREDDIT_NAME = /nsfw|porn|gonewild|hentai|rule34|nude|onlyfans|xxx/
 export const REDDIT_RSS_SHUTDOWN_AT = Date.UTC(2026, 10, 13);
 export const REDDIT_RSS_SHUTDOWN_MESSAGE = 'Reddit apagó su RSS público el 13 de noviembre de 2026: los feeds de Reddit ya no pueden publicar.';
 const FEED_ACCEPT = 'application/rss+xml, application/atom+xml, application/xml;q=0.9, text/xml;q=0.9, */*;q=0.1';
+const API_BASE_URL = 'https://oauth.reddit.com';
+const TOKEN_URL = 'https://www.reddit.com/api/v1/access_token';
+// La API deja unas 100 consultas por minuto; sin cabeceras de límite, una por segundo
+const API_MIN_GAP_MS = 1_000;
+// El permiso dura 24 h; se pide uno nuevo un rato antes de que venza
+const TOKEN_MARGIN_MS = 5 * 60_000;
 const REDDIT_ICON = 'https://www.redditstatic.com/desktop2x/img/favicon/favicon-32x32.png';
 
 const parser = new XMLParser({
@@ -210,6 +242,45 @@ export function parseRedditFeed(xml: string, subreddit: string): RedditPost[] | 
   return posts;
 }
 
+/** Respuesta de /r/x/hot de la API oficial → publicaciones (o null si no es una lista de Reddit). */
+export function parseRedditListing(json: string, subreddit: string): RedditPost[] | null {
+  let doc: unknown;
+  try {
+    doc = JSON.parse(json);
+  } catch {
+    return null;
+  }
+  if (!isNode(doc) || doc.kind !== 'Listing' || !isNode(doc.data) || !Array.isArray(doc.data.children)) return null;
+
+  const posts: RedditPost[] = [];
+  const ids = new Set<string>();
+  for (const child of doc.data.children.slice(0, MAX_ENTRIES)) {
+    if (!isNode(child) || child.kind !== 't3' || !isNode(child.data)) continue;
+    const data = child.data;
+    const id = typeof data.id === 'string' && /^[a-z0-9]{1,16}$/i.test(data.id) ? data.id.toLowerCase() : null;
+    const target = httpUrl(typeof data.url === 'string' ? data.url : null);
+    if (!id || !target || ids.has(id)) continue;
+    ids.add(id);
+    const permalink = typeof data.permalink === 'string' && data.permalink.startsWith('/') ? data.permalink : `/comments/${id}/`;
+    const title = typeof data.title === 'string' ? data.title.replace(/\s+/g, ' ').trim() : '';
+    const author = typeof data.author === 'string' && data.author !== '[deleted]' ? data.author : null;
+    const created = typeof data.created_utc === 'number' ? new Date(data.created_utc * 1000) : null;
+    posts.push({
+      id,
+      title: title || 'Sin título',
+      url: target.toString(),
+      permalink,
+      author,
+      subreddit: typeof data.subreddit === 'string' ? data.subreddit : subreddit,
+      createdAt: created && !Number.isNaN(created.getTime()) ? created : null,
+      thumbnail: httpUrl(typeof data.thumbnail === 'string' ? data.thumbnail : null)?.toString() ?? null,
+      // Ante la duda (falta el dato, o es spoiler), se trata como NSFW
+      nsfw: data.over_18 !== false || data.spoiler === true,
+    });
+  }
+  return posts;
+}
+
 /** Imagen subida a Reddit (https://i.redd.it/....jpg/.png/.gif/.webp). */
 export function isImagePost(post: RedditPost): boolean {
   const url = httpUrl(post.url);
@@ -251,6 +322,11 @@ export class RedditService {
   private readonly maxWaitMs: number;
   private readonly cacheMs: number;
   private readonly allowPrivateHosts: boolean;
+  private readonly credentials: RedditCredentials | null;
+  private readonly apiBaseUrl: string;
+  private readonly tokenUrl: string;
+  private token: { value: string; expiresAt: number } | null = null;
+  private tokenRequest: Promise<string> | null = null;
   private readonly lists = new Map<string, { posts: RedditPost[]; fetchedAt: number }>();
   private readonly failures = new Map<string, { message: string; until: number }>();
   // Cuándo se puede volver a consultar (por el ritmo normal o por una pausa tras un 429)
@@ -261,7 +337,10 @@ export class RedditService {
 
   constructor(options: RedditServiceOptions = {}) {
     this.baseUrl = (options.baseUrl ?? 'https://www.reddit.com').replace(/\/+$/, '');
-    this.minGapMs = options.minGapMs ?? MIN_GAP_MS;
+    this.credentials = options.credentials === undefined ? credentialsFromEnv() : options.credentials;
+    this.apiBaseUrl = (options.apiBaseUrl ?? API_BASE_URL).replace(/\/+$/, '');
+    this.tokenUrl = options.tokenUrl ?? TOKEN_URL;
+    this.minGapMs = options.minGapMs ?? (this.credentials ? API_MIN_GAP_MS : MIN_GAP_MS);
     this.maxWaitMs = options.maxWaitMs ?? MAX_WAIT_MS;
     this.cacheMs = options.cacheMs ?? CACHE_MS;
     this.allowPrivateHosts = options.allowPrivateHosts ?? false;
@@ -274,11 +353,75 @@ export class RedditService {
     }
     const posts = await this.getHotPosts(subreddit);
     const images = posts.filter(isImagePost);
+    // La API dice qué es NSFW (también todo lo de un subreddit NSFW): no hacen falta las miniaturas
+    if (this.usesApi) return images.filter((post) => post.nsfw === false && !NSFW_TITLE.test(post.title));
     // Hay subreddits que no muestran miniaturas a quien no tiene cuenta: ahí no hay forma de saber qué es NSFW
     if (images.length > 0 && !posts.some((post) => post.thumbnail)) {
       throw new RedditError(`r/${subreddit} no muestra miniaturas a quien no tiene cuenta, y sin ellas no puedo saber qué es NSFW; por seguridad no publico de ahí.`);
     }
     return images.filter(looksSafeForWork);
+  }
+
+  /** Hay claves de Reddit en el .env: los feeds leen la API oficial en vez del RSS. */
+  get usesApi(): boolean {
+    return this.credentials !== null;
+  }
+
+  /** Revisa que las claves de Reddit funcionen (pide permiso a Reddit). Lanza RedditError si no. */
+  async checkCredentials(): Promise<void> {
+    if (!this.credentials) throw new RedditError('No hay claves de Reddit (REDDIT_CLIENT_ID y REDDIT_CLIENT_SECRET) en el .env.');
+    await this.getToken();
+  }
+
+  private userAgent(): string {
+    // El formato que pide Reddit: plataforma:app:versión (by /u/usuario)
+    const by = this.credentials?.username ? ` (by /u/${this.credentials.username})` : '';
+    return `discord:botm:1.0${by}`;
+  }
+
+  private getToken(): Promise<string> {
+    if (this.token && Date.now() < this.token.expiresAt) return Promise.resolve(this.token.value);
+    this.tokenRequest ??= this.requestToken().finally(() => {
+      this.tokenRequest = null;
+    });
+    return this.tokenRequest;
+  }
+
+  // Permiso "solo de la app" (client_credentials): lee lo público, sin entrar con tu cuenta
+  private async requestToken(): Promise<string> {
+    const credentials = this.credentials!;
+    const basic = Buffer.from(`${credentials.clientId}:${credentials.clientSecret}`).toString('base64');
+    let page: SafeFetchResult;
+    try {
+      page = await safeFetchText(this.tokenUrl, {
+        form: 'grant_type=client_credentials',
+        headers: { Authorization: `Basic ${basic}`, 'User-Agent': this.userAgent() },
+        accept: 'application/json',
+        timeoutMs: REDDIT_TIMEOUT_MS,
+        allowPrivateHosts: this.allowPrivateHosts,
+      });
+    } catch (error) {
+      if (error instanceof SafeFetchError && (error.status === 401 || error.status === 403)) {
+        throw new RedditError('Reddit no aceptó tus claves (REDDIT_CLIENT_ID / REDDIT_CLIENT_SECRET). Revisa que estén bien copiadas y que la app sea de tipo "script".');
+      }
+      if (error instanceof SafeFetchError && error.status === 429) {
+        throw new RedditError('Reddit pidió esperar antes de dar permiso; lo vuelvo a intentar en un rato.', { retrySoon: true });
+      }
+      throw new RedditError(`No pude pedirle permiso a Reddit: ${error instanceof Error ? error.message : String(error)}`);
+    }
+    let body: unknown;
+    try {
+      body = JSON.parse(page.text);
+    } catch {
+      body = null;
+    }
+    const value = isNode(body) && typeof body.access_token === 'string' ? body.access_token : null;
+    if (!value) {
+      throw new RedditError('Reddit no aceptó tus claves (REDDIT_CLIENT_ID / REDDIT_CLIENT_SECRET). Revisa que estén bien copiadas y que la app sea de tipo "script".');
+    }
+    const expiresIn = isNode(body) && typeof body.expires_in === 'number' && body.expires_in > 0 ? body.expires_in * 1000 : 60 * 60_000;
+    this.token = { value, expiresAt: Date.now() + Math.max(60_000, expiresIn - TOKEN_MARGIN_MS) };
+    return value;
   }
 
   /** Lista "hot" del subreddit (todas las publicaciones). Lanza RedditError si no se puede leer. */
@@ -361,10 +504,10 @@ export class RedditService {
    * Descarga una página de Reddit al ritmo que deja Reddit (una consulta a la vez, pausa tras un 429).
    * Lanza RedditError con retrySoon si toca esperar, y SafeFetchError si Reddit contestó con otro error.
    */
-  async fetchPaced(url: string, accept = ATOM_ACCEPT): Promise<SafeFetchResult> {
+  async fetchPaced(url: string, accept = ATOM_ACCEPT, headers?: Record<string, string>): Promise<SafeFetchResult> {
     await this.waitTurn();
     try {
-      const page = await safeFetchText(url, { accept, timeoutMs: REDDIT_TIMEOUT_MS, allowPrivateHosts: this.allowPrivateHosts });
+      const page = await safeFetchText(url, { accept, headers, timeoutMs: REDDIT_TIMEOUT_MS, allowPrivateHosts: this.allowPrivateHosts });
       this.rateLimitStreak = 0;
       this.paceFrom(page.headers);
       return page;
@@ -396,6 +539,48 @@ export class RedditService {
   }
 
   private async download(subreddit: string): Promise<RedditPost[]> {
+    return this.usesApi ? this.downloadFromApi(subreddit) : this.downloadFromRss(subreddit);
+  }
+
+  private async fetchFromApi(url: string): Promise<SafeFetchResult> {
+    for (let attempt = 0; ; attempt++) {
+      const token = await this.getToken();
+      try {
+        return await this.fetchPaced(url, 'application/json', { Authorization: `bearer ${token}`, 'User-Agent': this.userAgent() });
+      } catch (error) {
+        // El permiso venció antes de tiempo: se pide otro una vez
+        if (attempt === 0 && error instanceof SafeFetchError && error.status === 401) {
+          this.token = null;
+          continue;
+        }
+        throw error;
+      }
+    }
+  }
+
+  private async downloadFromApi(subreddit: string): Promise<RedditPost[]> {
+    const url = `${this.apiBaseUrl}/r/${encodeURIComponent(subreddit)}/hot?limit=${LISTING_SIZE}&raw_json=1`;
+    let page: SafeFetchResult;
+    try {
+      page = await this.fetchFromApi(url);
+    } catch (error) {
+      if (error instanceof RedditError) throw error;
+      if (!(error instanceof SafeFetchError)) throw new RedditError('No pude conectar con Reddit.');
+      if (error.status === 401) throw new RedditError('Reddit no aceptó el permiso de tus claves. Revisa REDDIT_CLIENT_ID y REDDIT_CLIENT_SECRET.');
+      if (error.status === 403) throw new RedditError(`Reddit no deja leer r/${subreddit} (error 403): es privado, está en cuarentena o fue suspendido.`);
+      if (error.status === 404 || error.status === 410) throw new RedditError(`r/${subreddit} no existe o fue cerrado.`);
+      throw new RedditError(`No pude leer Reddit: ${error.message}`);
+    }
+    // Un subreddit que no existe a veces manda a la búsqueda en vez de dar 404
+    if (!new URL(page.url).pathname.toLowerCase().startsWith(`/r/${subreddit.toLowerCase()}/`)) {
+      throw new RedditError(`r/${subreddit} no existe o fue cerrado.`);
+    }
+    const posts = parseRedditListing(page.text, subreddit);
+    if (!posts) throw new RedditError(`Reddit contestó algo raro al pedir r/${subreddit}; lo vuelvo a intentar después.`);
+    return posts;
+  }
+
+  private async downloadFromRss(subreddit: string): Promise<RedditPost[]> {
     // obey_over18: que Reddit quite de la lista lo marcado NSFW (si lo hace caso, es un filtro más)
     const url = `${this.baseUrl}/r/${encodeURIComponent(subreddit)}/hot/.rss?limit=${LISTING_SIZE}&obey_over18=true`;
     let page: SafeFetchResult;

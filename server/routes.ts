@@ -20,7 +20,7 @@ import {
 } from "@shared/api";
 import { bot } from "./bot/index";
 import { FeedError, resolveNewsFeed } from "./services/rss";
-import { looksLikeNsfwSubreddit, REDDIT_RSS_SHUTDOWN_AT, REDDIT_RSS_SHUTDOWN_MESSAGE } from "./services/reddit";
+import { looksLikeNsfwSubreddit, redditService, REDDIT_RSS_SHUTDOWN_AT, REDDIT_RSS_SHUTDOWN_MESSAGE } from "./services/reddit";
 import { invalidateAntiRaidConfig, liftLockdown } from "./bot/middleware/antiRaid";
 import { invalidateCustomCommandsCache } from "./bot/customCommands";
 import { setupAuthRoutes } from "./routes/auth";
@@ -30,6 +30,9 @@ import { setupEngagementRoutes } from "./routes/engagement";
 import { setupSecurityRoutes } from "./routes/security";
 import { setupModerationRoutes } from "./routes/moderation";
 import { setupCustomCommandRoutes } from "./routes/customCommands";
+import { setupRolePanelRoutes } from "./routes/rolePanels";
+import { setupShopRoutes } from "./routes/shop";
+import { setupExtrasRoutes } from "./routes/extras";
 import { asJson, checkPanelUserCanUseChannel, isRowId } from "./routes/helpers";
 import {
   type AppSession,
@@ -612,7 +615,8 @@ export async function registerRoutes(app: Express, { sessionParser }: RegisterRo
       }
       const feedData = parseBody(contentFeedSchema, req, res);
       if (!feedData) return;
-      if (feedData.source === 'reddit' && Date.now() >= REDDIT_RSS_SHUTDOWN_AT) {
+      // Sin claves de Reddit en el .env, después del apagado del RSS un feed de Reddit nunca publicaría
+      if (feedData.source === 'reddit' && !redditService.usesApi && Date.now() >= REDDIT_RSS_SHUTDOWN_AT) {
         return res.status(400).json({ error: REDDIT_RSS_SHUTDOWN_MESSAGE, details: [{ field: 'sourceConfig.subreddit', message: REDDIT_RSS_SHUTDOWN_MESSAGE }] });
       }
 
@@ -747,6 +751,10 @@ export async function registerRoutes(app: Express, { sessionParser }: RegisterRo
   setupModerationRoutes(app);
   // Comandos personalizados
   setupCustomCommandRoutes(app, { broadcast });
+  // Autorroles con botones y tienda del servidor
+  setupRolePanelRoutes(app, { broadcast });
+  setupShopRoutes(app, { broadcast });
+  setupExtrasRoutes(app, { broadcast });
 
   // Cualquier otra ruta /api: 404 en JSON (en vez de caer en el index.html del panel)
   app.use('/api', (_req: Request, res: Response) => {

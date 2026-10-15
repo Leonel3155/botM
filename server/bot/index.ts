@@ -1,10 +1,13 @@
-import { Client, GatewayIntentBits, Collection, MessageFlags, Events, DiscordjsErrorCodes, DiscordAPIError, HTTPError } from 'discord.js';
+import { Client, GatewayIntentBits, Collection, MessageFlags, Events, DiscordjsErrorCodes, DiscordAPIError, HTTPError, Partials } from 'discord.js';
 import { setupCommands } from './commands';
 import { setupEvents } from './events';
 import { setupAntiRaid } from './middleware/antiRaid';
 import { setupCustomCommands } from './customCommands';
 import { migrateLegacyMutes } from './commands/moderation';
 import { refundPendingBets } from './services/economy';
+import { handleRolePanelButton, isRolePanelButton } from './services/rolePanels';
+import { runStartupChecks } from './services/startupCheck';
+import { startUpdateChecks } from './services/updater';
 import { installProcessErrorHandlers, isTransientError } from './utils/processErrors';
 
 // Un error suelto (p. ej. Discord caído un momento) no debe tumbar el bot ni el panel
@@ -43,6 +46,7 @@ export class DiscordBot {
   public commands: Collection<string, any>;
   public prefixHandler: any;
   private stopping = false;
+  private startupChecked = false;
 
   constructor() {
     this.client = new Client({
@@ -50,8 +54,13 @@ export class DiscordBot {
         GatewayIntentBits.Guilds,
         GatewayIntentBits.GuildMessages,
         GatewayIntentBits.MessageContent,
-        GatewayIntentBits.GuildMembers
-      ]
+        GatewayIntentBits.GuildMembers,
+        // Starboard (reacciones) y XP por voz; no son intents privilegiados
+        GatewayIntentBits.GuildMessageReactions,
+        GatewayIntentBits.GuildVoiceStates,
+      ],
+      // Para reacciones y mensajes borrados de antes de que el bot arrancara (starboard y registro)
+      partials: [Partials.Message, Partials.Channel, Partials.Reaction],
     });
 
     // Sin estos oyentes, un error de conexión de discord.js se convierte en una excepción no capturada
@@ -81,6 +90,12 @@ export class DiscordBot {
       // Lo que quedó a medias si el bot se apagó: apuestas de blackjack y mutes con el rol viejo
       void refundPendingBets();
       void migrateLegacyMutes(this.client);
+      // Versión nueva en GitHub y revisión de autorroles y tienda (solo la primera vez que se conecta)
+      if (!this.startupChecked) {
+        this.startupChecked = true;
+        startUpdateChecks();
+        setTimeout(() => void runStartupChecks(this.client, [...this.commands.keys()]), 10_000).unref();
+      }
     };
     if (this.client.isReady()) onReady();
     else this.client.once(Events.ClientReady, onReady);
@@ -97,6 +112,35 @@ export class DiscordBot {
 
     // Command interaction handler
     this.client.on('interactionCreate', async (interaction) => {
+      // Botones de los paneles de autorroles (siguen funcionando después de reiniciar el bot)
+      if (interaction.isButton() && isRolePanelButton(interaction.customId)) {
+        try {
+          await handleRolePanelButton(interaction);
+        } catch (error) {
+          console.error('Error en un botón de autorroles:', error);
+          const reply = { content: '😵 No pude cambiar tu rol. Intenta de nuevo en un momento.', flags: MessageFlags.Ephemeral } as const;
+          await (interaction.deferred || interaction.replied ? interaction.editReply(reply.content) : interaction.reply(reply))
+            .catch(() => undefined);
+        }
+        return;
+      }
+
+      // Sugerencias mientras se escribe una opción (p. ej. el artículo de /comprar)
+      if (interaction.isAutocomplete()) {
+        const command = this.commands.get(interaction.commandName);
+        if (!command?.autocomplete || !interaction.inGuild()) {
+          await interaction.respond([]).catch(() => undefined);
+          return;
+        }
+        try {
+          await command.autocomplete(interaction);
+        } catch (error) {
+          console.error(`Error en las sugerencias de /${interaction.commandName}:`, error);
+          await interaction.respond([]).catch(() => undefined);
+        }
+        return;
+      }
+
       if (!interaction.isChatInputCommand()) return;
 
       const command = this.commands.get(interaction.commandName);

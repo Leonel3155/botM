@@ -90,7 +90,7 @@ const SECTION_LINKS: SectionLink[] = [
     description: "El saludo para los nuevos y la pregunta diaria que anima la charla.",
     icon: MessageCircleHeart,
     href: "/comunidad",
-    linkLabel: "Ir a Comunidad",
+    linkLabel: "Ir a Bienvenida",
   },
   {
     title: "Canales",

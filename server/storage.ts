@@ -25,6 +25,25 @@ export interface ModerationLogEntry {
   active?: boolean;
 }
 
+// Avisos de "cambió la fila de este servidor" (p. ej. para que el bot olvide su caché de ajustes al guardar en el panel)
+type GuildChangedListener = (guildId: string) => void;
+const guildChangedListeners = new Set<GuildChangedListener>();
+
+export function onGuildChanged(listener: GuildChangedListener): () => void {
+  guildChangedListeners.add(listener);
+  return () => guildChangedListeners.delete(listener);
+}
+
+function notifyGuildChanged(guildId: string) {
+  for (const listener of guildChangedListeners) {
+    try {
+      listener(guildId);
+    } catch (error) {
+      console.error('Error en un aviso de cambio de servidor:', error);
+    }
+  }
+}
+
 export type ContentFeedUpdate = Partial<Omit<ContentFeed, 'id' | 'guildId'>>;
 
 /** Cómo estaban los permisos de @everyone en un canal antes de /lockdown (true = permitido, false = negado, null = sin definir). */
@@ -308,6 +327,7 @@ export class DatabaseStorage implements IStorage {
       .update(guilds)
       .set(updates)
       .where(eq(guilds.id, guildId));
+    notifyGuildChanged(guildId);
   }
 
   // ===== ENGAGEMENT (bienvenida / pregunta del día) =====
@@ -317,6 +337,7 @@ export class DatabaseStorage implements IStorage {
       .set(updates)
       .where(eq(guilds.id, guildId))
       .returning();
+    notifyGuildChanged(guildId);
     return guild || undefined;
   }
 
@@ -617,6 +638,21 @@ export class DatabaseStorage implements IStorage {
   }
 
   // Marca como inactivas las acciones vigentes de un tipo (p. ej. el mute al quitarlo)
+  /** Quita una advertencia desde el panel (deja de contar, pero queda en el historial). */
+  async deactivateWarning(guildId: string, actionId: string): Promise<boolean> {
+    const updated = await db
+      .update(moderationActions)
+      .set({ active: false })
+      .where(and(
+        eq(moderationActions.guildId, guildId),
+        eq(moderationActions.id, actionId),
+        eq(moderationActions.type, 'warn'),
+        eq(moderationActions.active, true)
+      ))
+      .returning({ id: moderationActions.id });
+    return updated.length > 0;
+  }
+
   async deactivateModerationActions(guildId: string, userId: string, type: string): Promise<number> {
     const updated = await db
       .update(moderationActions)

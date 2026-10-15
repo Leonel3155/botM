@@ -1,3 +1,4 @@
+import { useBotAvailability } from "@/components/ajustes-resumen/bot-status";
 import type { ReactNode } from "react";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { Loader2 } from "lucide-react";
@@ -66,7 +67,8 @@ export function ConfigToggle({ field, id, label, description, savedOn, savedOff 
   const update = useUpdateGuildConfig(guildId);
   const { toast } = useToast();
 
-  const botMissing = guild ? !guild.botInGuild : false;
+  const availability = useBotAvailability(guildId, guild?.botInGuild);
+  const botMissing = !availability.canEdit;
   const saved = config.data?.[field];
   // Mientras se guarda, el interruptor ya muestra lo que se pidió
   const pendingValue = update.isPending ? update.variables?.[field] : undefined;
@@ -136,7 +138,7 @@ export function ConfigToggle({ field, id, label, description, savedOn, savedOff 
         </div>
       </div>
       {botMissing && (
-        <p className="text-xs text-status-warning">Invita al bot a este servidor para poder cambiar esto.</p>
+        <p className="text-xs text-status-warning">{availability.blocked}</p>
       )}
     </div>
   );

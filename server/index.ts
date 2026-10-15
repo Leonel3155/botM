@@ -10,6 +10,7 @@ import { setupVite, serveStatic, log } from "./vite";
 import { bot } from "./bot/index";
 import { ContentScheduler } from "./bot/scheduler";
 import { checkDatabaseConnection, closeDatabase, initDatabase, DatabaseStartupError } from "./db";
+import { setShutdownHandler } from "./lifecycle";
 
 // Sin SESSION_SECRET las sesiones del panel serían inseguras: mejor no arrancar
 const sessionSecret = process.env.SESSION_SECRET;
@@ -136,6 +137,8 @@ const shutdownSignals: NodeJS.Signals[] = process.platform === 'win32'
 for (const signal of shutdownSignals) {
   process.on(signal, () => void shutdown(0));
 }
+// /actualizar reinicia BotM con este mismo apagado (ver server/lifecycle.ts)
+setShutdownHandler(shutdown);
 
 (async () => {
   // La base de datos va primero: con la base integrada se crean o ponen al día las tablas antes de

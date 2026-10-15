@@ -163,6 +163,8 @@ export interface DiscordChannelItem {
   category: string;
   /** El bot puede ver el canal y publicar mensajes con embeds (siempre false en canales de voz). */
   botCanPost: boolean;
+  /** Canal marcado en Discord como "con restricción de edad" (+18). */
+  nsfw: boolean;
 }
 export type DiscordChannelsResponse = DiscordChannelItem[];
 
@@ -506,6 +508,9 @@ export const MODERATION_ACTION_LABELS: Record<string, string> = {
   clear: "Borrado de mensajes",
   lockdown: "Canal bloqueado",
   unlock: "Canal desbloqueado",
+  clearwarns: "Advertencias borradas",
+  filter: "Filtro de palabras",
+  confession_lookup: "Autor de confesión consultado",
 };
 
 /** GET /api/moderation/:guildId/actions?type=&userId=&moderatorId=&limit=1..100&before=<cursor> */
@@ -761,4 +766,179 @@ export type WsServerMessage =
   | { type: "settingsUpdated" }
   | { type: "feedCreated" }
   | { type: "feedsUpdated" }
-  | { type: "customCommandsUpdated" };
+  | { type: "customCommandsUpdated" }
+  | { type: "rolePanelsUpdated" }
+  | { type: "shopUpdated" }
+  | { type: "extrasUpdated" };
+
+// =============================================
+// Autorroles (paneles con botones)
+// =============================================
+
+export const ROLE_PANEL_LIMITS = {
+  maxPerGuild: 25,
+  /** Discord admite 5 filas de 5 botones por mensaje. */
+  maxRoles: 25,
+  titleMaxLength: 100,
+  descriptionMaxLength: 1000,
+  labelMaxLength: 80,
+  emojiMaxLength: 64,
+} as const;
+
+export interface RolePanelButtonItem {
+  roleId: string;
+  label: string;
+  /** Emoji normal (😀) o del servidor (<:nombre:id>), o null. */
+  emoji: string | null;
+}
+
+export interface RolePanelItem {
+  id: string;
+  channelId: string;
+  /** null si el mensaje no se pudo publicar o alguien lo borró. */
+  messageId: string | null;
+  /** Enlace al mensaje en Discord (null si no está publicado). */
+  messageUrl: string | null;
+  title: string;
+  description: string | null;
+  roles: RolePanelButtonItem[];
+  /** Solo un rol de este panel a la vez (al elegir otro, se quita el anterior). */
+  exclusive: boolean;
+  updatedAt: IsoDateString | null;
+}
+
+/** GET /api/role-panels/:guildId */
+export interface RolePanelsResponse {
+  panels: RolePanelItem[];
+  maxPanels: number;
+}
+
+/** POST /api/role-panels/:guildId y PUT /api/role-panels/:guildId/:panelId: guarda y publica en Discord. */
+export interface RolePanelSaveRequest {
+  channelId: string;
+  title: string;
+  description: string | null;
+  exclusive: boolean;
+  roles: RolePanelButtonItem[];
+}
+
+// =============================================
+// Tienda
+// =============================================
+
+export const SHOP_LIMITS = {
+  maxItemsPerGuild: 50,
+  nameMaxLength: 50,
+  descriptionMaxLength: 200,
+  emojiMaxLength: 64,
+  maxPrice: 1_000_000_000,
+  maxStock: 1_000_000,
+  /** Máximo de unidades en una sola compra con /comprar. */
+  maxPerPurchase: 100,
+} as const;
+
+export interface ShopItemItem {
+  id: string;
+  name: string;
+  description: string | null;
+  emoji: string | null;
+  price: number;
+  /** Rol que da al comprarlo (una vez por persona), o null. */
+  roleId: string | null;
+  /** Unidades que quedan; null = ilimitado. */
+  stock: number | null;
+  sold: number;
+  enabled: boolean;
+  createdAt: IsoDateString | null;
+}
+
+/** GET /api/shop/:guildId */
+export interface ShopItemsResponse {
+  items: ShopItemItem[];
+  maxItems: number;
+  economyEnabled: boolean;
+}
+
+/** POST /api/shop/:guildId (todo) y PATCH /api/shop/:guildId/:itemId (lo que cambie). */
+export interface ShopItemSaveRequest {
+  name: string;
+  description: string | null;
+  emoji: string | null;
+  price: number;
+  roleId: string | null;
+  stock: number | null;
+  enabled: boolean;
+}
+
+// =============================================
+// Funciones extra: diversión y moderación automática
+// =============================================
+
+export type LogEventKey = "messageDelete" | "messageEdit" | "memberJoin" | "memberLeave" | "moderation" | "roles";
+
+export interface AutoPunishRuleItem {
+  warns: number;
+  action: "timeout" | "kick" | "ban";
+  minutes?: number;
+}
+
+export const EXTRAS_LIMITS = {
+  birthdayMessageMaxLength: 500,
+  starboardThresholdMin: 1,
+  starboardThresholdMax: 100,
+  starboardEmojiMaxLength: 64,
+  filterMaxWords: 200,
+  filterWordMaxLength: 50,
+  filterMaxExemptRoles: 25,
+  autoPunishMaxRules: 5,
+  autoPunishMaxWarns: 50,
+  timeoutMaxMinutes: 40320, // 28 días, lo más que deja Discord
+  nsfwMaxChannels: 10,
+} as const;
+
+export interface GuildExtrasItem {
+  interactionsEnabled: boolean;
+  birthdaysEnabled: boolean;
+  birthdayChannelId: string | null;
+  birthdayRoleId: string | null;
+  birthdayHour: number;
+  birthdayMessage: string | null;
+  starboardEnabled: boolean;
+  starboardChannelId: string | null;
+  starboardEmoji: string;
+  starboardThreshold: number;
+  confessionsEnabled: boolean;
+  confessionsChannelId: string | null;
+  logsEnabled: boolean;
+  logsChannelId: string | null;
+  logEvents: LogEventKey[];
+  filterEnabled: boolean;
+  filterWords: string[];
+  filterInvites: boolean;
+  filterLinks: boolean;
+  filterExemptRoleIds: string[];
+  filterWarn: boolean;
+  autoPunishEnabled: boolean;
+  autoPunishRules: AutoPunishRuleItem[];
+  voiceXpEnabled: boolean;
+  nsfwEnabled: boolean;
+  nsfwChannelIds: string[];
+}
+
+export interface NsfwLogItem {
+  channelId: string;
+  userId: string;
+  category: string;
+  url: string;
+  createdAt: IsoDateString | null;
+}
+
+export interface GuildExtrasResponse {
+  extras: GuildExtrasItem;
+  stats: { birthdays: number; confessions: number; starboardPosts: number; pendingReminders: number };
+  defaultBirthdayMessage: string;
+  /** Lo último publicado con /nsfw (para revisar o borrar algo). */
+  nsfwLog: NsfwLogItem[];
+}
+
+export type GuildExtrasSaveRequest = Partial<GuildExtrasItem>;

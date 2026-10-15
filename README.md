@@ -26,16 +26,35 @@ BotM es un bot de Discord con su propio **panel web en español** para administr
 - **`/anuncio`**: publica un anuncio bonito con título, texto, imagen, color y, si quieres, mención a `@everyone`, `@here` o un rol.
 - **`/evento`**: crea un evento de Discord (en un canal de voz o en un lugar externo) y lo anuncia con un botón para marcar "Me interesa".
 
+### 🎉 Diversión
+
+- **Interacciones**: `/abrazar`, `/besar`, `/cachetada`, `/acariciar`, `/golpear`, `/morder`, `/saludar`, `/chocar`, `/picar` y `/acurrucar` a alguien con un GIF anime, y cuenta cuántas veces se lo hiciste. `/reaccion` muestra cómo te sientes (feliz, llorar, bailar…). Se apagan en el panel (**Diversión**).
+- **Cumpleaños**: cada quien guarda su fecha con `/cumple guardar`. A la hora que elijas (en la zona horaria del servidor) el bot felicita en un canal y, si quieres, da un rol por 24 horas. Quien nació el 29 de febrero celebra el 28 en años no bisiestos.
+- **Recordatorios**: `/recordar crear` con tiempos como `10m`, `1h30m` o `2 horas y 30 minutos` (hasta 365 días, 25 por persona). Avisa en el canal y, si no puede, por mensaje directo.
+- **Encuestas**: `/encuesta` crea una encuesta nativa de Discord con hasta 10 opciones.
+- **Starboard**: cuando un mensaje junta suficientes ⭐ (o el emoji que elijas), el bot lo copia a un canal de "lo mejor". La reacción del propio autor no cuenta, y nunca copia de un canal +18 a uno normal.
+- **Confesiones**: `/confesar` publica un mensaje anónimo numerado en el canal que elijas. Pasa por el filtro de palabras. Los admins pueden ver quién escribió una con `/confesion autor`, y eso queda en el registro.
+
+### 🎭 Autorroles
+
+- Desde el panel (**Autorroles**) armas un mensaje con un botón por rol y el bot lo publica en el canal que elijas. Quien pulsa un botón se pone ese rol, y si lo vuelve a pulsar se lo quita. Los botones siguen funcionando aunque reinicies el bot.
+- Hasta 25 roles por panel y 25 paneles por servidor. Cada botón lleva el texto que quieras y, si quieres, un emoji.
+- Opción **Solo un rol a la vez** (para colores o regiones): al elegir uno, el bot quita el otro rol de ese panel.
+- Por seguridad no reparte roles con permisos de moderación o administración, y solo puedes poner roles que estén por debajo del tuyo. El rol del bot tiene que estar **por encima** de esos roles.
+
 ### 📊 Niveles y prestigio
 
 - Cada mensaje da entre 15 y 25 XP (solo cuenta un mensaje por minuto por persona, así el spam no sirve). Cada nivel pide 10 % más XP que el anterior.
 - Al subir de nivel se ganan monedas (nivel² × 50) y boletos si la economía está prendida, y el bot lo anuncia en el chat (puedes apagar esos avisos en el panel).
+- **XP por voz** (opcional, en el panel): 5 XP por minuto en un canal de voz con al menos otra persona, sin estar ensordecido ni en el canal AFK.
 - Desde el nivel 100 se puede usar `/prestige`: vuelves al nivel 1 y ganas +10 % de XP por mensaje en cada prestigio (máximo +100 %).
 
 ### 💰 Economía y juegos
 
 - Monedas virtuales con cartera y banco (lo del banco no te lo pueden robar). Se ganan platicando, con `/daily`, `/work`, `/crime`… y se pueden regalar, depositar o intentar robar.
+- `/daily` da un bono por racha: +5 % por cada día seguido después del primero, hasta +50 %.
 - Juegos: blackjack, tragamonedas, ruleta europea, dado y ruleta rusa.
+- **Tienda**: los artículos se crean solo desde el panel (**Tienda**): nombre, emoji, precio, unidades (o sin límite) y, si quieres, un rol que se da al comprarlo. Se compra con `/comprar` usando la cartera; los artículos sin rol se guardan en `/inventario`. Un artículo con rol se compra una sola vez y, si el bot no puede dar el rol, no cobra.
 - Comandos de administración para dar, quitar o reiniciar monedas.
 - Puedes apagar toda la economía desde el panel: los comandos avisan que está desactivada y la gente solo gana XP.
 - También se juntan boletos de lotería, pero **todavía no hay sorteos**: por ahora solo se acumulan.
@@ -44,7 +63,21 @@ BotM es un bot de Discord con su propio **panel web en español** para administr
 
 - `/clear`, `/kick`, `/ban` (también a alguien que ya se fue, con su ID), `/mute` (con el aislamiento temporal de Discord, hasta 1 semana), `/unmute`, `/lockdown` (bloquea el canal y al desbloquear deja los permisos como estaban) y `/warn` / `/warnings`.
 - Cada comando pide su propio permiso de Discord, y nadie puede usarlos contra alguien con un rol igual o más alto que el suyo (el dueño del servidor sí).
-- Cada acción queda guardada y la ves en el panel, en **Moderación**.
+- Cada acción queda guardada y la ves en el panel, en **Moderación**, donde también puedes quitar una advertencia. `/clearwarns` borra todas las de alguien.
+
+### 🤖 Moderación automática
+
+Se configura en el panel, en **Moderación automática**:
+
+- **Registro del servidor**: manda a un canal lo que pasa (mensajes borrados y editados, quién entra y sale, cambios de roles y las acciones de moderación). Eliges qué eventos.
+- **Filtro de palabras**: borra mensajes con palabras prohibidas (entiende acentos y trucos como `p3nd3j0`; `*palabra` atrapa todo lo que empiece así), invitaciones de Discord y, si quieres, cualquier enlace. Puedes eximir roles y hacer que cada borrado cuente como advertencia.
+- **Castigos automáticos**: al llegar a cierto número de advertencias aísla, expulsa o banea solo. Las reglas se editan en el panel (por defecto: 3 advertencias = aislar 1 hora, 5 = expulsar).
+
+### 🔞 Contenido +18
+
+- `/nsfw` publica una ilustración anime para adultos (de waifu.pics, en categorías fijas; no se puede buscar por etiquetas).
+- **Doble candado**: solo funciona si un admin lo prende en el panel (**Contenido +18**) y elige el canal, **y** ese canal está marcado en Discord como "con restricción de edad". Si falta cualquiera de las dos, no publica nada. Discord además esconde el comando en los canales normales.
+- Cada imagen queda registrada (quién la pidió, dónde y cuándo) y la ves en el panel.
 
 ### 🛡️ Anti-raid
 
@@ -62,7 +95,7 @@ BotM es un bot de Discord con su propio **panel web en español** para administr
 ### 🌐 Redes (noticias y Reddit)
 
 - **Noticias:** feeds que publican cada noticia nueva como tarjeta (título, resumen, imagen si la hay y enlace). Pueden salir de una sección de Google Noticias (México, Mundo, Tecnología, Deportes…), de un tema que escribas (por ejemplo "videojuegos") o de cualquier sitio o canal de YouTube con RSS: pegas la página y el bot encuentra su RSS. No hace falta ninguna clave. Revisa cada 10 a 1440 minutos, publica como mucho 2 noticias por turno (las más nuevas), nunca repite y no publica nada de más de 3 días (salvo la primera vez, que publica la más reciente para que veas cómo queda).
-- **Reddit:** feeds que comparten imágenes de un subreddit en un canal cada cierto tiempo (de 1 a 1440 minutos). Solo imágenes subidas a Reddit; en subreddits normales se salta lo que Reddit marca como NSFW (no uses subreddits para adultos). Lee el RSS público de Reddit, sin claves (Reddit cerró en 2026 la lectura sin cuenta por JSON y apaga el RSS el 13 de noviembre de 2026).
+- **Reddit:** feeds que comparten imágenes de un subreddit en un canal cada cierto tiempo (de 1 a 1440 minutos). Solo imágenes subidas a Reddit; en subreddits normales se salta lo que Reddit marca como NSFW (no uses subreddits para adultos). Con [claves de Reddit](#claves-de-reddit-para-que-los-memes-sigan-después-del-13-de-noviembre) usa la API oficial; sin ellas lee el RSS público, que Reddit apaga el 13 de noviembre de 2026.
 - Hasta 10 feeds por servidor, sumando los dos tipos.
 - Twitter/X no está disponible: X cobra por leer publicaciones, así que el bot no publica nada de ahí.
 
@@ -76,10 +109,15 @@ Inicias sesión con Discord y solo ves los servidores donde eres dueño o tienes
 | **Estadísticas** | Gráficas de cómo se reparten los niveles, quién tiene más monedas, y la moderación y las alertas de raid de los últimos 30 días. |
 | **Servidores** | Elige con qué servidor trabajar e invita al bot a los que todavía no lo tienen. |
 | **Bienvenida y pregunta del día** | Canal, mensaje y rol de bienvenida (con prueba); canal, hora y zona de la pregunta del día (con "publicar ahora"). |
-| **Niveles** | Ranking, cómo se reparten los niveles, reglas de XP y el interruptor de avisos al subir de nivel. |
+| **Niveles** | Ranking, cómo se reparten los niveles, reglas de XP, el interruptor de avisos al subir de nivel y el de XP por voz. |
+| **Diversión** | Interacciones, cumpleaños, starboard y confesiones. |
+| **Autorroles** | Crear, editar y borrar los mensajes con botones para ponerse roles. |
 | **Economía** | Ranking de monedas, totales y el interruptor para prender o apagar la economía. |
+| **Tienda** | Agregar, editar, pausar y borrar los artículos que se compran con monedas. |
 | **Redes sociales** | Crear, editar, pausar y borrar feeds de noticias y de Reddit. |
-| **Moderación** | Historial de lo que hizo el staff con los comandos del bot. |
+| **Moderación** | Historial de lo que hizo el staff con los comandos del bot, y quitar advertencias. |
+| **Moderación automática** | Registro del servidor, filtro de palabras y castigos automáticos. |
+| **Contenido +18** | Prender `/nsfw`, elegir los canales +18 donde se permite y ver lo último que se publicó. |
 | **Seguridad** | Prender y configurar el anti-raid, terminar un modo raid y ver el historial. |
 | **Comandos personalizados** | Crear, editar, activar y borrar tus comandos. |
 | **Canales** | Canal de bienvenida, canal por defecto para noticias y Reddit, y canal de moderación (donde llegan las alertas de raid). |
@@ -360,6 +398,7 @@ Los ejemplos con todos los valores y comentarios están en [`.env.example`](.env
 | `DISCORD_CLIENT_SECRET` | Sí | Client Secret (Developer Portal → OAuth2). Lo usa el login del panel. Secreto. |
 | `DATABASE_URL` | No | Déjala vacía para usar la base de datos de BotM (recomendado). Ponla solo para usar otra base PostgreSQL: la connection string de Neon, una instalada en tu computadora, Supabase, Railway… (ver el [paso 3](#3-la-base-de-datos-no-hace-falta-hacer-nada)). Secreta. |
 | `DATABASE_DIR` | No | Carpeta de la base de datos de BotM (solo sin `DATABASE_URL`). Por defecto, la carpeta `data` del proyecto; si el proyecto está dentro de OneDrive, Dropbox, Google Drive o iCloud Drive, `%LOCALAPPDATA%\BotM\data` (en Mac y Linux, `~/.local/share/botm/data`), la misma para todas las copias del proyecto que estén en la nube. Una ruta relativa cuenta desde la carpeta del proyecto (BotM deja dentro un `.gitignore` para que la base nunca se suba a GitHub). Escríbela sin comillas. |
+| `AUTO_UPDATE` | No | Con `1`, BotM instala solo las versiones nuevas de GitHub (revisa al arrancar y cada 6 horas) y se reinicia. Sin ella solo avisa en la consola y tú usas `/actualizar ahora`. |
 | `SESSION_SECRET` | Sí | Clave aleatoria para firmar las sesiones del panel. Sin ella el programa no arranca; usa al menos 32 caracteres. |
 | `APP_URL` | Recomendada | Dirección pública del servidor, sin `/` al final. Por defecto `http://localhost:` + `PORT`. Discord vuelve del login a `APP_URL/auth/discord/callback`. |
 | `FRONTEND_URL` | Recomendada | Dirección del panel. Pon lo mismo que en `APP_URL` (el panel y el servidor van juntos). Por defecto, igual que `APP_URL`. |
@@ -375,7 +414,8 @@ Los ejemplos con todos los valores y comentarios están en [`.env.example`](.env
 | `GLOBAL_CONCURRENCY` | No | Cuántas tareas del bot pueden correr a la vez (por defecto `50`). Déjalo así. |
 | `GLOBAL_TIMEOUT_MS` | No | Tiempo máximo de cada tarea del bot en milisegundos (por defecto `120000`). Déjalo así. |
 | `TWITTER_BEARER_TOKEN` / `X_BEARER_TOKEN` | No | No se usan: Twitter/X está desactivado. |
-| `REDDIT_CLIENT_ID` / `REDDIT_CLIENT_SECRET` | No | No se usan: el bot lee el RSS público de Reddit, sin claves. |
+| `REDDIT_CLIENT_ID` / `REDDIT_CLIENT_SECRET` | No | Claves de tu app de Reddit. Con ellas los feeds de Reddit usan la API oficial y siguen funcionando después del 13 de noviembre de 2026; sin ellas leen el RSS público, que ese día se apaga. Ver [Claves de Reddit](#claves-de-reddit-para-que-los-memes-sigan-después-del-13-de-noviembre). |
+| `REDDIT_USERNAME` | No | Tu usuario de Reddit (sin `u/`). Reddit pide que las apps lo digan al conectarse. |
 
 `NODE_ENV` no va en el `.env`: `npm run dev` usa `development` y `npm start` usa `production` solos.
 
@@ -412,6 +452,20 @@ Las opciones entre `< >` son obligatorias y las de `[ ]` opcionales.
 | `/evento crear <nombre> <fecha> […]` | Crea un evento de Discord y lo anuncia con botón "Me interesa". Fecha: `AAAA-MM-DD HH:mm` o `DD/MM/AAAA HH:mm` en la zona del servidor. Opciones: descripción, duración, lugar, canal de voz, canal del anuncio, mención y si se anuncia. | 🔒 Gestionar eventos (o Crear eventos / Gestionar servidor) |
 | `/evento lista` | Muestra los próximos eventos del servidor. | Todos |
 
+### Diversión
+
+| Comando | Qué hace | Quién |
+| --- | --- | --- |
+| `/abrazar` `/besar` `/cachetada` `/acariciar` `/golpear` `/morder` `/saludar` `/chocar` `/picar` `/acurrucar` `<usuario>` | Interacción con GIF y contador. | Todos |
+| `/reaccion <tipo>` | GIF de cómo te sientes. | Todos |
+| `/cumple guardar <dia> <mes>` · `/cumple borrar` | Guarda o borra tu cumpleaños. | Todos |
+| `/cumple ver [usuario]` · `/cumple proximos` | El cumpleaños de alguien o los que vienen. | Todos |
+| `/recordar crear <en> <que>` · `/recordar lista` · `/recordar borrar <recordatorio>` | Tus recordatorios. | Todos |
+| `/encuesta <pregunta> <opciones> [horas] [varias]` | Encuesta de Discord (opciones separadas con `;`). | Todos |
+| `/confesar <texto>` | Confesión anónima en el canal de confesiones. | Todos |
+| `/confesion autor <numero>` | Quién escribió una confesión (queda en el registro). | 🔒 Administrador |
+| `/nsfw <categoria>` | Imagen +18. Solo en canales +18 autorizados en el panel. | Todos (en esos canales) |
+
 ### Niveles y prestigio
 
 | Comando | Qué hace | Quién |
@@ -440,6 +494,9 @@ Si apagas la economía desde el panel, estos comandos solo avisan que está desa
 | `/withdraw <cantidad>` | Saca monedas del banco (número o `todo`). | Todos |
 | `/leaderboard [limite]` | Ranking de quién tiene más monedas (cartera + banco). | Todos |
 | `/economy-stats` | Estadísticas de la economía del servidor. | Todos |
+| `/tienda` | Lo que se puede comprar (se arma en el panel, en **Tienda**). | Todos |
+| `/comprar <articulo> [cantidad]` | Compra un artículo con las monedas de la cartera. Al escribir te sugiere los artículos. | Todos |
+| `/inventario [usuario]` | Lo que compraste tú u otra persona. | Todos |
 | `/add-money <usuario> <cantidad>` | Da monedas a alguien. | 🔒 Administrador |
 | `/remove-money <usuario> <cantidad>` | Quita monedas de la cartera de alguien (número o `todo`). | 🔒 Administrador |
 | `/reset-money <usuario>` | Deja en cero la cartera y el banco de alguien. | 🔒 Administrador |
@@ -470,7 +527,8 @@ Además del permiso de Discord, el bot pide que quien lo usa tenga un rol llamad
 | `/unmute <usuario>` | Quita el aislamiento antes de tiempo (o el rol "Muteado" de versiones viejas). | 🔒 Aislar temporalmente a miembros |
 | `/lockdown <accion>` | Bloquea (o desbloquea) el canal actual y sus hilos para que solo el staff escriba. | 🔒 Gestionar canales |
 | `/warn <usuario> [razon]` | Registra una advertencia. | 🔒 Aislar temporalmente a miembros |
-| `/warnings <usuario>` | Historial de advertencias y otras acciones de alguien. | 🔒 Aislar temporalmente a miembros |
+| `/warnings <usuario>` | Historial de advertencias (y cuántas siguen vigentes) y otras acciones de alguien. | 🔒 Aislar temporalmente a miembros |
+| `/clearwarns <usuario>` | Quita todas las advertencias vigentes de alguien. | 🔒 Aislar temporalmente a miembros |
 
 ### Seguridad y diagnóstico
 
@@ -480,7 +538,9 @@ Además del permiso de Discord, el bot pide que quien lo usa tenga un rol llamad
 | `/antiraid activar` · `/antiraid desactivar` | Prende o apaga la protección (desactivar también termina un modo raid activo). | 🔒 Gestionar servidor |
 | `/antiraid configurar […]` | Ajusta cuántas entradas (`entradas`, 3-100) en cuántos segundos (`segundos`, 5-300) cuentan como raid, la `accion`, el `canal` de alertas, la `duracion` del modo raid (1-1440 min) y la `edad_cuenta` mínima (0-365 días). | 🔒 Gestionar servidor |
 | `/antiraid levantar` | Termina ahora el modo raid activo. | 🔒 Gestionar servidor |
-| `/selftest` | Revisa la base de datos, los comandos registrados y los permisos del bot. | 🔒 Administrador |
+| `/selftest` | Revisa la base de datos, los comandos registrados y los permisos del bot, y también los autorroles, la tienda y si hay versión nueva. | 🔒 Administrador |
+| `/actualizar revisar` | Dice si hay cambios nuevos de BotM en GitHub, sin instalar nada. | 🔒 Dueño del bot |
+| `/actualizar ahora` | Baja la versión nueva, instala lo que haga falta y reinicia el bot solo. | 🔒 Dueño del bot |
 
 ### Comandos con prefijo
 
@@ -600,10 +660,11 @@ El panel guarda una cookie al pulsar "Iniciar sesión" y la revisa cuando Discor
 - Entras pero **no ves tu servidor**: solo aparecen los servidores donde eres dueño o tienes **Administrador** o **Gestionar servidor**. Si acabas de recibir el permiso, pulsa **Actualizar**.
 - El panel dice **"El bot no está en este servidor"**: invítalo (paso 8).
 
-### La bienvenida, el rol automático o el anti-raid no hacen nada
+### La bienvenida, el rol automático, los autorroles o el anti-raid no hacen nada
 
 - Revisa que **Server Members Intent** esté activado (paso 4).
-- El rol del bot debe estar **por encima** del rol de bienvenida (Ajustes del servidor → Roles).
+- El rol del bot debe estar **por encima** del rol de bienvenida y de los roles de los autorroles y la tienda (Ajustes del servidor → Roles).
+- Si no saluda a alguien que entró, busca en la ventana de BotM una línea que empiece con `[BIENVENIDA]`: dice el motivo. Recuerda que el bot solo ve entrar a la gente mientras esa ventana está abierta.
 - Usa `/bienvenida probar`: revisa la configuración y los permisos del bot en el canal.
 - Para el anti-raid, revisa que esté **activado** en el panel (**Seguridad**) o con `/antiraid status`.
 
@@ -631,9 +692,35 @@ El panel guarda una cookie al pulsar "Iniciar sesión" y la revisa cuando Discor
 
 ---
 
+## Claves de Reddit (para que los memes sigan después del 13 de noviembre)
+
+Reddit apaga su RSS público el 13 de noviembre de 2026. Para que los feeds de Reddit sigan publicando, BotM se conecta a la API oficial con una app tuya de Reddit (gratis para un bot personal):
+
+1. Entra a Reddit con tu cuenta y abre <https://www.reddit.com/prefs/apps>.
+2. Pulsa **create another app…** (o **create an app**) y llena:
+   - **name:** `BotM`
+   - Tipo: **script**
+   - **redirect uri:** `http://localhost:8080` (Reddit lo pide, pero BotM no lo usa)
+3. Pulsa **create app**. El texto raro que sale debajo de "personal use script" es el **client ID**, y el de **secret** es el secreto. Si Reddit te pide llenar una solicitud de acceso a la API antes de dejarte crear la app, llénala (uso personal, un bot de Discord que comparte imágenes de subreddits) y vuelve aquí cuando te la aprueben.
+4. Ponlos en el `.env`:
+   ```
+   REDDIT_CLIENT_ID=el-client-id
+   REDDIT_CLIENT_SECRET=el-secreto
+   REDDIT_USERNAME=tu-usuario
+   ```
+5. Cierra BotM y ábrelo otra vez. En la consola (y en `/selftest`) debe salir `✅ Reddit: conectado con la API oficial`.
+
+Con las claves, el bot sabe de verdad qué publicación es NSFW (Reddit lo marca, también en subreddits para adultos) y se salta esas y las marcadas como spoiler. No compartas el secreto con nadie: es como una contraseña de tu app.
+
 ## Actualizar BotM
 
-Detén el programa (Ctrl + C) y ejecuta en la carpeta del proyecto:
+**Desde Discord:** usa `/actualizar ahora`. BotM baja los cambios de GitHub, instala las dependencias nuevas si hacen falta y se reinicia solo (el panel web pide iniciar sesión otra vez). Solo lo puede usar el dueño del bot, es decir, quien lo creó en Discord Developer Portal. Con `/actualizar revisar` ves qué hay de nuevo sin instalar nada.
+
+- Al arrancar, y luego cada 6 horas, BotM revisa si hay versión nueva y lo avisa en la consola. Si pones `AUTO_UPDATE=1` en el `.env`, la instala y se reinicia solo.
+- No se actualiza solo si cambiaste archivos del proyecto a mano (para no pisarlos) ni si usas `DATABASE_URL` y la versión cambia las tablas: en ese caso te dice que corras `npm run db:push`.
+- Al arrancar también sale en la consola una revisión de los autorroles y la tienda (🧪): si un panel perdió su mensaje o el bot ya no puede dar un rol, ahí lo ves.
+
+**A mano:** detén el programa (Ctrl + C) y ejecuta en la carpeta del proyecto:
 
 ```powershell
 git pull
@@ -681,7 +768,7 @@ Ten en cuenta:
 - **Mientras el modo raid está activo** el bot no da la bienvenida ni el rol automático a quien entra. Si alguien legítimo entró en ese rato, dale el rol a mano.
 - **Lotería:** los boletos se acumulan, pero todavía no hay sorteos.
 - **Twitter/X:** no está disponible; hay feeds de noticias y de Reddit.
-- **Reddit:** Reddit anunció que **apaga su RSS el 13 de noviembre de 2026**; desde ese día los feeds de Reddit dejarán de publicar (en la consola saldrá por qué). Mientras tanto:
+- **Reddit:** Reddit anunció que **apaga su RSS el 13 de noviembre de 2026**; desde ese día los feeds de Reddit solo publican si pusiste [claves de Reddit](#claves-de-reddit-para-que-los-memes-sigan-después-del-13-de-noviembre) (la consola y `/selftest` avisan si faltan). Sin claves, mientras dure el RSS:
   - Como el RSS no dice qué es NSFW, el bot solo publica imágenes subidas a Reddit (`i.redd.it`) a las que Reddit les pone miniatura (a quien lee sin cuenta no se la pone en las NSFW) y que no dicen NSFW en el título. Si un subreddit no muestra miniaturas a nadie sin cuenta, el bot no publica de ahí y lo dice en la consola.
   - Ese filtro solo sirve en subreddits normales: dentro de un subreddit para adultos Reddit no marca nada. El panel rechaza los nombres que claramente lo son (nsfw, porn, gonewild…), pero no puede reconocerlos todos: no pongas subreddits para adultos.
   - Reddit deja leer su RSS más o menos una vez por minuto, contando todos los subreddits (y los feeds de noticias que apunten a reddit.com). El bot va al ritmo que marca Reddit, reutiliza cada lista 10 minutos y, si Reddit pide esperar, espera: el feed lo vuelve a intentar al minuto siguiente sin perder su turno, y pasa primero el que lleva más tiempo esperando. Con varios feeds de Reddit a la misma hora, salen uno por minuto; si alguno lleva más de 15 minutos esperando, sale un aviso en la consola.

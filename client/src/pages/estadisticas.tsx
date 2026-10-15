@@ -194,7 +194,7 @@ export default function Estadisticas() {
                   bare
                   icon={Coins}
                   title="Aún nadie tiene monedas"
-                  description="Cuando la gente use /daily o /work, aquí verás quién va juntando más."
+                  description="La gente gana monedas al platicar y con /daily o /work; aquí verás quién va juntando más."
                 />
               )}
             </ChartCard>
