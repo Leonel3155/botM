@@ -13,6 +13,8 @@ import {
   RESTJSONErrorCodes,
   type Client,
 } from 'discord.js';
+import { applyAutoPunish } from '../services/autoMod';
+import { logModeration } from '../services/serverLog';
 import { storage, type ChannelLockdownSnapshot } from '../../storage';
 import { DiscordBot } from '../index';
 
@@ -156,6 +158,9 @@ async function registrarAccion(
   } catch (error) {
     console.error(`No se pudo registrar la acción de moderación (${type}):`, error);
   }
+  // Canal de registro y, con una advertencia nueva, castigos automáticos (configurados en el panel)
+  void logModeration(interaction.guild, { type, targetId: target.id, moderatorId: interaction.user.id, reason: details.reason, duration: details.duration });
+  if (type === 'warn') void applyAutoPunish(interaction.guild, target.id);
 }
 
 // Complete moderation system with Carl-bot style commands
@@ -638,6 +643,33 @@ export const moderationCommands = [
 
   {
     data: new SlashCommandBuilder()
+      .setName('clearwarns')
+      .setDescription('🧽 Borra las advertencias de un miembro (quedan en el historial, pero ya no cuentan)')
+      .addUserOption(option =>
+        option.setName('usuario').setDescription('Usuario').setRequired(true)
+      )
+      .setDefaultMemberPermissions(PermissionFlagsBits.ModerateMembers),
+
+    async execute(interaction: ChatInputCommandInteraction, bot: DiscordBot) {
+      if (!interaction.guild) {
+        await interaction.reply({ content: 'Comando solo en servidores.', flags: MessageFlags.Ephemeral });
+        return;
+      }
+      if (!(await requirePermission(interaction, PermissionFlagsBits.ModerateMembers, 'Aislar temporalmente a miembros', 'borrar advertencias'))) return;
+      const usuario = interaction.options.getUser('usuario', true);
+      await interaction.deferReply({ flags: MessageFlags.Ephemeral });
+      const cleared = await storage.deactivateModerationActions(interaction.guild.id, usuario.id, 'warn');
+      if (cleared === 0) {
+        await interaction.editReply(`**${usuario.tag}** no tenía advertencias vigentes.`);
+        return;
+      }
+      await registrarAccion(interaction, 'clearwarns', usuario, { reason: `Borró ${cleared} advertencia(s)`, active: false });
+      await interaction.editReply(`🧽 Borré ${cleared} advertencia(s) de **${usuario.tag}**. Para los castigos automáticos vuelve a empezar de cero.`);
+    }
+  },
+
+  {
+    data: new SlashCommandBuilder()
       .setName('warnings')
       .setDescription('📋 Ver historial de advertencias de un miembro')
       .addUserOption(option =>
@@ -659,6 +691,7 @@ export const moderationCommands = [
 
       const historial = await storage.getUserModerationActions(interaction.guild.id, usuario.id, undefined, 500);
       const advertencias = historial.filter(accion => accion.type === 'warn');
+      const vigentes = advertencias.filter(accion => accion.active !== false).length;
       const contar = (tipo: string) => historial.filter(accion => accion.type === tipo).length;
 
       const embed = new EmbedBuilder()
@@ -672,7 +705,7 @@ export const moderationCommands = [
           .setColor(0x00ff00);
       } else {
         embed
-          .setDescription(`Tiene **${advertencias.length}** advertencia(s) registrada(s).`)
+          .setDescription(`Tiene **${advertencias.length}** advertencia(s) registrada(s); **${vigentes}** vigente(s) (las que cuentan para los castigos automáticos).`)
           .setColor(advertencias.length >= 3 ? 0xED4245 : 0xFEE75C)
           .addFields(advertencias.slice(0, 10).map((warn, i) => ({
             name: `⚠️ Advertencia #${advertencias.length - i}`,

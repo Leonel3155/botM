@@ -20,6 +20,9 @@ import { bienvenidaCommands } from './bienvenida';
 import { preguntaDelDiaCommands } from './preguntaDelDia';
 import { anuncioCommands } from './anuncios';
 import { tiendaCommands } from './tienda';
+import { interaccionesCommands } from './interacciones';
+import { cumple } from './cumple';
+import { comunidadExtraCommands } from './comunidadExtra';
 import selftest from './selftest';
 import actualizar from './actualizar';
 import stress from './stress';
@@ -72,6 +75,9 @@ export async function setupCommands(bot: DiscordBot) {
     ...bienvenidaCommands,
     ...preguntaDelDiaCommands,
     ...anuncioCommands,
+    ...interaccionesCommands,
+    cumple,
+    ...comunidadExtraCommands,
     selftest,
     actualizar,
     // Diagnósticos solo para desarrollo: /stress satura las colas y /oauth-test muestra URLs internas.

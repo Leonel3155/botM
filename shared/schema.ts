@@ -339,6 +339,112 @@ export const shopInventory = pgTable("shop_inventory", {
 export type RolePanel = typeof rolePanels.$inferSelect;
 export type ShopItem = typeof shopItems.$inferSelect;
 
+// ===== Funciones extra (diversión y moderación automática) =====
+
+export type LogEvent = "messageDelete" | "messageEdit" | "memberJoin" | "memberLeave" | "moderation" | "roles";
+
+export interface AutoPunishRule {
+  /** Con cuántos warns activos se aplica. */
+  warns: number;
+  action: "timeout" | "kick" | "ban";
+  /** Solo para "timeout". */
+  minutes?: number;
+}
+
+// Un renglón por servidor, creado la primera vez que se guarda algo desde el panel
+export const guildExtras = pgTable("guild_extras", {
+  guildId: varchar("guild_id").primaryKey().references(() => guilds.id),
+  // Interacciones con GIFs (/abrazar, /besar…)
+  interactionsEnabled: boolean("interactions_enabled").notNull().default(true),
+  // Cumpleaños: felicitación a la hora elegida (zona del servidor) y rol por 24 h
+  birthdaysEnabled: boolean("birthdays_enabled").notNull().default(false),
+  birthdayChannelId: varchar("birthday_channel_id"),
+  birthdayRoleId: varchar("birthday_role_id"),
+  birthdayHour: integer("birthday_hour").notNull().default(9),
+  birthdayMessage: text("birthday_message"), // null = mensaje predeterminado
+  // Starboard: los mensajes con suficientes reacciones se copian a un canal
+  starboardEnabled: boolean("starboard_enabled").notNull().default(false),
+  starboardChannelId: varchar("starboard_channel_id"),
+  starboardEmoji: text("starboard_emoji").notNull().default("⭐"),
+  starboardThreshold: integer("starboard_threshold").notNull().default(3),
+  // Confesiones anónimas (/confesar)
+  confessionsEnabled: boolean("confessions_enabled").notNull().default(false),
+  confessionsChannelId: varchar("confessions_channel_id"),
+  confessionsCount: integer("confessions_count").notNull().default(0),
+  // Registro (logs) en un canal
+  logsEnabled: boolean("logs_enabled").notNull().default(false),
+  logsChannelId: varchar("logs_channel_id"),
+  logEvents: jsonb("log_events").$type<LogEvent[]>(), // null = todos
+  // Filtro de palabras y enlaces
+  filterEnabled: boolean("filter_enabled").notNull().default(false),
+  filterWords: jsonb("filter_words").$type<string[]>().notNull().default([]),
+  filterInvites: boolean("filter_invites").notNull().default(true),
+  filterLinks: boolean("filter_links").notNull().default(false),
+  filterExemptRoleIds: jsonb("filter_exempt_role_ids").$type<string[]>().notNull().default([]),
+  filterWarn: boolean("filter_warn").notNull().default(false), // además de borrar, dar un warn
+  // Castigos automáticos por warns
+  autoPunishEnabled: boolean("auto_punish_enabled").notNull().default(false),
+  autoPunishRules: jsonb("auto_punish_rules").$type<AutoPunishRule[]>(), // null = las predeterminadas
+  // XP por estar en canales de voz
+  voiceXpEnabled: boolean("voice_xp_enabled").notNull().default(false),
+  updatedAt: timestamp("updated_at").default(sql`now()`),
+});
+
+export const birthdays = pgTable("birthdays", {
+  guildId: varchar("guild_id").notNull(),
+  userId: varchar("user_id").notNull(),
+  month: integer("month").notNull(), // 1-12
+  day: integer("day").notNull(), // 1-31
+  lastCelebrated: varchar("last_celebrated", { length: 10 }), // YYYY-MM-DD en la zona del servidor
+  roleGivenAt: timestamp("role_given_at"),
+}, (table) => [
+  primaryKey({ columns: [table.guildId, table.userId] }),
+]);
+
+export const reminders = pgTable("reminders", {
+  id: varchar("id").primaryKey().default(sql`gen_random_uuid()`),
+  guildId: varchar("guild_id").notNull(),
+  channelId: varchar("channel_id").notNull(),
+  userId: varchar("user_id").notNull(),
+  text: text("text").notNull(),
+  dueAt: timestamp("due_at").notNull(),
+  createdAt: timestamp("created_at").default(sql`now()`),
+});
+
+export const starboardPosts = pgTable("starboard_posts", {
+  guildId: varchar("guild_id").notNull(),
+  messageId: varchar("message_id").notNull(), // mensaje original
+  starMessageId: varchar("star_message_id"), // copia en el canal de starboard
+  count: integer("count").notNull().default(0),
+}, (table) => [
+  primaryKey({ columns: [table.guildId, table.messageId] }),
+]);
+
+// Quién escribió cada confesión: solo lo ven los admins con /confesion autor (para casos de abuso)
+export const confessions = pgTable("confessions", {
+  guildId: varchar("guild_id").notNull(),
+  number: integer("number").notNull(),
+  userId: varchar("user_id").notNull(),
+  messageId: varchar("message_id"),
+  createdAt: timestamp("created_at").default(sql`now()`),
+}, (table) => [
+  primaryKey({ columns: [table.guildId, table.number] }),
+]);
+
+export const interactionCounts = pgTable("interaction_counts", {
+  guildId: varchar("guild_id").notNull(),
+  userId: varchar("user_id").notNull(),
+  targetId: varchar("target_id").notNull(),
+  action: varchar("action", { length: 20 }).notNull(),
+  count: integer("count").notNull().default(0),
+}, (table) => [
+  primaryKey({ columns: [table.guildId, table.userId, table.targetId, table.action] }),
+]);
+
+export type GuildExtras = typeof guildExtras.$inferSelect;
+export type Birthday = typeof birthdays.$inferSelect;
+export type Reminder = typeof reminders.$inferSelect;
+
 // Relations
 export const usersRelations = relations(users, ({ many }) => ({
   levels: many(userLevels),

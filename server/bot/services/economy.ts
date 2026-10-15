@@ -183,8 +183,17 @@ async function getUserLevelNumber(guildId: string, userId: string): Promise<numb
 // ===== Recompensa diaria (la usan /daily y &daily) =====
 
 export type DailyResult =
-  | { ok: true; reward: number; levelBonus: number; streak: number; streakLost: boolean; balance: number }
+  | { ok: true; reward: number; levelBonus: number; streakBonus: number; streak: number; streakLost: boolean; balance: number }
   | { ok: false; retryInMs: number };
+
+// Bono por racha: +5 % por cada día seguido después del primero, hasta +50 % (11 días)
+export const DAILY_STREAK_BONUS_STEP = 0.05;
+export const DAILY_STREAK_BONUS_MAX_DAYS = 10;
+
+export function streakBonusFor(reward: number, streak: number): number {
+  const days = Math.min(Math.max(streak - 1, 0), DAILY_STREAK_BONUS_MAX_DAYS);
+  return Math.floor(reward * days * DAILY_STREAK_BONUS_STEP);
+}
 
 export function dailyRewardFor(level: number): { reward: number; levelBonus: number } {
   const levelBonus = Math.max(1, Math.floor(level)) * DAILY_REWARD_PER_LEVEL;
@@ -218,14 +227,16 @@ export async function claimDaily(guildId: string, userId: string): Promise<Daily
     const check = evaluateDaily(row.lastDaily, row.dailyStreak, now);
     if (!check.ok) return check;
 
-    const balance = clampCoins(toCoins(row.balance) + reward);
+    const streakBonus = streakBonusFor(reward, check.streak);
+    const total = reward + streakBonus;
+    const balance = clampCoins(toCoins(row.balance) + total);
     await saveAccount(tx, row, {
       balance,
-      earned: reward,
+      earned: total,
       dailyStreak: check.streak,
       lastDaily: new Date(now),
     });
-    return { ok: true as const, reward, levelBonus, streak: check.streak, streakLost: check.streakLost, balance };
+    return { ok: true as const, reward: total, levelBonus, streakBonus, streak: check.streak, streakLost: check.streakLost, balance };
   });
 }
 

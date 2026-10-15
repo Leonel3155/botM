@@ -7,6 +7,9 @@ import { isRedditUrl, RedditError, redditService, type RedditPost } from '../ser
 import { formatNewsItem, loadFeed, type FeedItem } from '../services/rss';
 import { dailyQuestions } from './services/dailyQuestion';
 import { resolveSendableChannel } from './services/channels';
+import { birthdayTick } from './services/birthdays';
+import { reminderTick } from './services/reminders';
+import { voiceXpTick } from './services/voiceXp';
 
 const SUBREDDIT_REGEX = new RegExp(CONTENT_FEED_LIMITS.subredditPattern);
 // Tiempo máximo de un turno de un feed (descarga incluida) antes de pasar al siguiente
@@ -41,9 +44,14 @@ export class ContentScheduler {
   }
 
   private async runChecks() {
+    const client = this.bot.client;
     await Promise.all([
       this.checkScheduledContent(),
       this.checkDailyQuestions(),
+      // Cada uno atrapa sus propios errores
+      client.isReady() ? birthdayTick(client) : undefined,
+      reminderTick(client),
+      client.isReady() ? voiceXpTick(client) : undefined,
     ]);
   }
 

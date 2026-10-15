@@ -763,7 +763,8 @@ export type WsServerMessage =
   | { type: "feedsUpdated" }
   | { type: "customCommandsUpdated" }
   | { type: "rolePanelsUpdated" }
-  | { type: "shopUpdated" };
+  | { type: "shopUpdated" }
+  | { type: "extrasUpdated" };
 
 // =============================================
 // Autorroles (paneles con botones)
@@ -863,3 +864,63 @@ export interface ShopItemSaveRequest {
   stock: number | null;
   enabled: boolean;
 }
+
+// =============================================
+// Funciones extra: diversión y moderación automática
+// =============================================
+
+export type LogEventKey = "messageDelete" | "messageEdit" | "memberJoin" | "memberLeave" | "moderation" | "roles";
+
+export interface AutoPunishRuleItem {
+  warns: number;
+  action: "timeout" | "kick" | "ban";
+  minutes?: number;
+}
+
+export const EXTRAS_LIMITS = {
+  birthdayMessageMaxLength: 500,
+  starboardThresholdMin: 1,
+  starboardThresholdMax: 100,
+  starboardEmojiMaxLength: 64,
+  filterMaxWords: 200,
+  filterWordMaxLength: 50,
+  filterMaxExemptRoles: 25,
+  autoPunishMaxRules: 5,
+  autoPunishMaxWarns: 50,
+  timeoutMaxMinutes: 40320, // 28 días, lo más que deja Discord
+} as const;
+
+export interface GuildExtrasItem {
+  interactionsEnabled: boolean;
+  birthdaysEnabled: boolean;
+  birthdayChannelId: string | null;
+  birthdayRoleId: string | null;
+  birthdayHour: number;
+  birthdayMessage: string | null;
+  starboardEnabled: boolean;
+  starboardChannelId: string | null;
+  starboardEmoji: string;
+  starboardThreshold: number;
+  confessionsEnabled: boolean;
+  confessionsChannelId: string | null;
+  logsEnabled: boolean;
+  logsChannelId: string | null;
+  logEvents: LogEventKey[];
+  filterEnabled: boolean;
+  filterWords: string[];
+  filterInvites: boolean;
+  filterLinks: boolean;
+  filterExemptRoleIds: string[];
+  filterWarn: boolean;
+  autoPunishEnabled: boolean;
+  autoPunishRules: AutoPunishRuleItem[];
+  voiceXpEnabled: boolean;
+}
+
+export interface GuildExtrasResponse {
+  extras: GuildExtrasItem;
+  stats: { birthdays: number; confessions: number; starboardPosts: number; pendingReminders: number };
+  defaultBirthdayMessage: string;
+}
+
+export type GuildExtrasSaveRequest = Partial<GuildExtrasItem>;

@@ -78,9 +78,10 @@ export function dailyEmbed(result: DailyResult): EmbedBuilder {
     .addFields(
       { name: '🔥 Racha', value: streakText, inline: true },
       { name: '🎯 Bono por nivel', value: `+${formatCoins(result.levelBonus)}`, inline: true },
+      { name: '⚡ Bono por racha', value: result.streakBonus > 0 ? `+${formatCoins(result.streakBonus)}` : 'Desde el 2.º día seguido', inline: true },
       { name: '💵 Cartera', value: formatCoins(result.balance), inline: true }
     )
-    .setFooter({ text: 'Vuelve mañana: si pasan más de 48 h, la racha se reinicia.' })
+    .setFooter({ text: 'Vuelve mañana: cada día seguido suma +5 % (hasta +50 %). Si pasan más de 48 h, la racha se reinicia.' })
     .setTimestamp();
 }
 

@@ -10,6 +10,8 @@ import {
   Server,
   Settings,
   Share2,
+  PartyPopper,
+  ShieldAlert,
   ShieldCheck,
   ShoppingBag,
   Terminal,
@@ -45,6 +47,7 @@ export const NAV_SECTIONS: NavSection[] = [
     items: [
       { title: "Bienvenida y pregunta del día", href: "/comunidad", icon: MessageCircleHeart, description: "Saluda a los nuevos y anima la charla", guildScoped: true },
       { title: "Niveles", href: "/niveles", icon: BarChart3, description: "XP, ranking y avisos al subir de nivel", guildScoped: true },
+      { title: "Diversión", href: "/diversion", icon: PartyPopper, description: "GIFs, cumpleaños, starboard y confesiones", guildScoped: true },
       { title: "Autorroles", href: "/autorroles", icon: MousePointerClick, description: "Botones para que cada quien elija sus roles", guildScoped: true },
       { title: "Economía", href: "/economia", icon: Coins, description: "Monedas, recompensa diaria y trabajos", guildScoped: true },
       { title: "Tienda", href: "/tienda", icon: ShoppingBag, description: "Roles y artículos que se compran con monedas", guildScoped: true },
@@ -55,6 +58,7 @@ export const NAV_SECTIONS: NavSection[] = [
     label: "Administración",
     items: [
       { title: "Moderación", href: "/moderacion", icon: Gavel, description: "Historial de acciones del staff", guildScoped: true },
+      { title: "Moderación automática", href: "/automod", icon: ShieldAlert, description: "Registro, filtro de palabras y castigos solos", guildScoped: true },
       { title: "Seguridad", href: "/seguridad", icon: ShieldCheck, description: "Anti-raid y protección del servidor", guildScoped: true },
       { title: "Comandos personalizados", href: "/comandos", icon: Terminal, description: "Respuestas propias para tu servidor", guildScoped: true },
       { title: "Canales", href: "/canales", icon: Hash, description: "Dónde publica el bot cada cosa", guildScoped: true },

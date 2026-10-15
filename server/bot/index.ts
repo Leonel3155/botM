@@ -1,4 +1,4 @@
-import { Client, GatewayIntentBits, Collection, MessageFlags, Events, DiscordjsErrorCodes, DiscordAPIError, HTTPError } from 'discord.js';
+import { Client, GatewayIntentBits, Collection, MessageFlags, Events, DiscordjsErrorCodes, DiscordAPIError, HTTPError, Partials } from 'discord.js';
 import { setupCommands } from './commands';
 import { setupEvents } from './events';
 import { setupAntiRaid } from './middleware/antiRaid';
@@ -54,8 +54,13 @@ export class DiscordBot {
         GatewayIntentBits.Guilds,
         GatewayIntentBits.GuildMessages,
         GatewayIntentBits.MessageContent,
-        GatewayIntentBits.GuildMembers
-      ]
+        GatewayIntentBits.GuildMembers,
+        // Starboard (reacciones) y XP por voz; no son intents privilegiados
+        GatewayIntentBits.GuildMessageReactions,
+        GatewayIntentBits.GuildVoiceStates,
+      ],
+      // Para reacciones y mensajes borrados de antes de que el bot arrancara (starboard y registro)
+      partials: [Partials.Message, Partials.Channel, Partials.Reaction],
     });
 
     // Sin estos oyentes, un error de conexión de discord.js se convierte en una excepción no capturada

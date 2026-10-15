@@ -16,6 +16,7 @@ import { LevelLeaderboard } from "@/components/niveles-economia/level-leaderboar
 import { PRESTIGE_MIN_LEVEL, XP_COOLDOWN_SECONDS } from "@/components/niveles-economia/level-math";
 import { RankingSkeleton, TopLimitSelect, displayUserName, type TopLimit } from "@/components/niveles-economia/ranking-parts";
 import { XpRulesCard } from "@/components/niveles-economia/xp-rules";
+import { InstantExtrasToggle } from "@/components/extras/shared";
 import { useSelectedGuild } from "@/lib/guild";
 import { cn } from "@/lib/utils";
 
@@ -136,6 +137,22 @@ export default function Levels() {
             savedOn="Listo: el bot anunciará las subidas de nivel"
             savedOff="Listo: el bot ya no anunciará las subidas de nivel"
           />
+          <div className="mt-4">
+            <InstantExtrasToggle
+              guildId={guildId}
+              field="voiceXpEnabled"
+              id="toggle-voice-xp"
+              label="XP por estar en canales de voz"
+              description={
+                <>
+                  Cada minuto en un canal de voz con al menos otra persona se ganan 5 XP. No cuenta si estás solo,
+                  ensordecido o en el canal AFK, para que nadie farmee dejando la compu prendida.
+                </>
+              }
+              savedOn="Listo: ahora se gana XP en los canales de voz"
+              savedOff="Listo: ya no se gana XP en los canales de voz"
+            />
+          </div>
         </CardContent>
       </Card>
 

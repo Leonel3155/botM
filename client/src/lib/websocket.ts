@@ -88,6 +88,7 @@ const GUILD_INVALIDATIONS: Record<GuildUpdateType, (guildId: string) => string[]
   // Autorroles (/api/role-panels/{id}) y tienda (/api/shop/{id})
   rolePanelsUpdated: (guildId) => [`/api/role-panels/${guildId}`],
   shopUpdated: (guildId) => [`/api/shop/${guildId}`],
+  extrasUpdated: (guildId) => [`/api/guilds/${guildId}/extras`],
 };
 
 function isGuildUpdateType(type: string): type is GuildUpdateType {

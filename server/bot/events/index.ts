@@ -1,9 +1,13 @@
 import { DiscordBot } from '../index';
-import { Events, GuildMember, Message, PartialGuildMember } from 'discord.js';
+import { Events, GuildMember, Message, PartialGuildMember, type PartialMessage } from 'discord.js';
 import { storage } from '../../storage';
 import { getGuildSettings, warmGuildSettings } from '../services/guildSettings';
 import { handleMemberAvailable, handleMemberPassedScreening, handleMemberWelcome } from '../services/welcome';
 import { ensureAccount, formatCoins, getPrestigeLevel, grantActivityRewards } from '../services/economy';
+import { filterMessage } from '../services/autoMod';
+import { handleStarReaction } from '../services/starboard';
+import { sendServerLog } from '../services/serverLog';
+import { truncate } from '../services/channels';
 import { MESSAGE_XP_MAX, MESSAGE_XP_MIN, PRESTIGE_MIN_LEVEL, awardXp, levelUpReward, prestigeMultiplier } from '../services/levels';
 
 // Tiempo mínimo entre mensajes que dan XP/monedas (evita farmear con spam)
@@ -39,6 +43,13 @@ export function setupEvents(bot: DiscordBot) {
   // XP y monedas por participar
   bot.client.on(Events.MessageCreate, async (message: Message) => {
     if (message.author.bot || !message.guild) return;
+
+    // Filtro de palabras e invitaciones: un mensaje borrado no da XP
+    try {
+      if (await filterMessage(message)) return;
+    } catch (error) {
+      console.error('Error en el filtro de mensajes:', error);
+    }
 
     const userId = message.author.id;
     const guildId = message.guild.id;
@@ -158,5 +169,84 @@ export function setupEvents(bot: DiscordBot) {
     } catch (error) {
       console.error('Welcome role error:', error);
     }
+  });
+
+  // Un mensaje editado también pasa por el filtro, y la edición queda en el registro
+  bot.client.on(Events.MessageUpdate, async (oldMessage, newMessage) => {
+    if (!newMessage.guild) return;
+    try {
+      const message = newMessage.partial ? await newMessage.fetch() : newMessage;
+      if (message.author.bot) return;
+      if (await filterMessage(message)) return;
+      if (oldMessage.partial || oldMessage.content === message.content) return;
+      void sendServerLog(message.guild!, 'messageEdit', (embed) => embed
+        .setTitle('✏️ Mensaje editado')
+        .setDescription(`<@${message.author.id}> en <#${message.channelId}> · [Ir al mensaje](${message.url})`)
+        .addFields(
+          { name: 'Antes', value: truncate(oldMessage.content || '*(vacío)*', 1000) },
+          { name: 'Ahora', value: truncate(message.content || '*(vacío)*', 1000) },
+        ));
+    } catch (error) {
+      console.error('Error al revisar un mensaje editado:', error);
+    }
+  });
+
+  bot.client.on(Events.MessageDelete, async (message: Message | PartialMessage) => {
+    if (!message.guild || message.author?.bot) return;
+    void sendServerLog(message.guild, 'messageDelete', (embed) => {
+      embed.setTitle('🗑️ Mensaje borrado');
+      if (message.partial) {
+        return embed.setDescription(`En <#${message.channelId}>. Era de antes de que el bot arrancara, así que no sé qué decía.`);
+      }
+      const files = message.attachments.map((file) => file.name).join(', ');
+      return embed
+        .setDescription(`De <@${message.author.id}> en <#${message.channelId}>`)
+        .addFields(
+          { name: 'Mensaje', value: truncate(message.content || '*(sin texto)*', 1000) },
+          ...(files ? [{ name: 'Archivos', value: truncate(files, 1000) }] : []),
+        );
+    });
+  });
+
+  bot.client.on(Events.GuildMemberAdd, (member: GuildMember) => {
+    const created = Math.floor(member.user.createdTimestamp / 1000);
+    void sendServerLog(member.guild, 'memberJoin', (embed) => embed
+      .setTitle('📥 Entró alguien')
+      .setThumbnail(member.user.displayAvatarURL())
+      .setDescription(`<@${member.id}> (${member.user.tag})
+Cuenta creada <t:${created}:R>`)
+      .setFooter({ text: `Ahora son ${member.guild.memberCount}` }));
+  });
+
+  bot.client.on(Events.GuildMemberRemove, (member: GuildMember | PartialGuildMember) => {
+    const roles = member.partial ? '' : member.roles.cache.filter((role) => role.id !== member.guild.id).map((role) => `<@&${role.id}>`).join(' ');
+    void sendServerLog(member.guild, 'memberLeave', (embed) => embed
+      .setTitle('📤 Se fue alguien')
+      .setThumbnail(member.user.displayAvatarURL())
+      .setDescription(`<@${member.id}> (${member.user.tag})${roles ? `
+Tenía: ${truncate(roles, 900)}` : ''}`)
+      .setFooter({ text: `Ahora son ${member.guild.memberCount}` }));
+  });
+
+  bot.client.on(Events.GuildMemberUpdate, (oldMember: GuildMember | PartialGuildMember, newMember: GuildMember) => {
+    if (oldMember.partial) return;
+    const added = newMember.roles.cache.filter((role) => !oldMember.roles.cache.has(role.id));
+    const removed = oldMember.roles.cache.filter((role) => !newMember.roles.cache.has(role.id));
+    if (added.size === 0 && removed.size === 0) return;
+    void sendServerLog(newMember.guild, 'roles', (embed) => embed
+      .setTitle('🎭 Cambiaron sus roles')
+      .setDescription(`<@${newMember.id}>`)
+      .addFields(
+        ...(added.size ? [{ name: 'Agregados', value: truncate(added.map((role) => `<@&${role.id}>`).join(' '), 1000) }] : []),
+        ...(removed.size ? [{ name: 'Quitados', value: truncate(removed.map((role) => `<@&${role.id}>`).join(' '), 1000) }] : []),
+      ));
+  });
+
+  // Starboard
+  bot.client.on(Events.MessageReactionAdd, (reaction) => {
+    void handleStarReaction(reaction);
+  });
+  bot.client.on(Events.MessageReactionRemove, (reaction) => {
+    void handleStarReaction(reaction);
   });
 }
