@@ -9,6 +9,8 @@ import { listShopItems } from './shop';
 import { checkGrantableRole } from './roles';
 import { resolveSendableChannel } from './channels';
 import { lastUpdateStatus } from './updater';
+import { getExtrasSafe } from './extras';
+import { unmarkedNsfwChannels } from './nsfw';
 import { RedditError, redditService, REDDIT_RSS_SHUTDOWN_AT } from '../../services/reddit';
 
 export type CheckLevel = 'ok' | 'warn' | 'error';
@@ -72,6 +74,14 @@ export async function checkGuildFeatures(guild: Guild): Promise<CheckLine[]> {
     lines.push(problems.length === 0
       ? { level: 'ok', text: `Autorroles «${panel.title}»: ${panel.roles.length} botón(es) funcionando` }
       : { level: 'warn', text: `Autorroles «${panel.title}»: ${problems.join(' · ')}` });
+  }
+
+  const extras = await getExtrasSafe(guild.id);
+  if (extras.nsfwEnabled) {
+    const unmarked = unmarkedNsfwChannels(guild, extras);
+    lines.push(unmarked.length === 0
+      ? { level: 'ok', text: `Contenido +18: ${extras.nsfwChannelIds.length} canal(es) autorizados y marcados +18` }
+      : { level: 'warn', text: `Contenido +18: ${unmarked.length} canal(es) autorizados ya no están marcados +18 en Discord; ahí no publico nada` });
   }
 
   const items = await listShopItems(guild.id);

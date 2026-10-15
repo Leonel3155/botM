@@ -163,6 +163,8 @@ export interface DiscordChannelItem {
   category: string;
   /** El bot puede ver el canal y publicar mensajes con embeds (siempre false en canales de voz). */
   botCanPost: boolean;
+  /** Canal marcado en Discord como "con restricción de edad" (+18). */
+  nsfw: boolean;
 }
 export type DiscordChannelsResponse = DiscordChannelItem[];
 
@@ -891,6 +893,7 @@ export const EXTRAS_LIMITS = {
   autoPunishMaxRules: 5,
   autoPunishMaxWarns: 50,
   timeoutMaxMinutes: 40320, // 28 días, lo más que deja Discord
+  nsfwMaxChannels: 10,
 } as const;
 
 export interface GuildExtrasItem {
@@ -918,12 +921,24 @@ export interface GuildExtrasItem {
   autoPunishEnabled: boolean;
   autoPunishRules: AutoPunishRuleItem[];
   voiceXpEnabled: boolean;
+  nsfwEnabled: boolean;
+  nsfwChannelIds: string[];
+}
+
+export interface NsfwLogItem {
+  channelId: string;
+  userId: string;
+  category: string;
+  url: string;
+  createdAt: IsoDateString | null;
 }
 
 export interface GuildExtrasResponse {
   extras: GuildExtrasItem;
   stats: { birthdays: number; confessions: number; starboardPosts: number; pendingReminders: number };
   defaultBirthdayMessage: string;
+  /** Lo último publicado con /nsfw (para revisar o borrar algo). */
+  nsfwLog: NsfwLogItem[];
 }
 
 export type GuildExtrasSaveRequest = Partial<GuildExtrasItem>;

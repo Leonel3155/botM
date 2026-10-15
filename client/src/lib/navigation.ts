@@ -5,6 +5,7 @@ import {
   Hash,
   LayoutDashboard,
   LineChart,
+  Lock,
   MessageCircleHeart,
   MousePointerClick,
   Server,
@@ -59,6 +60,7 @@ export const NAV_SECTIONS: NavSection[] = [
     items: [
       { title: "Moderación", href: "/moderacion", icon: Gavel, description: "Historial de acciones del staff", guildScoped: true },
       { title: "Moderación automática", href: "/automod", icon: ShieldAlert, description: "Registro, filtro de palabras y castigos solos", guildScoped: true },
+      { title: "Contenido +18", href: "/contenido-adultos", icon: Lock, description: "Imágenes +18 solo en canales autorizados", guildScoped: true },
       { title: "Seguridad", href: "/seguridad", icon: ShieldCheck, description: "Anti-raid y protección del servidor", guildScoped: true },
       { title: "Comandos personalizados", href: "/comandos", icon: Terminal, description: "Respuestas propias para tu servidor", guildScoped: true },
       { title: "Canales", href: "/canales", icon: Hash, description: "Dónde publica el bot cada cosa", guildScoped: true },

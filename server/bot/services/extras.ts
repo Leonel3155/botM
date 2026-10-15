@@ -44,6 +44,8 @@ export function defaultExtras(guildId: string): GuildExtras {
     autoPunishEnabled: false,
     autoPunishRules: null,
     voiceXpEnabled: false,
+    nsfwEnabled: false,
+    nsfwChannelIds: [],
     updatedAt: null,
   };
 }

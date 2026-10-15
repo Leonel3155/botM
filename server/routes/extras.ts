@@ -18,6 +18,7 @@ import {
   type ExtrasPatch,
 } from "../bot/services/extras";
 import { DEFAULT_BIRTHDAY_MESSAGE } from "../bot/services/birthdays";
+import { recentNsfwPosts } from "../bot/services/nsfw";
 import { checkGrantableRole, isValidButtonEmoji } from "../bot/services/roles";
 import {
   requireAuth,
@@ -35,6 +36,7 @@ import {
   findPostableChannel,
   isDevRequest,
   plainDiscordText,
+  toIso,
 } from "./helpers";
 
 type Broadcast = (guildId: string, message: Record<string, unknown>) => void;
@@ -83,6 +85,9 @@ const extrasSchema = z.object({
     .transform((rules) => [...rules].sort((a, b) => a.warns - b.warns)
       .map((rule) => rule.action === "timeout" ? { ...rule, minutes: rule.minutes ?? 60 } : { warns: rule.warns, action: rule.action })),
   voiceXpEnabled: z.boolean(),
+  nsfwEnabled: z.boolean(),
+  nsfwChannelIds: z.array(snowflakeSchema).max(EXTRAS_LIMITS.nsfwMaxChannels, `Puedes autorizar como máximo ${EXTRAS_LIMITS.nsfwMaxChannels} canales +18.`)
+    .transform((ids) => [...new Set(ids)]),
 }).strict().partial();
 
 function toItem(extras: GuildExtras): GuildExtrasItem {
@@ -111,6 +116,8 @@ function toItem(extras: GuildExtras): GuildExtrasItem {
     autoPunishEnabled: extras.autoPunishEnabled,
     autoPunishRules: autoPunishRulesOf(extras),
     voiceXpEnabled: extras.voiceXpEnabled,
+    nsfwEnabled: extras.nsfwEnabled,
+    nsfwChannelIds: extras.nsfwChannelIds,
   };
 }
 
@@ -125,6 +132,13 @@ async function buildResponse(guildId: string): Promise<GuildExtrasResponse> {
     extras: toItem(extras),
     stats: { birthdays: b?.total ?? 0, confessions: extras.confessionsCount, starboardPosts: s?.total ?? 0, pendingReminders: r?.total ?? 0 },
     defaultBirthdayMessage: DEFAULT_BIRTHDAY_MESSAGE,
+    nsfwLog: (await recentNsfwPosts(guildId)).map((row) => ({
+      channelId: row.channelId,
+      userId: row.userId,
+      category: row.category,
+      url: row.url,
+      createdAt: toIso(row.createdAt),
+    })),
   };
 }
 
@@ -158,6 +172,17 @@ async function checkInput(req: Request, guild: DiscordGuild, input: ExtrasPatch,
     const memberProblem = checkMemberCanAssignRole(guild, member, check.role, devSession);
     if (memberProblem) return `Rol de cumpleañero: ${memberProblem.replace("Para elegir el rol automático también", "Para elegir ese rol")}`;
   }
+  // Doble candado: solo canales marcados en Discord como +18
+  for (const channelId of input.nsfwChannelIds ?? []) {
+    const channel = findPostableChannel(guild, channelId);
+    if (!channel) return "Uno de los canales +18 ya no existe o no es un canal de texto.";
+    if (!("nsfw" in channel) || channel.nsfw !== true) {
+      return `#${channel.name} no está marcado como "con restricción de edad" en Discord. Márcalo primero (Editar canal → Canal con restricción de edad).`;
+    }
+    const problem = await checkPanelUserCanUseChannel(req, guild, channelId);
+    if (problem) return problem;
+  }
+  if (merged.nsfwEnabled && merged.nsfwChannelIds.length === 0) return "Elige al menos un canal +18 donde se permita.";
   for (const roleId of input.filterExemptRoleIds ?? []) {
     if (!guild.roles.cache.has(roleId)) return "Uno de los roles que no pasan por el filtro ya no existe.";
   }

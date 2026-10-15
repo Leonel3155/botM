@@ -32,6 +32,7 @@ const Autorroles = lazy(() => import("@/pages/autorroles"));
 const Tienda = lazy(() => import("@/pages/tienda"));
 const Diversion = lazy(() => import("@/pages/diversion"));
 const Automod = lazy(() => import("@/pages/automod"));
+const ContenidoAdultos = lazy(() => import("@/pages/contenido-adultos"));
 
 // Páginas de un servidor: solo se muestran con un servidor elegido
 const GUILD_ROUTES: { path: string; component: ComponentType }[] = [
@@ -43,6 +44,7 @@ const GUILD_ROUTES: { path: string; component: ComponentType }[] = [
   { path: "/tienda", component: Tienda },
   { path: "/diversion", component: Diversion },
   { path: "/automod", component: Automod },
+  { path: "/contenido-adultos", component: ContenidoAdultos },
   { path: "/autorroles", component: Autorroles },
   { path: "/moderacion", component: Moderation },
   // Seguridad: "Próximamente" hasta rehacerla. antiraid.tsx y protection.tsx mostraban

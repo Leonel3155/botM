@@ -23,6 +23,7 @@ import { tiendaCommands } from './tienda';
 import { interaccionesCommands } from './interacciones';
 import { cumple } from './cumple';
 import { comunidadExtraCommands } from './comunidadExtra';
+import { nsfw } from './nsfw';
 import selftest from './selftest';
 import actualizar from './actualizar';
 import stress from './stress';
@@ -78,6 +79,7 @@ export async function setupCommands(bot: DiscordBot) {
     ...interaccionesCommands,
     cumple,
     ...comunidadExtraCommands,
+    nsfw,
     selftest,
     actualizar,
     // Diagnósticos solo para desarrollo: /stress satura las colas y /oauth-test muestra URLs internas.

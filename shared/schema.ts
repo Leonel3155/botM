@@ -387,6 +387,10 @@ export const guildExtras = pgTable("guild_extras", {
   autoPunishRules: jsonb("auto_punish_rules").$type<AutoPunishRule[]>(), // null = las predeterminadas
   // XP por estar en canales de voz
   voiceXpEnabled: boolean("voice_xp_enabled").notNull().default(false),
+  // Contenido +18: solo con el interruptor encendido Y en canales de esta lista que además estén marcados
+  // en Discord como "con restricción de edad". Nunca en canales normales.
+  nsfwEnabled: boolean("nsfw_enabled").notNull().default(false),
+  nsfwChannelIds: jsonb("nsfw_channel_ids").$type<string[]>().notNull().default([]),
   updatedAt: timestamp("updated_at").default(sql`now()`),
 });
 
@@ -440,6 +444,18 @@ export const interactionCounts = pgTable("interaction_counts", {
 }, (table) => [
   primaryKey({ columns: [table.guildId, table.userId, table.targetId, table.action] }),
 ]);
+
+// Registro de lo publicado con /nsfw (el panel muestra lo último por si hay que borrar algo)
+export const nsfwLog = pgTable("nsfw_log", {
+  id: varchar("id").primaryKey().default(sql`gen_random_uuid()`),
+  guildId: varchar("guild_id").notNull(),
+  channelId: varchar("channel_id").notNull(),
+  userId: varchar("user_id").notNull(),
+  category: varchar("category", { length: 30 }).notNull(),
+  url: text("url").notNull(),
+  messageId: varchar("message_id"),
+  createdAt: timestamp("created_at").default(sql`now()`),
+});
 
 export type GuildExtras = typeof guildExtras.$inferSelect;
 export type Birthday = typeof birthdays.$inferSelect;
