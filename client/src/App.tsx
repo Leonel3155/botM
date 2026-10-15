@@ -28,6 +28,8 @@ const Moderation = lazy(() => import("@/pages/moderation"));
 const Social = lazy(() => import("@/pages/social"));
 const CustomCommands = lazy(() => import("@/pages/custom-commands"));
 const Channels = lazy(() => import("@/pages/channels"));
+const Autorroles = lazy(() => import("@/pages/autorroles"));
+const Tienda = lazy(() => import("@/pages/tienda"));
 
 // Páginas de un servidor: solo se muestran con un servidor elegido
 const GUILD_ROUTES: { path: string; component: ComponentType }[] = [
@@ -36,6 +38,8 @@ const GUILD_ROUTES: { path: string; component: ComponentType }[] = [
   { path: "/comunidad", component: Comunidad },
   { path: "/niveles", component: Levels },
   { path: "/economia", component: Economy },
+  { path: "/tienda", component: Tienda },
+  { path: "/autorroles", component: Autorroles },
   { path: "/moderacion", component: Moderation },
   // Seguridad: "Próximamente" hasta rehacerla. antiraid.tsx y protection.tsx mostraban
   // números y eventos inventados, así que no se enlazan.

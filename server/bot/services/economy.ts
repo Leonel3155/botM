@@ -21,7 +21,7 @@ export const DAILY_BASE_REWARD = 500;
 export const DAILY_REWARD_PER_LEVEL = 10;
 
 export type EconomyRow = typeof userEconomy.$inferSelect;
-type Tx = Parameters<Parameters<typeof db.transaction>[0]>[0];
+export type Tx = Parameters<Parameters<typeof db.transaction>[0]>[0];
 
 // ===== Utilidades =====
 
@@ -532,6 +532,46 @@ export async function settleBet(guildId: string, userId: string, bet: number, pa
     });
   } catch (error) {
     throw new SettleError(!bodyDone || isStatementRejected(error), error);
+  }
+}
+
+// ===== Compras (tienda) =====
+
+/** Lánzalo dentro de `apply` de spendFromWallet para cancelar la compra: no se cobra nada. */
+export class PurchaseRejected extends Error {
+  constructor(message: string) {
+    super(message);
+    this.name = 'PurchaseRejected';
+  }
+}
+
+export type PurchaseResult<T> =
+  | { ok: true; balance: number; info: T }
+  | { ok: false; reason: 'insufficient'; available: number }
+  | { ok: false; reason: 'rejected'; message: string };
+
+/**
+ * Cobra `cost` de la cartera y, en la misma transacción, aplica lo comprado (`apply`). Si `apply` falla,
+ * no se cobra. Úsalo dentro de economyTask.
+ */
+export async function spendFromWallet<T>(
+  guildId: string,
+  userId: string,
+  cost: number,
+  apply: (tx: Tx) => Promise<T>
+): Promise<PurchaseResult<T>> {
+  try {
+    return await db.transaction(async (tx) => {
+      const row = await lockAccount(tx, guildId, userId);
+      const wallet = toCoins(row.balance);
+      if (cost > wallet) return { ok: false as const, reason: 'insufficient' as const, available: wallet };
+      const info = await apply(tx);
+      await saveAccount(tx, row, { balance: wallet - cost });
+      return { ok: true as const, balance: wallet - cost, info };
+    });
+  } catch (error) {
+    if (error instanceof PurchaseRejected) return { ok: false, reason: 'rejected', message: error.message };
+    throw error;
   }
 }
 

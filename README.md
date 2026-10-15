@@ -26,6 +26,13 @@ BotM es un bot de Discord con su propio **panel web en español** para administr
 - **`/anuncio`**: publica un anuncio bonito con título, texto, imagen, color y, si quieres, mención a `@everyone`, `@here` o un rol.
 - **`/evento`**: crea un evento de Discord (en un canal de voz o en un lugar externo) y lo anuncia con un botón para marcar "Me interesa".
 
+### 🎭 Autorroles
+
+- Desde el panel (**Autorroles**) armas un mensaje con un botón por rol y el bot lo publica en el canal que elijas. Quien pulsa un botón se pone ese rol, y si lo vuelve a pulsar se lo quita. Los botones siguen funcionando aunque reinicies el bot.
+- Hasta 25 roles por panel y 25 paneles por servidor. Cada botón lleva el texto que quieras y, si quieres, un emoji.
+- Opción **Solo un rol a la vez** (para colores o regiones): al elegir uno, el bot quita el otro rol de ese panel.
+- Por seguridad no reparte roles con permisos de moderación o administración, y solo puedes poner roles que estén por debajo del tuyo. El rol del bot tiene que estar **por encima** de esos roles.
+
 ### 📊 Niveles y prestigio
 
 - Cada mensaje da entre 15 y 25 XP (solo cuenta un mensaje por minuto por persona, así el spam no sirve). Cada nivel pide 10 % más XP que el anterior.
@@ -36,6 +43,7 @@ BotM es un bot de Discord con su propio **panel web en español** para administr
 
 - Monedas virtuales con cartera y banco (lo del banco no te lo pueden robar). Se ganan platicando, con `/daily`, `/work`, `/crime`… y se pueden regalar, depositar o intentar robar.
 - Juegos: blackjack, tragamonedas, ruleta europea, dado y ruleta rusa.
+- **Tienda**: los artículos se crean solo desde el panel (**Tienda**): nombre, emoji, precio, unidades (o sin límite) y, si quieres, un rol que se da al comprarlo. Se compra con `/comprar` usando la cartera; los artículos sin rol se guardan en `/inventario`. Un artículo con rol se compra una sola vez y, si el bot no puede dar el rol, no cobra.
 - Comandos de administración para dar, quitar o reiniciar monedas.
 - Puedes apagar toda la economía desde el panel: los comandos avisan que está desactivada y la gente solo gana XP.
 - También se juntan boletos de lotería, pero **todavía no hay sorteos**: por ahora solo se acumulan.
@@ -77,7 +85,9 @@ Inicias sesión con Discord y solo ves los servidores donde eres dueño o tienes
 | **Servidores** | Elige con qué servidor trabajar e invita al bot a los que todavía no lo tienen. |
 | **Bienvenida y pregunta del día** | Canal, mensaje y rol de bienvenida (con prueba); canal, hora y zona de la pregunta del día (con "publicar ahora"). |
 | **Niveles** | Ranking, cómo se reparten los niveles, reglas de XP y el interruptor de avisos al subir de nivel. |
+| **Autorroles** | Crear, editar y borrar los mensajes con botones para ponerse roles. |
 | **Economía** | Ranking de monedas, totales y el interruptor para prender o apagar la economía. |
+| **Tienda** | Agregar, editar, pausar y borrar los artículos que se compran con monedas. |
 | **Redes sociales** | Crear, editar, pausar y borrar feeds de noticias y de Reddit. |
 | **Moderación** | Historial de lo que hizo el staff con los comandos del bot. |
 | **Seguridad** | Prender y configurar el anti-raid, terminar un modo raid y ver el historial. |
@@ -440,6 +450,9 @@ Si apagas la economía desde el panel, estos comandos solo avisan que está desa
 | `/withdraw <cantidad>` | Saca monedas del banco (número o `todo`). | Todos |
 | `/leaderboard [limite]` | Ranking de quién tiene más monedas (cartera + banco). | Todos |
 | `/economy-stats` | Estadísticas de la economía del servidor. | Todos |
+| `/tienda` | Lo que se puede comprar (se arma en el panel, en **Tienda**). | Todos |
+| `/comprar <articulo> [cantidad]` | Compra un artículo con las monedas de la cartera. Al escribir te sugiere los artículos. | Todos |
+| `/inventario [usuario]` | Lo que compraste tú u otra persona. | Todos |
 | `/add-money <usuario> <cantidad>` | Da monedas a alguien. | 🔒 Administrador |
 | `/remove-money <usuario> <cantidad>` | Quita monedas de la cartera de alguien (número o `todo`). | 🔒 Administrador |
 | `/reset-money <usuario>` | Deja en cero la cartera y el banco de alguien. | 🔒 Administrador |
@@ -600,10 +613,11 @@ El panel guarda una cookie al pulsar "Iniciar sesión" y la revisa cuando Discor
 - Entras pero **no ves tu servidor**: solo aparecen los servidores donde eres dueño o tienes **Administrador** o **Gestionar servidor**. Si acabas de recibir el permiso, pulsa **Actualizar**.
 - El panel dice **"El bot no está en este servidor"**: invítalo (paso 8).
 
-### La bienvenida, el rol automático o el anti-raid no hacen nada
+### La bienvenida, el rol automático, los autorroles o el anti-raid no hacen nada
 
 - Revisa que **Server Members Intent** esté activado (paso 4).
-- El rol del bot debe estar **por encima** del rol de bienvenida (Ajustes del servidor → Roles).
+- El rol del bot debe estar **por encima** del rol de bienvenida y de los roles de los autorroles y la tienda (Ajustes del servidor → Roles).
+- Si no saluda a alguien que entró, busca en la ventana de BotM una línea que empiece con `[BIENVENIDA]`: dice el motivo. Recuerda que el bot solo ve entrar a la gente mientras esa ventana está abierta.
 - Usa `/bienvenida probar`: revisa la configuración y los permisos del bot en el canal.
 - Para el anti-raid, revisa que esté **activado** en el panel (**Seguridad**) o con `/antiraid status`.
 

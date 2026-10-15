@@ -761,4 +761,105 @@ export type WsServerMessage =
   | { type: "settingsUpdated" }
   | { type: "feedCreated" }
   | { type: "feedsUpdated" }
-  | { type: "customCommandsUpdated" };
+  | { type: "customCommandsUpdated" }
+  | { type: "rolePanelsUpdated" }
+  | { type: "shopUpdated" };
+
+// =============================================
+// Autorroles (paneles con botones)
+// =============================================
+
+export const ROLE_PANEL_LIMITS = {
+  maxPerGuild: 25,
+  /** Discord admite 5 filas de 5 botones por mensaje. */
+  maxRoles: 25,
+  titleMaxLength: 100,
+  descriptionMaxLength: 1000,
+  labelMaxLength: 80,
+  emojiMaxLength: 64,
+} as const;
+
+export interface RolePanelButtonItem {
+  roleId: string;
+  label: string;
+  /** Emoji normal (😀) o del servidor (<:nombre:id>), o null. */
+  emoji: string | null;
+}
+
+export interface RolePanelItem {
+  id: string;
+  channelId: string;
+  /** null si el mensaje no se pudo publicar o alguien lo borró. */
+  messageId: string | null;
+  /** Enlace al mensaje en Discord (null si no está publicado). */
+  messageUrl: string | null;
+  title: string;
+  description: string | null;
+  roles: RolePanelButtonItem[];
+  /** Solo un rol de este panel a la vez (al elegir otro, se quita el anterior). */
+  exclusive: boolean;
+  updatedAt: IsoDateString | null;
+}
+
+/** GET /api/role-panels/:guildId */
+export interface RolePanelsResponse {
+  panels: RolePanelItem[];
+  maxPanels: number;
+}
+
+/** POST /api/role-panels/:guildId y PUT /api/role-panels/:guildId/:panelId: guarda y publica en Discord. */
+export interface RolePanelSaveRequest {
+  channelId: string;
+  title: string;
+  description: string | null;
+  exclusive: boolean;
+  roles: RolePanelButtonItem[];
+}
+
+// =============================================
+// Tienda
+// =============================================
+
+export const SHOP_LIMITS = {
+  maxItemsPerGuild: 50,
+  nameMaxLength: 50,
+  descriptionMaxLength: 200,
+  emojiMaxLength: 64,
+  maxPrice: 1_000_000_000,
+  maxStock: 1_000_000,
+  /** Máximo de unidades en una sola compra con /comprar. */
+  maxPerPurchase: 100,
+} as const;
+
+export interface ShopItemItem {
+  id: string;
+  name: string;
+  description: string | null;
+  emoji: string | null;
+  price: number;
+  /** Rol que da al comprarlo (una vez por persona), o null. */
+  roleId: string | null;
+  /** Unidades que quedan; null = ilimitado. */
+  stock: number | null;
+  sold: number;
+  enabled: boolean;
+  createdAt: IsoDateString | null;
+}
+
+/** GET /api/shop/:guildId */
+export interface ShopItemsResponse {
+  items: ShopItemItem[];
+  maxItems: number;
+  economyEnabled: boolean;
+}
+
+/** POST /api/shop/:guildId (todo) y PATCH /api/shop/:guildId/:itemId (lo que cambie). */
+export interface ShopItemSaveRequest {
+  name: string;
+  description: string | null;
+  emoji: string | null;
+  price: number;
+  roleId: string | null;
+  stock: number | null;
+  enabled: boolean;
+}

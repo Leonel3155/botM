@@ -1,5 +1,6 @@
 import { DiscordBot } from '../index';
 import {
+  AutocompleteInteraction,
   ChatInputCommandInteraction,
   DiscordAPIError,
   HTTPError,
@@ -18,6 +19,7 @@ import { gamblingCommands } from './gambling';
 import { bienvenidaCommands } from './bienvenida';
 import { preguntaDelDiaCommands } from './preguntaDelDia';
 import { anuncioCommands } from './anuncios';
+import { tiendaCommands } from './tienda';
 import selftest from './selftest';
 import stress from './stress';
 import oauthTest from './oauth-test';
@@ -26,6 +28,8 @@ import { ECONOMY_DISABLED_MESSAGE, isEconomyEnabledQuick } from '../services/gui
 export interface BotCommand {
   data: { name: string; toJSON(): RESTPostAPIChatInputApplicationCommandsJSONBody };
   execute(interaction: ChatInputCommandInteraction, bot: DiscordBot): Promise<unknown>;
+  /** Sugerencias para opciones con setAutocomplete(true). */
+  autocomplete?(interaction: AutocompleteInteraction): Promise<unknown>;
 }
 
 const isDevelopment = process.env.NODE_ENV === 'development';
@@ -63,6 +67,7 @@ export async function setupCommands(bot: DiscordBot) {
     ...antiraidCommands,
     ...prestigeCommands,
     ...requireEconomy(gamblingCommands),
+    ...requireEconomy(tiendaCommands),
     ...bienvenidaCommands,
     ...preguntaDelDiaCommands,
     ...anuncioCommands,

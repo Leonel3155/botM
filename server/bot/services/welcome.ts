@@ -30,7 +30,7 @@ const recentWelcomes = new Map<string, number[]>();
 const PENDING_ROLE_WINDOW_MS = 3 * 24 * 60 * 60 * 1000;
 
 // Permisos que nunca damos automáticamente al entrar
-const DANGEROUS_PERMISSIONS = [
+export const DANGEROUS_PERMISSIONS = [
   PermissionFlagsBits.Administrator,
   PermissionFlagsBits.ManageGuild,
   PermissionFlagsBits.ManageRoles,

@@ -5,6 +5,7 @@ import { setupAntiRaid } from './middleware/antiRaid';
 import { setupCustomCommands } from './customCommands';
 import { migrateLegacyMutes } from './commands/moderation';
 import { refundPendingBets } from './services/economy';
+import { handleRolePanelButton, isRolePanelButton } from './services/rolePanels';
 import { installProcessErrorHandlers, isTransientError } from './utils/processErrors';
 
 // Un error suelto (p. ej. Discord caído un momento) no debe tumbar el bot ni el panel
@@ -97,6 +98,35 @@ export class DiscordBot {
 
     // Command interaction handler
     this.client.on('interactionCreate', async (interaction) => {
+      // Botones de los paneles de autorroles (siguen funcionando después de reiniciar el bot)
+      if (interaction.isButton() && isRolePanelButton(interaction.customId)) {
+        try {
+          await handleRolePanelButton(interaction);
+        } catch (error) {
+          console.error('Error en un botón de autorroles:', error);
+          const reply = { content: '😵 No pude cambiar tu rol. Intenta de nuevo en un momento.', flags: MessageFlags.Ephemeral } as const;
+          await (interaction.deferred || interaction.replied ? interaction.editReply(reply.content) : interaction.reply(reply))
+            .catch(() => undefined);
+        }
+        return;
+      }
+
+      // Sugerencias mientras se escribe una opción (p. ej. el artículo de /comprar)
+      if (interaction.isAutocomplete()) {
+        const command = this.commands.get(interaction.commandName);
+        if (!command?.autocomplete || !interaction.inGuild()) {
+          await interaction.respond([]).catch(() => undefined);
+          return;
+        }
+        try {
+          await command.autocomplete(interaction);
+        } catch (error) {
+          console.error(`Error en las sugerencias de /${interaction.commandName}:`, error);
+          await interaction.respond([]).catch(() => undefined);
+        }
+        return;
+      }
+
       if (!interaction.isChatInputCommand()) return;
 
       const command = this.commands.get(interaction.commandName);

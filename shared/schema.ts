@@ -288,6 +288,57 @@ export const customCommands = pgTable("custom_commands", {
   unique("custom_commands_guild_name_unique").on(table.guildId, table.name),
 ]);
 
+// Autorroles: un mensaje con botones; cada botón da o quita un rol a quien lo pulsa
+export interface RolePanelButton {
+  roleId: string;
+  label: string;
+  emoji: string | null;
+}
+
+export const rolePanels = pgTable("role_panels", {
+  id: varchar("id").primaryKey().default(sql`gen_random_uuid()`),
+  guildId: varchar("guild_id").notNull().references(() => guilds.id),
+  channelId: varchar("channel_id").notNull(),
+  messageId: varchar("message_id"), // null si todavía no se publicó o se borró
+  title: text("title").notNull(),
+  description: text("description"),
+  roles: jsonb("roles").$type<RolePanelButton[]>().notNull().default([]),
+  exclusive: boolean("exclusive").notNull().default(false), // solo un rol de este panel a la vez
+  createdAt: timestamp("created_at").default(sql`now()`),
+  updatedAt: timestamp("updated_at").default(sql`now()`),
+});
+
+// Tienda del servidor: se configura solo desde el panel; se compra con /comprar
+export const shopItems = pgTable("shop_items", {
+  id: varchar("id").primaryKey().default(sql`gen_random_uuid()`),
+  guildId: varchar("guild_id").notNull().references(() => guilds.id),
+  name: text("name").notNull(),
+  description: text("description"),
+  emoji: text("emoji"),
+  price: integer("price").notNull(),
+  roleId: varchar("role_id"), // si tiene, al comprarlo se da este rol (una sola vez por persona)
+  stock: integer("stock"), // null = ilimitado
+  sold: integer("sold").notNull().default(0),
+  enabled: boolean("enabled").notNull().default(true),
+  createdAt: timestamp("created_at").default(sql`now()`),
+}, (table) => [
+  unique("shop_items_guild_name_unique").on(table.guildId, table.name),
+]);
+
+// Lo que cada persona compró (los artículos que dan rol no se guardan aquí: el rol es el artículo)
+export const shopInventory = pgTable("shop_inventory", {
+  guildId: varchar("guild_id").notNull(),
+  userId: varchar("user_id").notNull(),
+  itemId: varchar("item_id").notNull().references(() => shopItems.id, { onDelete: "cascade" }),
+  quantity: integer("quantity").notNull().default(0),
+  updatedAt: timestamp("updated_at").default(sql`now()`),
+}, (table) => [
+  primaryKey({ columns: [table.guildId, table.userId, table.itemId] }),
+]);
+
+export type RolePanel = typeof rolePanels.$inferSelect;
+export type ShopItem = typeof shopItems.$inferSelect;
+
 // Relations
 export const usersRelations = relations(users, ({ many }) => ({
   levels: many(userLevels),
