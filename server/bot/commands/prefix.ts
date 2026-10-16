@@ -11,6 +11,7 @@ import {
   withdraw,
 } from '../services/economy';
 import { ECONOMY_DISABLED_MESSAGE, getGuildSettings } from '../services/guildSettings';
+import { getTuningSafe } from '../services/extras';
 import { balanceEmbed, bankEmbed, bankErrorMessage, dailyEmbed } from './economy';
 import { buildLevelEmbed, buildLevelLeaderboard } from './level';
 
@@ -94,7 +95,8 @@ export class PrefixCommandHandler {
   }
 
   private async handleBalance(message: Message) {
-    const target = message.mentions.users.first() || message.author;
+    // parsedUsers: solo las menciones escritas (mentions.users también trae al autor del mensaje respondido)
+    const target = message.mentions.parsedUsers.first() ?? message.author;
     const account = target.bot ? undefined : await getAccount(message.guild!.id, target.id);
     await message.reply({ embeds: [balanceEmbed(target, account)] });
   }
@@ -103,8 +105,10 @@ export class PrefixCommandHandler {
     const guildId = message.guild!.id;
     const userId = message.author.id;
     await ensureAccount(message.guild!, message.author);
-    const result = await economyTask(guildId, userId, () => claimDaily(guildId, userId));
-    await message.reply({ embeds: [dailyEmbed(result)] });
+    // Ajustes finos del servidor (premio, racha y espera del diario)
+    const tuning = await getTuningSafe(guildId);
+    const result = await economyTask(guildId, userId, () => claimDaily(guildId, userId, tuning));
+    await message.reply({ embeds: [dailyEmbed(result, tuning)] });
   }
 
   private async handleBank(message: Message, args: string[], kind: 'deposit' | 'withdraw', prefix: string) {
@@ -130,7 +134,8 @@ export class PrefixCommandHandler {
   }
 
   private async handleLevel(message: Message) {
-    const target = message.mentions.users.first() || message.author;
+    // parsedUsers: solo las menciones escritas (mentions.users también trae al autor del mensaje respondido)
+    const target = message.mentions.parsedUsers.first() ?? message.author;
     const embed = await buildLevelEmbed(message.guild!.id, target);
     await message.reply({ embeds: [embed] });
   }

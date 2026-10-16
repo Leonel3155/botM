@@ -3,12 +3,15 @@ import { Briefcase, Dices, HandCoins, Landmark, ShieldCheck, Sparkles, type Luci
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card";
 import { CommandList, type BotCommandInfo } from "./command-list";
 import { formatCoins } from "./format";
-import { LUCKY_CHANCE, LUCKY_COINS, levelUpReward, messageCoinRange } from "./level-math";
+import { formatWaitMinutes, formatWaitSeconds, type GuildTuning } from "@shared/tuning";
+import { levelUpReward, messageCoinRange } from "./level-math";
 
-// Valores del bot (server/bot/services/economy.ts y commands/economy.ts, gambling.ts).
-// Si cambian allá, hay que cambiarlos aquí.
-const DAILY_BASE_REWARD = 500;
-const DAILY_REWARD_PER_LEVEL = 10;
+// Los montos y esperas son ajustes de cada servidor (shared/tuning.ts); los textos se arman con ellos.
+
+/** "1 hora", "2 horas", "90 minutos"… */
+export const formatMinutes = formatWaitMinutes;
+
+const n = (value: number) => value.toLocaleString("es-MX");
 
 interface CommandGroup {
   id: string;
@@ -18,7 +21,7 @@ interface CommandGroup {
   commands: BotCommandInfo[];
 }
 
-const COMMAND_GROUPS: CommandGroup[] = [
+const commandGroups = (t: GuildTuning): CommandGroup[] => [
   {
     id: "ganar",
     title: "Ganar monedas",
@@ -26,30 +29,32 @@ const COMMAND_GROUPS: CommandGroup[] = [
     commands: [
       {
         name: "daily",
-        description: `Recompensa diaria: ${DAILY_BASE_REWARD} monedas + ${DAILY_REWARD_PER_LEVEL} por cada nivel. Una vez cada 24 horas; si pasan más de 48 horas, la racha empieza de nuevo.`,
+        description: `Recompensa diaria: ${n(t.dailyBase)} monedas + ${n(t.dailyPerLevel)} por cada nivel, más ${t.dailyStreakStepPercent} % por cada día de racha (hasta +${t.dailyStreakStepPercent * t.dailyStreakMaxDays} %). Una vez cada ${formatMinutes(t.dailyCooldownHours * 60)}; si pasa el doble de tiempo, la racha empieza de nuevo.`,
         prefixAliases: ["daily"],
       },
       {
         name: "work",
         args: "[trabajo]",
-        description:
-          "Trabajar una vez por hora: de 50 a 500 monedas según el trabajo (constructor, oficinista, repartidor, programador o artista).",
+        description: `Trabajar una vez cada ${formatMinutes(t.workCooldownMinutes)}: de ${n(Math.floor(50 * t.workPayPercent / 100))} a ${n(Math.floor(500 * t.workPayPercent / 100))} monedas según el trabajo (constructor, oficinista, repartidor, programador o artista).`,
       },
       {
         name: "crime",
-        description:
-          "Arriesga el 20 % de la cartera: mitad de probabilidad de ganar esa cantidad y mitad de perderla. Cada 2 horas.",
+        description: t.crimeEnabled
+          ? `Arriesga el ${t.crimeRiskPercent} % de la cartera: ${t.crimeSuccessPercent} % de probabilidad de ganar esa cantidad; si no, la pierde. Cada ${formatMinutes(t.crimeCooldownMinutes)}.`
+          : "Desactivado en este servidor.",
       },
       {
         name: "slut",
-        description:
-          "Trabajo nocturno arriesgado: 70 % de ganar entre 200 y 1,000 monedas; si sale mal, pierde el 10 % de la cartera (máximo 300). Cada 2 horas.",
+        description: t.slutEnabled
+          ? `Trabajo nocturno arriesgado: ${t.slutSuccessPercent} % de ganar entre 200 y 1,000 monedas; si sale mal, pierde el 10 % de la cartera (máximo 300). Cada ${formatMinutes(t.slutCooldownMinutes)}.`
+          : "Desactivado en este servidor.",
       },
       {
         name: "rob",
         args: "<usuario>",
-        description:
-          "Intenta robar de la cartera de alguien, cada 4 horas. Sale bien 60 % de las veces y se lleva desde 50 hasta el 10 % de lo que trae la otra persona (máximo 1,000); si falla, paga una multa del 5 % de su cartera. Ambos necesitan al menos 100 monedas en la cartera.",
+        description: t.robEnabled
+          ? `Intenta robar de la cartera de alguien, cada ${formatMinutes(t.robCooldownMinutes)}. Sale bien ${t.robSuccessPercent} % de las veces y se lleva desde 50 hasta el 10 % de lo que trae la otra persona (máximo 1,000); si falla, paga una multa del ${t.robFinePercent} % de su cartera. Ambos necesitan al menos ${n(t.robMinWallet)} monedas en la cartera.`
+          : "Desactivado en este servidor: nadie puede robar.",
       },
     ],
   },
@@ -85,7 +90,9 @@ const COMMAND_GROUPS: CommandGroup[] = [
     id: "azar",
     title: "Juegos de azar",
     icon: Dices,
-    note: "Solo se apuesta lo que hay en la cartera; lo del banco está a salvo.",
+    note: t.gamblingEnabled
+      ? `Solo se apuesta lo que hay en la cartera; lo del banco está a salvo. Apuesta mínima: ${n(t.minBet)}${t.maxBet > 0 ? `, máxima: ${n(t.maxBet)}` : ""}.`
+      : "Los juegos de azar están desactivados en este servidor.",
     commands: [
       {
         name: "blackjack",
@@ -112,7 +119,7 @@ const COMMAND_GROUPS: CommandGroup[] = [
         name: "ruleta-rusa",
         args: "[cámaras]",
         description:
-          "Apuesta TODA la cartera (mínimo 100). Con más cámaras es más seguro pero se gana menos: con 6 cámaras sobrevive 5 de cada 6 veces y gana una quinta parte de lo apostado.",
+          `Apuesta TODA la cartera (mínimo ${n(Math.max(100, t.minBet))}). Con más cámaras es más seguro pero se gana menos: con 6 cámaras sobrevive 5 de cada 6 veces y gana una quinta parte de lo apostado.`,
       },
     ],
   },
@@ -131,7 +138,7 @@ const COMMAND_GROUPS: CommandGroup[] = [
 ];
 
 /** Todos los comandos de economía y apuestas, agrupados. */
-export function EconomyCommandsCard({ prefix, economyEnabled }: { prefix: string; economyEnabled: boolean | null }) {
+export function EconomyCommandsCard({ prefix, economyEnabled, tuning }: { prefix: string; economyEnabled: boolean | null; tuning: GuildTuning }) {
   return (
     <Card>
       <CardHeader className="p-4 sm:p-6">
@@ -146,7 +153,7 @@ export function EconomyCommandsCard({ prefix, economyEnabled }: { prefix: string
         </CardDescription>
       </CardHeader>
       <CardContent className="grid grid-cols-1 gap-4 p-4 pt-0 sm:p-6 sm:pt-0 md:grid-cols-2">
-        {COMMAND_GROUPS.map((group) => (
+        {commandGroups(tuning).map((group) => (
           <section
             key={group.id}
             className="space-y-3 rounded-lg border border-border bg-background/40 p-4"
@@ -182,10 +189,11 @@ function EarnItem({ icon: Icon, title, children }: { icon: LucideIcon; title: st
 }
 
 /** De dónde salen las monedas, según el código del bot. */
-export function HowCoinsWorkCard({ economyEnabled }: { economyEnabled: boolean | null }) {
-  const coins10 = messageCoinRange(10);
-  const reward10 = levelUpReward(10);
-  const luckyPercent = (LUCKY_CHANCE * 100).toLocaleString("es-MX");
+export function HowCoinsWorkCard({ economyEnabled, tuning }: { economyEnabled: boolean | null; tuning: GuildTuning }) {
+  const coins10 = messageCoinRange(10, tuning);
+  const reward10 = levelUpReward(10, tuning);
+  const luckyPercent = tuning.luckyChancePercent.toLocaleString("es-MX");
+  const cooldown = formatWaitSeconds(tuning.xpCooldownSeconds);
 
   return (
     <Card className="h-full">
@@ -207,18 +215,18 @@ export function HowCoinsWorkCard({ economyEnabled }: { economyEnabled: boolean |
       <CardContent className="p-4 pt-0 sm:p-6 sm:pt-0">
         <ul className="space-y-4">
           <EarnItem icon={HandCoins} title="Platicando">
-            Cada mensaje que da XP (uno por minuto) también da monedas según el nivel: alguien de nivel 10 gana entre{" "}
+            Cada mensaje que da XP (uno cada {cooldown}) también da monedas según el nivel: alguien de nivel 10 gana entre{" "}
             {coins10.min} y {coins10.max}. Además, 1 boleto (a veces 2).
           </EarnItem>
           <EarnItem icon={Sparkles} title="Golpe de suerte">
-            Cada mensaje premiado tiene un {luckyPercent} % de probabilidad de dar {formatCoins(LUCKY_COINS)} extra.
+            Cada mensaje premiado tiene un {luckyPercent} % de probabilidad de dar {formatCoins(tuning.luckyCoins)} extra.
           </EarnItem>
           <EarnItem icon={Landmark} title="Al subir de nivel">
-            Nivel² × 50 monedas: al llegar al nivel 10 son {formatCoins(reward10.coins)}.
+            Nivel² × {tuning.levelUpCoinsFactor} monedas: al llegar al nivel 10 son {formatCoins(reward10.coins)}.
           </EarnItem>
           <EarnItem icon={Briefcase} title="Con comandos">
-            <code className="font-mono text-primary">/daily</code> una vez al día y{" "}
-            <code className="font-mono text-primary">/work</code> una vez por hora.
+            <code className="font-mono text-primary">/daily</code> una vez cada {formatMinutes(tuning.dailyCooldownHours * 60)} y{" "}
+            <code className="font-mono text-primary">/work</code> una vez cada {formatMinutes(tuning.workCooldownMinutes)}.
           </EarnItem>
         </ul>
       </CardContent>

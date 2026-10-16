@@ -1,7 +1,6 @@
 import type { ReactNode } from "react";
 import { Link } from "wouter";
 import { Lightbulb, MessageSquareText, Terminal } from "lucide-react";
-import { CUSTOM_COMMAND_LIMITS } from "@shared/api";
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card";
 import { Progress } from "@/components/ui/progress";
 import { cn } from "@/lib/utils";
@@ -47,8 +46,8 @@ export function HowToCard({ prefix, exampleName, className }: HowToCardProps) {
             en un canal donde el bot pueda escribir.
           </Step>
           <Step number={3}>
-            El bot responde al momento. Cada persona puede usar un comando cada{" "}
-            {CUSTOM_COMMAND_LIMITS.cooldownSeconds} segundos, para que nadie llene el chat.
+            El bot responde al momento. Cada persona espera un poco entre usos (lo ajustas abajo, en "Espera entre
+            usos") para que nadie llene el chat.
           </Step>
         </ol>
         <div className="space-y-2 border-t border-border pt-4 text-xs text-muted-foreground">

@@ -7,6 +7,7 @@ import {
   type DiscordRoleItem,
   type DiscordRolesResponse,
   type RolePanelButtonItem,
+  type RolePanelDeleteResponse,
   type RolePanelItem,
   type RolePanelSaveRequest,
   type RolePanelsResponse,
@@ -355,7 +356,7 @@ interface PanelCardProps {
   channels: DiscordChannelsResponse | undefined;
   roles: DiscordRolesResponse | undefined;
   onEdit: (panel: RolePanelItem) => void;
-  /** El bot está conectado (si no, borrar deja el mensaje en Discord). */
+  /** El bot está conectado y en el servidor (si no, borrar deja el mensaje en Discord). */
   botOnline: boolean;
 }
 
@@ -365,12 +366,18 @@ function PanelCard({ guildId, panel, channels, roles, onEdit, botOnline }: Panel
   const roleById = new Map((roles ?? []).map((role) => [role.id, role]));
 
   const remove = useMutation({
-    mutationFn: async () => {
-      await apiRequest("DELETE", `/api/role-panels/${guildId}/${panel.id}`);
+    mutationFn: async (): Promise<RolePanelDeleteResponse> => {
+      const res = await apiRequest("DELETE", `/api/role-panels/${guildId}/${panel.id}`);
+      return (await res.json()) as RolePanelDeleteResponse;
     },
-    onSuccess: () => {
+    onSuccess: (data) => {
       void queryClient.invalidateQueries({ queryKey: panelsKey(guildId) });
-      toast({ title: "Panel borrado", description: "También quité el mensaje de Discord." });
+      toast({
+        title: "Panel borrado",
+        description: data.messageDeleted
+          ? "También quité el mensaje de Discord."
+          : "No pude quitar el mensaje de Discord: se quedó con botones que ya no hacen nada, bórralo a mano.",
+      });
       setConfirming(false);
     },
     onError: (err) => toast({ title: "No se pudo borrar", description: errorMessage(err), variant: "destructive" }),
@@ -431,7 +438,7 @@ function PanelCard({ guildId, panel, channels, roles, onEdit, botOnline }: Panel
             <AlertDialogDescription>
               {botOnline
                 ? "Quito el mensaje de Discord. Nadie pierde los roles que ya se puso, pero ya no podrán ponérselos ni quitárselos con este panel."
-                : "El bot está desconectado, así que el mensaje se queda en Discord con botones que ya no harán nada: bórralo a mano. Nadie pierde los roles que ya se puso."}
+                : "El bot no está conectado a este servidor, así que el mensaje se queda en Discord con botones que ya no harán nada: bórralo a mano. Nadie pierde los roles que ya se puso."}
             </AlertDialogDescription>
           </AlertDialogHeader>
           <AlertDialogFooter>
@@ -567,7 +574,7 @@ export default function Autorroles() {
           {panels.map((panel) => (
             <PanelCard
               key={panel.id}
-              botOnline={availability.presence !== "offline"}
+              botOnline={availability.presence === "ready"}
               guildId={guildId}
               panel={panel}
               channels={channelsQuery.data}

@@ -119,16 +119,22 @@ function setUpPool(pool: pg.Pool): void {
       : '🗄️ Base de datos: controlador PostgreSQL estándar (node-postgres)'
   );
 
-  // statement_timeout con SET al abrir cada conexión, no como parámetro de arranque: el pooler de Neon
+  // Ajustes con SET al abrir cada conexión, no como parámetros de arranque: el pooler de Neon
   // (PgBouncer, URLs con "-pooler") rechaza parámetros de arranque desconocidos y no conectaría.
-  // La consulta se encola antes que cualquier otra de esa conexión.
-  if (STATEMENT_TIMEOUT_MS > 0) {
-    pool.on('connect', (client) => {
+  // Las consultas se encolan antes que cualquier otra de esa conexión.
+  pool.on('connect', (client) => {
+    // Zona horaria UTC: las fechas se guardan como "timestamp" sin zona y drizzle las lee como UTC. Un
+    // PostgreSQL instalado con la hora local (p. ej. America/Mexico_City en Windows) guardaría la hora
+    // local y todo saldría corrido varias horas. PGlite y Neon ya usan UTC.
+    client.query(`SET TIME ZONE 'UTC'`).catch((error: Error) => {
+      console.warn('[DB] No se pudo poner la zona horaria UTC en una conexión nueva:', error.message);
+    });
+    if (STATEMENT_TIMEOUT_MS > 0) {
       client.query(`SET statement_timeout = ${STATEMENT_TIMEOUT_MS}`).catch((error: Error) => {
         console.warn('[DB] No se pudo configurar statement_timeout en una conexión nueva:', error.message);
       });
-    });
-  }
+    }
+  });
 
   // Una conexión inactiva que se cae (p. ej. Neon suspendió la base de datos o se reinició PostgreSQL)
   // emite 'error' en el pool. Sin este listener el proceso entero se caería; el pool la descarta y

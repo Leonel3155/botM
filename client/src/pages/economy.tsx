@@ -14,11 +14,16 @@ import { ConfigToggle, useGuildConfig } from "@/components/niveles-economia/guil
 import { RankingSkeleton, TopLimitSelect, type TopLimit } from "@/components/niveles-economia/ranking-parts";
 import { WealthLeaderboard } from "@/components/niveles-economia/wealth-leaderboard";
 import { useSelectedGuild } from "@/lib/guild";
+import { useBotAvailability } from "@/components/ajustes-resumen/bot-status";
+import { useTuning } from "@/components/ajustes-finos/shared";
+import { EconomySettings } from "@/components/ajustes-finos/economy-settings";
 import { cn } from "@/lib/utils";
 
 export default function Economy() {
-  const { guildId } = useSelectedGuild();
+  const { guildId, guild } = useSelectedGuild();
   const [limit, setLimit] = useState<TopLimit>(10);
+  const tuning = useTuning(guildId);
+  const availability = useBotAvailability(guildId, guild?.botInGuild);
 
   // Ranking: GET /api/economy/:guildId/top?limit=N (cartera + banco)
   const topQuery = useQuery<EconomyTopResponse>({
@@ -178,11 +183,13 @@ export default function Economy() {
         </Card>
 
         <div className="lg:col-span-2">
-          <HowCoinsWorkCard economyEnabled={economyEnabled} />
+          <HowCoinsWorkCard economyEnabled={economyEnabled} tuning={tuning} />
         </div>
       </div>
 
-      <EconomyCommandsCard prefix={prefix} economyEnabled={economyEnabled} />
+      <EconomySettings guildId={guildId} blocked={availability.blocked} />
+
+      <EconomyCommandsCard prefix={prefix} economyEnabled={economyEnabled} tuning={tuning} />
     </div>
   );
 }

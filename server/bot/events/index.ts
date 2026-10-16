@@ -1,5 +1,5 @@
 import { DiscordBot } from '../index';
-import { Events, GuildMember, Message, PartialGuildMember, type PartialMessage } from 'discord.js';
+import { Events, Guild, GuildMember, Message, PartialGuildMember, type PartialMessage } from 'discord.js';
 import { storage } from '../../storage';
 import { getGuildSettings, warmGuildSettings } from '../services/guildSettings';
 import { handleMemberAvailable, handleMemberPassedScreening, handleMemberWelcome } from '../services/welcome';
@@ -8,25 +8,16 @@ import { filterMessage } from '../services/autoMod';
 import { handleStarReaction } from '../services/starboard';
 import { sendServerLog } from '../services/serverLog';
 import { truncate } from '../services/channels';
-import { MESSAGE_XP_MAX, MESSAGE_XP_MIN, PRESTIGE_MIN_LEVEL, awardXp, levelUpReward, prestigeMultiplier } from '../services/levels';
+import { awardXp, getLevelRow, levelUpReward, randomMessageXp } from '../services/levels';
+import { getTuningSafe } from '../services/extras';
+import { applyLevelRoles, isNoXp, scaleXp, sendLevelUpNotice } from '../services/levelUp';
+import { TUNING_NUMBER_LIMITS } from '@shared/tuning';
 
-// Tiempo mínimo entre mensajes que dan XP/monedas (evita farmear con spam)
-const XP_COOLDOWN_MS = 60_000;
+// Último mensaje premiado de cada persona: la espera entre mensajes que dan XP/monedas se ajusta en el
+// panel (evita farmear con spam)
 const lastRewardAt = new Map<string, number>();
-
-// Probabilidad de un "golpe de suerte" (monedas extra) por mensaje premiado
-const LUCKY_CHANCE = 0.005;
-const LUCKY_COINS = 100;
-
-function milestoneText(level: number): string {
-  if (level === 10) return '\n🏆 ¡Primer gran logro!';
-  if (level === 25) return '\n⭐ ¡Ya llevas un cuarto del camino al prestigio!';
-  if (level === 50) return '\n🌟 ¡Mitad del camino al prestigio!';
-  if (level === 75) return '\n💎 ¡Nivel 75, qué constancia!';
-  if (level === PRESTIGE_MIN_LEVEL) return '\n🚀 ¡Nivel 100! Ya puedes usar `/prestige`.';
-  if (level > PRESTIGE_MIN_LEVEL) return '\n🌌 ¡Leyenda del servidor! Recuerda que puedes usar `/prestige`.';
-  return '';
-}
+// Al limpiar la memoria se usa la espera más larga que permite el panel
+const MAX_XP_COOLDOWN_MS = TUNING_NUMBER_LIMITS.xpCooldownSeconds.max * 1000;
 
 export function setupEvents(bot: DiscordBot) {
   // Precarga los ajustes de cada servidor para que el filtro de economía de los comandos de barra
@@ -38,6 +29,25 @@ export function setupEvents(bot: DiscordBot) {
   else bot.client.once(Events.ClientReady, warmAll);
   bot.client.on(Events.GuildCreate, (guild) => {
     void warmGuildSettings([guild.id]);
+  });
+
+  // Carga los miembros de cada servidor: sin ellos en caché, discord.js no sabe cómo estaba alguien
+  // antes de un cambio y se pierden el registro de roles y el fin de un aislamiento quitado desde Discord
+  const loadMembers = (guild: Guild) => {
+    guild.members.fetch().catch((error) =>
+      console.warn(`No se pudieron cargar los miembros de ${guild.name}:`, error));
+  };
+  const loadAllMembers = () => {
+    for (const guild of bot.client.guilds.cache.values()) {
+      if (guild.available) loadMembers(guild);
+    }
+  };
+  if (bot.client.isReady()) loadAllMembers();
+  else bot.client.once(Events.ClientReady, loadAllMembers);
+  bot.client.on(Events.GuildCreate, loadMembers);
+  // Servidor que vuelve después de una caída o reconexión (al arrancar ya lo cubre ClientReady)
+  bot.client.on(Events.GuildAvailable, (guild) => {
+    if (bot.client.isReady()) loadMembers(guild);
   });
 
   // XP y monedas por participar
@@ -54,63 +64,83 @@ export function setupEvents(bot: DiscordBot) {
     const userId = message.author.id;
     const guildId = message.guild.id;
 
-    const cooldownKey = `${guildId}:${userId}`;
-    const now = Date.now();
-    if (now - (lastRewardAt.get(cooldownKey) || 0) < XP_COOLDOWN_MS) return;
-    lastRewardAt.set(cooldownKey, now);
-    // Limpieza ocasional para que el mapa no crezca sin límite
-    if (lastRewardAt.size > 10_000) {
-      for (const [key, at] of lastRewardAt) {
-        if (now - at >= XP_COOLDOWN_MS) lastRewardAt.delete(key);
-      }
-    }
-
     try {
+      // Reglas del panel (Niveles y Economía): canales y roles sin XP, largo mínimo, espera, cantidades…
+      const tuning = await getTuningSafe(guildId);
+      if (isNoXp(tuning, message.channel, message.member)) return;
+      if (message.content.trim().length < tuning.xpMinMessageLength) return;
+
+      const cooldownKey = `${guildId}:${userId}`;
+      const now = Date.now();
+      if (now - (lastRewardAt.get(cooldownKey) || 0) < tuning.xpCooldownSeconds * 1000) return;
+      lastRewardAt.set(cooldownKey, now);
+      // Limpieza ocasional para que el mapa no crezca sin límite
+      if (lastRewardAt.size > 10_000) {
+        for (const [key, at] of lastRewardAt) {
+          if (now - at >= MAX_XP_COOLDOWN_MS) lastRewardAt.delete(key);
+        }
+      }
+
       // Crea servidor, usuario y cuenta si faltan
       await ensureAccount(message.guild, message.author);
 
-      // XP (15-25 por mensaje) con el bono de prestigio: +10 % por prestigio, máximo x2
-      const prestige = await getPrestigeLevel(guildId, userId);
-      const baseXp = Math.floor(Math.random() * (MESSAGE_XP_MAX - MESSAGE_XP_MIN + 1)) + MESSAGE_XP_MIN;
-      const xpGain = Math.round(baseXp * prestigeMultiplier(prestige));
-      const { previousLevel, level } = await awardXp(guildId, userId, xpGain);
+      // XP al azar entre el mínimo y el máximo, con el bono de prestigio y el multiplicador del servidor.
+      // Con la XP apagada en el panel no se gana XP, pero las monedas por platicar siguen.
+      let previousLevel: number;
+      let level: number;
+      if (tuning.xpEnabled) {
+        const prestige = await getPrestigeLevel(guildId, userId);
+        ({ previousLevel, level } = await awardXp(guildId, userId, scaleXp(randomMessageXp(tuning), tuning, prestige)));
+      } else {
+        previousLevel = level = (await getLevelRow(guildId, userId))?.level ?? 1;
+      }
       const leveledUp = level > previousLevel;
 
       // Monedas y boletos por participar (escalan con el nivel), más los premios de subir de nivel.
       // Si la economía está apagada desde el panel, solo se gana XP.
       const settings = await getGuildSettings(guildId);
       const economyOn = settings?.economyEnabled !== false;
-      const lucky = economyOn && Math.random() < LUCKY_CHANCE;
-      const reward = leveledUp ? levelUpReward(level) : { coins: 0, tickets: 0 };
+      const lucky = economyOn && tuning.luckyCoins > 0 && Math.random() * 100 < tuning.luckyChancePercent;
+      const reward = leveledUp ? levelUpReward(level, tuning, previousLevel) : { coins: 0, tickets: 0 };
       if (economyOn) {
-        const coinGain = Math.floor(Math.random() * (level * 3)) + level;
+        const coinGain = Math.floor(((Math.floor(Math.random() * (level * 3)) + level) * tuning.messageCoinsPercent) / 100);
         const ticketGain = Math.random() < 0.1 ? 2 : 1;
         await grantActivityRewards(
           guildId,
           userId,
-          coinGain + (lucky ? LUCKY_COINS : 0) + reward.coins,
+          coinGain + (lucky ? tuning.luckyCoins : 0) + reward.coins,
           ticketGain + reward.tickets
         );
       }
 
+      // Roles por nivel: se dan aunque los avisos estén apagados
+      const member = leveledUp && tuning.levelRoleRewards.length > 0
+        ? message.member ?? await message.guild.members.fetch(userId).catch(() => null)
+        : null;
+      const newRoles = member ? await applyLevelRoles(member, level, tuning) : [];
+
       if (!leveledUp && !lucky) return;
       // El panel permite apagar los avisos del bot en el chat
       if (settings?.levelUpMessages === false) return;
-      if (!message.channel.isSendable()) return;
 
-      const luckyText = lucky ? `\n🍀 ¡Golpe de suerte! Encontraste **${formatCoins(LUCKY_COINS)}** extra.` : '';
+      const luckyText = lucky ? `\n🍀 ¡Golpe de suerte! Encontraste **${formatCoins(tuning.luckyCoins)}** extra.` : '';
 
       if (leveledUp) {
-        const ticketsText = `${reward.tickets} ${reward.tickets === 1 ? 'boleto' : 'boletos'}`;
-        const rewardText = economyOn ? `\n💰 +${formatCoins(reward.coins)} • 🎫 +${ticketsText}` : '';
-        await message.channel.send({
-          content: `🎉 ¡<@${userId}> subió al nivel **${level}**!${milestoneText(level)}${rewardText}${luckyText}`,
-          allowedMentions: { users: [userId] },
+        await sendLevelUpNotice({
+          guild: message.guild,
+          userId,
+          displayName: message.member?.displayName ?? message.author.displayName,
+          level,
+          reward: economyOn ? reward : null,
+          newRoles,
+          fallbackChannel: message.inGuild() ? message.channel : null,
+          tuning,
+          extra: luckyText,
         });
-      } else {
+      } else if (message.channel.isSendable()) {
         await message.channel.send({
           content: `<@${userId}>${luckyText}`,
-          allowedMentions: { users: [userId] },
+          allowedMentions: { users: tuning.levelUpPing ? [userId] : [] },
         });
       }
     } catch (error) {
@@ -152,20 +182,16 @@ export function setupEvents(bot: DiscordBot) {
 
   // Si el servidor pide aceptar las reglas, el rol automático se da al aceptarlas
   bot.client.on(Events.GuildMemberUpdate, async (oldMember: GuildMember | PartialGuildMember, newMember: GuildMember) => {
-    if (!oldMember.pending || newMember.pending) return;
     try {
+      // Miembro que no estaba en caché (p. ej. tras reiniciar el bot): no se sabe si antes estaba
+      // pendiente, así que se revisa si le falta el rol automático (con Partials.GuildMember
+      // discord.js ya no emite GuildMemberAvailable en este caso)
+      if (oldMember.partial) {
+        await handleMemberAvailable(newMember);
+        return;
+      }
+      if (!oldMember.pending || newMember.pending) return;
       await handleMemberPassedScreening(newMember);
-    } catch (error) {
-      console.error('Welcome role error:', error);
-    }
-  });
-
-  // Mismo caso, pero cuando el miembro no estaba en caché (p. ej. tras reiniciar el bot):
-  // discord.js no emite GuildMemberUpdate sino GuildMemberAvailable
-  bot.client.on(Events.GuildMemberAvailable, async (member: GuildMember | PartialGuildMember) => {
-    if (member.partial || member.pending) return;
-    try {
-      await handleMemberAvailable(member);
     } catch (error) {
       console.error('Welcome role error:', error);
     }

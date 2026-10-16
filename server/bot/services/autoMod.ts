@@ -10,13 +10,30 @@ export const FILTER_LIMITS = { maxWords: 200, wordMax: 50 };
 
 const LEET: Record<string, string> = { '0': 'o', '1': 'i', '3': 'e', '4': 'a', '5': 's', '7': 't', '@': 'a', '$': 's', '!': 'i' };
 
-/** Minúsculas, sin acentos y sin trucos de números por letras ("h0l4" → "hola"). */
-export function normalizeForFilter(text: string): string {
+const unleet = (chars: string) => chars.replace(/./g, (char) => LEET[char] ?? char);
+
+/** Minúsculas y sin acentos. La ñ se queda: "año" no es "ano". */
+function stripAccents(text: string): string {
   return text
     .toLowerCase()
     .normalize('NFD')
-    .replace(/[̀-ͯ]/g, '')
-    .replace(/[0134557@$!]/g, (char) => LEET[char] ?? char);
+    .replace(/n\u0303/g, 'ñ')
+    .replace(/[̀-ͯ]/g, '');
+}
+
+/** Minúsculas, sin acentos y sin trucos de números por letras ("h0l4" → "hola"). */
+export function normalizeForFilter(text: string): string {
+  return stripAccents(text).replace(/[0134557@$!]/g, unleet);
+}
+
+/**
+ * Igual, pero "@", "$" y "!" solo cuentan como letras dentro de una palabra: así "idiota!" o "@idiota"
+ * siguen siendo "idiota" (con normalizeForFilter quedarían "idiotai" y "aidiota").
+ */
+function normalizeKeepingPunctuation(text: string): string {
+  return stripAccents(text)
+    .replace(/[013457]/g, unleet)
+    .replace(/(?<=[\p{L}\p{N}])[@$!]+(?=[\p{L}\p{N}])/gu, unleet);
 }
 
 function escapeRegex(text: string): string {
@@ -28,7 +45,10 @@ function escapeRegex(text: string): string {
  * final cuenta también lo que empieza así ("tont*" atrapa "tonto" y "tontería").
  */
 export function findFilterMatch(text: string, words: string[]): string | null {
-  const normalized = normalizeForFilter(text);
+  // Se prueban varias formas: "put@" solo sale con la primera e "idiota!" solo con la segunda. La tercera
+  // es para "put@!": la "@" o "$" pegada al final de la palabra cuenta como letra y lo que sigue queda como signo
+  const kept = normalizeKeepingPunctuation(text);
+  const variants = [normalizeForFilter(text), kept, kept.replace(/(?<=[\p{L}\p{N}])[@$]/gu, unleet)];
   for (const raw of words) {
     const word = raw.trim();
     if (!word) continue;
@@ -36,7 +56,7 @@ export function findFilterMatch(text: string, words: string[]): string | null {
     const base = normalizeForFilter(prefix ? word.slice(0, -1) : word).trim();
     if (base.length < 2) continue;
     const pattern = new RegExp(`(^|[^\\p{L}\\p{N}])${escapeRegex(base).replace(/\s+/g, '\\s+')}${prefix ? '' : '(?=$|[^\\p{L}\\p{N}])'}`, 'u');
-    if (pattern.test(normalized)) return word;
+    if (variants.some((variant) => pattern.test(variant))) return word;
   }
   return null;
 }
@@ -132,7 +152,14 @@ export async function applyAutoPunish(guild: Guild, userId: string): Promise<voi
     let duration: number | null = null;
     if (rule.action === 'timeout') {
       duration = Math.min(Math.max(rule.minutes ?? 60, 1), 40_320);
+      // No se acorta un aislamiento que ya dura más (p. ej. un /mute de una semana)
+      if ((member.communicationDisabledUntilTimestamp ?? 0) > Date.now() + duration * 60_000) {
+        console.log(`[CASTIGOS] ${guild.name}: ${member.user.tag} ya está aislado por más tiempo; se queda ese aislamiento.`);
+        return;
+      }
       await member.timeout(duration * 60_000, reason);
+      // Igual que /mute: el aislamiento nuevo reemplaza al anterior en el historial
+      await storage.deactivateModerationActions(guild.id, member.id, 'mute').catch(() => 0);
     } else if (rule.action === 'kick') {
       await member.kick(reason);
     } else {

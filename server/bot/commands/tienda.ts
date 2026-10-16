@@ -12,6 +12,7 @@ import { truncate } from '../services/channels';
 import { resolveGuild, respond } from '../utils/interactions';
 
 const SHOP_COLOR = 0xFFD700;
+const EMBED_BUDGET = 6000 - 100; // máximo de Discord por embed, menos lo que ocupa el pie
 
 function stockText(stock: number | null): string | null {
   if (stock === null) return null;
@@ -40,15 +41,22 @@ export const tiendaCommands = [
       }
 
       embed.setDescription('Compra con `/comprar` y revisa lo tuyo con `/inventario`. Se paga con lo que traes en la cartera.');
+      let shown = 0;
       for (const item of items.slice(0, 25)) {
         const lines = [`**${formatCoins(item.price)}**`];
         if (item.description) lines.push(item.description);
         if (item.roleId) lines.push(`Te da el rol <@&${item.roleId}>`);
         const stock = stockText(item.stock);
         if (stock) lines.push(`_${stock}_`);
-        embed.addFields({ name: truncate(itemLabel(item), 256), value: truncate(lines.join('\n'), 1024) });
+        const name = truncate(itemLabel(item), 256);
+        const value = truncate(lines.join('\n'), 1024);
+        // Discord rechaza embeds de más de 6000 caracteres en total; se deja espacio para el pie
+        if (embed.length + name.length + value.length > EMBED_BUDGET) break;
+        embed.addFields({ name, value });
+        shown++;
       }
-      if (items.length > 25) embed.setFooter({ text: `Y ${items.length - 25} artículo(s) más: búscalos al escribir /comprar.` });
+      const hidden = items.length - shown;
+      if (hidden > 0) embed.setFooter({ text: `Y ${hidden} artículo(s) más: búscalos al escribir /comprar.` });
 
       await respond(interaction, { embeds: [embed] });
     },

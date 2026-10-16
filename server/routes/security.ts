@@ -1,5 +1,6 @@
 import type { Express, Request, Response } from "express";
 import { z } from "zod";
+import { PermissionFlagsBits } from "discord.js";
 import { antiRaidActions, antiRaidConfigSchema, type AntiRaidSettings } from "@shared/schema";
 import {
   ANTI_RAID_LIMITS,
@@ -33,8 +34,10 @@ import {
   decodeCursor,
   encodeCursor,
   checkPanelUserCanUseChannel,
+  fetchSessionMember,
   findPostableChannel,
   isActiveRaidEvent,
+  isDevRequest,
   isRowId,
   plainDiscordText,
   queryString,
@@ -121,6 +124,17 @@ export function setupSecurityRoutes(app: Express, { broadcast }: { broadcast: Br
 
       const guild = getBotGuild(res);
       const warnings: string[] = [];
+
+      // "Bloquear entradas" expulsa a quien entre durante el raid: solo lo elige quien puede expulsar
+      if (body.action === "lockdown" && !isDevRequest(req)) {
+        const current = await storage.getAntiRaidConfig(guildId);
+        if (current.action !== "lockdown") {
+          const member = await fetchSessionMember(req, guild);
+          if (!member?.permissions.has(PermissionFlagsBits.KickMembers)) {
+            return res.status(403).json({ error: "Para que el anti-raid expulse a quien entre necesitas el permiso Expulsar miembros en Discord." });
+          }
+        }
+      }
 
       if (body.logChannelId) {
         if (!findPostableChannel(guild, body.logChannelId)) {

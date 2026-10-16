@@ -11,6 +11,7 @@ import type { Guild as GuildRow } from '@shared/schema';
 import { storage } from '../../storage';
 import { resolveSendableChannel, truncate } from './channels';
 import { isGuildLocked } from '../middleware/antiRaid';
+import { getTuningSafe } from './extras';
 
 export const DEFAULT_WELCOME_MESSAGE =
   '¡Hola {usuario}! 👋 Bienvenid@ a **{servidor}**, ya somos **{miembros}** miembros.\n' +
@@ -20,14 +21,38 @@ export const WELCOME_PLACEHOLDERS_HELP = '`{usuario}` (mención), `{nombre}`, `{
 
 const WELCOME_COLOR = 0x57F287;
 
-// Si entran demasiadas personas de golpe (posible raid) no saturamos el canal de bienvenidas
-const WELCOME_BURST_LIMIT = 8;
+// Si entran demasiadas personas de golpe (posible raid) no saturamos el canal de bienvenidas.
+// Cuántas por minuto se ajusta en el panel (Comunidad); por defecto 8.
 const WELCOME_BURST_WINDOW_MS = 60_000;
 const recentWelcomes = new Map<string, number[]>();
 
-// Si el bot se reinicia mientras alguien está aceptando las reglas, le damos el rol pendiente
-// solo si entró hace poco (así no se le da a miembros antiguos a los que se les quitó a propósito)
+// Quién entró con las reglas sin aceptar y le toca el rol automático al aceptarlas (servidor:usuario → cuándo).
+// Si el miembro ya no está en caché, discord.js no dice si acaba de aceptar las reglas o si solo cambió
+// otra cosa (un mod le quitó el rol, el apodo, un aislamiento...), así que por esa vía solo se da el rol
+// a quien está aquí. Nunca entra quien llegó durante un raid. Vive en memoria: tras reiniciar el bot,
+// por esa vía ya no se da el rol a quien entró antes y el staff se lo da a mano.
 const PENDING_ROLE_WINDOW_MS = 3 * 24 * 60 * 60 * 1000;
+const pendingWelcomeRoles = new Map<string, number>();
+
+function pendingRoleKey(member: GuildMember): string {
+  return `${member.guild.id}:${member.id}`;
+}
+
+async function rememberPendingRole(member: GuildMember): Promise<void> {
+  const now = Date.now();
+  for (const [key, since] of pendingWelcomeRoles) {
+    if (now - since > PENDING_ROLE_WINDOW_MS) pendingWelcomeRoles.delete(key);
+  }
+  pendingWelcomeRoles.set(pendingRoleKey(member), now);
+}
+
+// Dice si el miembro tenía el rol pendiente (y lo olvida)
+async function takePendingRole(member: GuildMember): Promise<boolean> {
+  const key = pendingRoleKey(member);
+  const since = pendingWelcomeRoles.get(key);
+  pendingWelcomeRoles.delete(key);
+  return since !== undefined && Date.now() - since <= PENDING_ROLE_WINDOW_MS;
+}
 
 // Permisos que nunca damos automáticamente al entrar
 export const DANGEROUS_PERMISSIONS = [
@@ -132,10 +157,10 @@ export async function assignWelcomeRole(member: GuildMember, roleId: string | nu
   }
 }
 
-function isWelcomeBurst(guildId: string): boolean {
+function isWelcomeBurst(guildId: string, limit: number): boolean {
   const now = Date.now();
   const recent = (recentWelcomes.get(guildId) || []).filter(time => now - time < WELCOME_BURST_WINDOW_MS);
-  const burst = recent.length >= WELCOME_BURST_LIMIT;
+  const burst = recent.length >= limit;
   if (!burst) recent.push(now);
   recentWelcomes.set(guildId, recent);
   return burst;
@@ -147,7 +172,8 @@ async function sendWelcome(member: GuildMember, settings: GuildRow): Promise<voi
     console.warn(`[BIENVENIDA] No se pudo dar la bienvenida en ${member.guild.name}: ${target.reason}`);
     return;
   }
-  if (isWelcomeBurst(member.guild.id)) {
+  const { welcomeBurstLimit } = await getTuningSafe(member.guild.id);
+  if (isWelcomeBurst(member.guild.id, welcomeBurstLimit)) {
     console.warn(`[BIENVENIDA] Demasiadas entradas seguidas en ${member.guild.name}; se omite la bienvenida de ${member.user.tag}.`);
     return;
   }
@@ -166,6 +192,8 @@ function skipDuringRaid(member: GuildMember, what: string): boolean {
 // Se llama desde GuildMemberAdd: mensaje de bienvenida + rol automático
 export async function handleMemberWelcome(member: GuildMember): Promise<void> {
   if (member.user.bot) return;
+  // Si vuelve a entrar, se olvida el rol pendiente de la vez anterior (p. ej. si ahora llega durante un raid)
+  await takePendingRole(member);
 
   const settings = await storage.getGuild(member.guild.id);
   if (!settings) return;
@@ -179,31 +207,32 @@ export async function handleMemberWelcome(member: GuildMember): Promise<void> {
     }
   }
 
-  // Si el servidor usa verificación de reglas, el rol se da al completarla (GuildMemberUpdate o GuildMemberAvailable)
-  if (settings.welcomeRoleId && !member.pending) {
-    await assignWelcomeRole(member, settings.welcomeRoleId);
+  // Si el servidor usa verificación de reglas, el rol se da al completarla (GuildMemberUpdate, esté o no en caché)
+  if (settings.welcomeRoleId) {
+    if (member.pending) await rememberPendingRole(member);
+    else await assignWelcomeRole(member, settings.welcomeRoleId);
   }
 }
 
 // Se llama desde GuildMemberUpdate cuando el miembro acepta las reglas del servidor
 export async function handleMemberPassedScreening(member: GuildMember): Promise<void> {
   if (member.user.bot) return;
+  await takePendingRole(member);
   const settings = await storage.getGuild(member.guild.id);
   if (settings?.welcomeRoleId && !skipDuringRaid(member, 'el rol automático')) {
     await assignWelcomeRole(member, settings.welcomeRoleId);
   }
 }
 
-// Se llama desde GuildMemberAvailable. Si el miembro no estaba en caché (p. ej. después de reiniciar
-// el bot en un servidor grande), discord.js emite este evento en lugar de GuildMemberUpdate cuando
-// alguien termina de aceptar las reglas, así que aquí recuperamos el rol automático pendiente.
+// Se llama cuando cambia un miembro que no estaba en caché (GuildMemberUpdate sin datos de antes): si
+// acaba de aceptar las reglas, aquí recuperamos el rol automático pendiente. Eso también pasa por
+// cualquier otro cambio (roles, apodo...), así que solo se da a quien sabemos que entró con las reglas
+// pendientes; si no, se le devolvería el rol a quien un mod se lo quitó.
 export async function handleMemberAvailable(member: GuildMember): Promise<void> {
   if (member.user.bot || member.pending) return;
   // Solo aplica a servidores con verificación de reglas; en los demás el rol se da al entrar
   if (!member.guild.features.includes(GuildFeature.MemberVerificationGateEnabled)) return;
-
-  const joinedAt = member.joinedTimestamp;
-  if (!joinedAt || Date.now() - joinedAt > PENDING_ROLE_WINDOW_MS) return;
+  if (!(await takePendingRole(member))) return;
 
   const settings = await storage.getGuild(member.guild.id);
   if (settings?.welcomeRoleId && !member.roles.cache.has(settings.welcomeRoleId) && !skipDuringRaid(member, 'el rol automático')) {

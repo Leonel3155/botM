@@ -4,9 +4,9 @@ import { z } from "zod";
 import type { RolePanel } from "@shared/schema";
 import {
   ROLE_PANEL_LIMITS,
+  type RolePanelDeleteResponse,
   type RolePanelItem,
   type RolePanelsResponse,
-  type SuccessResponse,
 } from "@shared/api";
 import {
   createRolePanel,
@@ -179,10 +179,10 @@ export function setupRolePanelRoutes(app: Express, { broadcast }: { broadcast: B
   app.delete("/api/role-panels/:guildId/:panelId", ...guildAdmin, requireValidPanelId, async (req: Request, res: Response) => {
     const { guildId, panelId } = req.params;
     try {
-      const deleted = await deleteRolePanel(getCachedBotGuild(guildId), guildId, panelId);
-      if (!deleted) return res.status(404).json({ error: "Ese panel no existe en este servidor." });
+      const result = await deleteRolePanel(getCachedBotGuild(guildId), guildId, panelId);
+      if (!result) return res.status(404).json({ error: "Ese panel no existe en este servidor." });
       changed(guildId);
-      const body: SuccessResponse = { success: true };
+      const body: RolePanelDeleteResponse = { success: true, messageDeleted: result.messageDeleted };
       res.json(body);
     } catch (error) {
       sendPanelError(res, null, error, "No se pudo borrar el panel de autorroles.");

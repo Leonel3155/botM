@@ -33,6 +33,7 @@ import { setupCustomCommandRoutes } from "./routes/customCommands";
 import { setupRolePanelRoutes } from "./routes/rolePanels";
 import { setupShopRoutes } from "./routes/shop";
 import { setupExtrasRoutes } from "./routes/extras";
+import { setupTuningRoutes } from "./routes/tuning";
 import { asJson, checkPanelUserCanUseChannel, isRowId } from "./routes/helpers";
 import {
   type AppSession,
@@ -755,6 +756,7 @@ export async function registerRoutes(app: Express, { sessionParser }: RegisterRo
   setupRolePanelRoutes(app, { broadcast });
   setupShopRoutes(app, { broadcast });
   setupExtrasRoutes(app, { broadcast });
+  setupTuningRoutes(app, { broadcast });
 
   // Cualquier otra ruta /api: 404 en JSON (en vez de caer en el index.html del panel)
   app.use('/api', (_req: Request, res: Response) => {

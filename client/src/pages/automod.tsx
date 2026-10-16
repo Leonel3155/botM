@@ -15,6 +15,7 @@ import { PageHeader } from "@/components/page-header";
 import { SaveBar } from "@/components/comunidad/save-bar";
 import {
   ChannelSelect,
+  ClampedNumberInput,
   FeatureCard,
   Field,
   RoleSelect,
@@ -253,17 +254,13 @@ export default function Automod() {
           {draft.autoPunishRules.map((rule, index) => (
             <div key={index} className="flex flex-wrap items-end gap-3 rounded-md border p-3" data-testid={`rule-${index}`}>
               <Field label="Advertencias" htmlFor={`rule-warns-${index}`}>
-                <Input
+                <ClampedNumberInput
                   id={`rule-warns-${index}`}
-                  type="number"
                   className="w-24"
                   min={1}
                   max={EXTRAS_LIMITS.autoPunishMaxWarns}
                   value={rule.warns}
-                  onChange={(event) => {
-                    const warns = Math.round(Number(event.target.value));
-                    if (Number.isFinite(warns)) updateRule(index, { warns: Math.min(EXTRAS_LIMITS.autoPunishMaxWarns, Math.max(1, warns)) });
-                  }}
+                  onCommit={(warns) => updateRule(index, { warns })}
                 />
               </Field>
               <Field label="Castigo" htmlFor={`rule-action-${index}`}>
@@ -276,17 +273,13 @@ export default function Automod() {
               </Field>
               {rule.action === "timeout" && (
                 <Field label="Minutos" htmlFor={`rule-minutes-${index}`}>
-                  <Input
+                  <ClampedNumberInput
                     id={`rule-minutes-${index}`}
-                    type="number"
                     className="w-28"
                     min={1}
                     max={EXTRAS_LIMITS.timeoutMaxMinutes}
                     value={rule.minutes ?? 60}
-                    onChange={(event) => {
-                      const minutes = Math.round(Number(event.target.value));
-                      if (Number.isFinite(minutes)) updateRule(index, { minutes: Math.min(EXTRAS_LIMITS.timeoutMaxMinutes, Math.max(1, minutes)) });
-                    }}
+                    onCommit={(minutes) => updateRule(index, { minutes })}
                   />
                 </Field>
               )}

@@ -13,6 +13,7 @@ import { RichSelectItem } from "@/components/comunidad/rich-select-item";
 import { useBotAvailability } from "@/components/ajustes-resumen/bot-status";
 import { FeatureCard, useChannelsQuery, useExtrasDraft, useExtrasQuery } from "@/components/extras/shared";
 import { useSelectedGuild } from "@/lib/guild";
+import { TuningInlineCard } from "@/components/ajustes-finos/inline-card";
 
 const FIELDS = ["nsfwEnabled", "nsfwChannelIds"] as const;
 const ADD = "__agregar__";
@@ -107,11 +108,14 @@ export default function ContenidoAdultos() {
             <div className="flex flex-wrap gap-2" data-testid="list-nsfw-channels">
               {draft.nsfwChannelIds.map((id) => {
                 const channel = byId.get(id);
-                const unmarked = channelsQuery.data && (!channel || !channel.nsfw);
+                // Un canal que no sale en la lista puede estar borrado o ser uno que tú no ves en Discord
+                const unmarked = channelsQuery.data && channel && !channel.nsfw;
+                const hidden = channelsQuery.data && !channel;
                 return (
                   <Badge key={id} variant={unmarked ? "destructive" : "secondary"} className="gap-1 pr-1">
-                    #{channel?.name ?? "canal borrado"}
+                    #{channel?.name ?? "canal oculto o borrado"}
                     {unmarked && " (ya no es +18: no publico ahí)"}
+                    {hidden && " (no existe o no tienes acceso)"}
                     <button
                       type="button"
                       className="rounded-sm p-0.5 hover:bg-background/60"
@@ -127,6 +131,13 @@ export default function ContenidoAdultos() {
           )}
         </div>
       </FeatureCard>
+
+      <TuningInlineCard
+        guildId={guildId}
+        title="Espera entre imágenes"
+        description="Cuánto tiene que esperar cada persona para pedir otra imagen con /nsfw, para que nadie inunde el canal."
+        fields={[{ field: "nsfwCooldownSeconds", suffix: "segundos" }]}
+      />
 
       <Card>
         <CardHeader>

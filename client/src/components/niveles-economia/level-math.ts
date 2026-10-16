@@ -1,25 +1,8 @@
 /**
- * Reglas de niveles del bot, copiadas TAL CUAL de server/bot/services/levels.ts y
- * server/bot/events/index.ts (el panel no puede importar código del bot).
- * Si cambias algo allá, cámbialo aquí también; lo ideal sería moverlas a shared/.
+ * Curva de niveles del bot (igual que server/bot/services/levels.ts). Los demás valores (XP por mensaje,
+ * prestigio, premios…) son ajustes de cada servidor: vienen de GET /api/guilds/:id/tuning (shared/tuning.ts).
  */
-
-/** XP mínima y máxima que da un mensaje premiado (antes del bono de prestigio). */
-export const MESSAGE_XP_MIN = 15;
-export const MESSAGE_XP_MAX = 25;
-/** Solo un mensaje por persona da XP cada 60 s (XP_COOLDOWN_MS en el bot). */
-export const XP_COOLDOWN_SECONDS = 60;
-
-/** Desde este nivel se puede usar /prestige. */
-export const PRESTIGE_MIN_LEVEL = 100;
-/** +10 % de XP por cada prestigio… */
-export const PRESTIGE_XP_BONUS = 0.1;
-/** …contando como mucho 10 prestigios (x2 en total). */
-export const PRESTIGE_MAX_BONUS_LEVELS = 10;
-
-/** Probabilidad de un "golpe de suerte" por mensaje premiado y cuántas monedas da. */
-export const LUCKY_CHANCE = 0.005;
-export const LUCKY_COINS = 100;
+import { levelUpCoins, prestigeMultiplierFor, type GuildTuning } from "@shared/tuning";
 
 /** XP para subir del nivel anterior a `level`: floor(100 × 1.1^(nivel − 2)). */
 export function xpForLevelStep(level: number): number {
@@ -80,18 +63,18 @@ export function levelProgress(totalXp: number): LevelProgress | null {
   };
 }
 
-/** Multiplicador de XP según los prestigios (x1.0 … x2.0). */
-export function prestigeMultiplier(prestigeLevel: number): number {
-  const levels = Math.min(Math.max(Math.floor(prestigeLevel || 0), 0), PRESTIGE_MAX_BONUS_LEVELS);
-  return 1 + levels * PRESTIGE_XP_BONUS;
+/** Multiplicador de XP según los prestigios. */
+export function prestigeMultiplier(prestigeLevel: number, tuning: GuildTuning): number {
+  return prestigeMultiplierFor(tuning, prestigeLevel);
 }
 
 /** Premio por subir a `level` (solo si la economía está activada). */
-export function levelUpReward(level: number): { coins: number; tickets: number } {
-  return { coins: level * level * 50, tickets: Math.floor(level / 5) + 1 };
+export function levelUpReward(level: number, tuning: GuildTuning): { coins: number; tickets: number } {
+  return { coins: levelUpCoins(tuning, level), tickets: Math.floor(level / 5) + 1 };
 }
 
-/** Monedas por mensaje premiado según el nivel: entre nivel y 4 × nivel − 1. */
-export function messageCoinRange(level: number): { min: number; max: number } {
-  return { min: level, max: level * 4 - 1 };
+/** Monedas por mensaje premiado según el nivel: entre nivel y 4 × nivel − 1, escalado por el ajuste del servidor. */
+export function messageCoinRange(level: number, tuning: GuildTuning): { min: number; max: number } {
+  const scale = tuning.messageCoinsPercent / 100;
+  return { min: Math.floor(level * scale), max: Math.floor((level * 4 - 1) * scale) };
 }

@@ -130,7 +130,7 @@ function ItemDialog({ open, onOpenChange, guildId, item, roles }: ItemDialogProp
   const selectedRole = draft.roleId ? roles?.find((role) => role.id === draft.roleId) : undefined;
 
   const save = useMutation({
-    mutationFn: async (body: ShopItemSaveRequest): Promise<ShopItemItem> => {
+    mutationFn: async (body: Partial<ShopItemSaveRequest>): Promise<ShopItemItem> => {
       const res = item
         ? await apiRequest("PATCH", `/api/shop/${guildId}/${item.id}`, body)
         : await apiRequest("POST", `/api/shop/${guildId}`, body);
@@ -151,7 +151,11 @@ function ItemDialog({ open, onOpenChange, guildId, item, roles }: ItemDialogProp
       return;
     }
     setError(null);
-    save.mutate(request);
+    // Al editar, las unidades solo se mandan si se cambiaron: /comprar las va bajando mientras tanto
+    // y la lista de aquí puede traer un número viejo (que regresaría unidades ya vendidas)
+    const body: Partial<ShopItemSaveRequest> = { ...request };
+    if (item && request.stock === item.stock) delete body.stock;
+    save.mutate(body);
   };
 
   return (

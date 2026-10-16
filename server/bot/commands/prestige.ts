@@ -11,11 +11,6 @@ import {
 import { DiscordBot } from '../index';
 import { economyTask, ensureAccount, formatCoins, getPrestigeLevel } from '../services/economy';
 import {
-  MESSAGE_XP_MAX,
-  MESSAGE_XP_MIN,
-  PRESTIGE_MAX_BONUS_LEVELS,
-  PRESTIGE_MIN_LEVEL,
-  PRESTIGE_XP_BONUS,
   applyPrestige,
   formatMultiplier,
   getLevelRow,
@@ -25,7 +20,11 @@ import {
   xpForLevelStep,
   xpToReachLevel,
 } from '../services/levels';
+import { isEconomyEnabledQuick } from '../services/guildSettings';
 import { resolveGuild, respond } from '../utils/interactions';
+import { getExtrasQuick, getTuning, getTuningSafe, tuningOf } from '../services/extras';
+import { truncate } from '../services/channels';
+import { formatWaitSeconds } from '@shared/tuning';
 
 const CONFIRM_TIMEOUT_MS = 30_000;
 
@@ -33,21 +32,22 @@ export const prestigeCommands = [
   {
     data: new SlashCommandBuilder()
       .setName('prestige')
-      .setDescription(`🌟 Reinicia tu nivel a cambio de más XP para siempre (desde el nivel ${PRESTIGE_MIN_LEVEL})`),
+      .setDescription('🌟 Reinicia tu nivel a cambio de más XP para siempre'),
 
     async execute(interaction: ChatInputCommandInteraction, bot: DiscordBot) {
       const userId = interaction.user.id;
       const guildId = interaction.guildId!;
 
       await interaction.deferReply();
-      const row = await getLevelRow(guildId, userId);
+      const [row, tuning] = await Promise.all([getLevelRow(guildId, userId), getTuningSafe(guildId)]);
       const currentLevel = row?.level ?? 1;
+      const minLevel = tuning.prestigeMinLevel;
 
-      if (currentLevel < PRESTIGE_MIN_LEVEL) {
-        const missing = Math.max(xpToReachLevel(PRESTIGE_MIN_LEVEL) - rowTotalXp(row), 0);
+      if (currentLevel < minLevel) {
+        const missing = Math.max(xpToReachLevel(minLevel) - rowTotalXp(row), 0);
         await respond(
           interaction,
-          `🔒 Necesitas llegar al nivel **${PRESTIGE_MIN_LEVEL}** para prestigiar. Vas en el nivel **${currentLevel}** (te faltan ${missing.toLocaleString('es-MX')} XP). ¡Sigue platicando!`,
+          `🔒 Necesitas llegar al nivel **${minLevel}** para prestigiar. Vas en el nivel **${currentLevel}** (te faltan ${missing.toLocaleString('es-MX')} XP). ¡Sigue platicando!`,
           { ephemeral: true }
         );
         return;
@@ -55,8 +55,8 @@ export const prestigeCommands = [
 
       await ensureAccount(await resolveGuild(interaction), interaction.user);
       const prestige = await getPrestigeLevel(guildId, userId);
-      const before = prestigeMultiplier(prestige);
-      const after = prestigeMultiplier(prestige + 1);
+      const before = prestigeMultiplier(prestige, tuning);
+      const after = prestigeMultiplier(prestige + 1, tuning);
       const bonusText = after > before
         ? `${formatMultiplier(before)} → **${formatMultiplier(after)}**`
         : `**${formatMultiplier(after)}** (ya tienes el máximo)`;
@@ -114,11 +114,11 @@ export const prestigeCommands = [
         return;
       }
 
-      // El UPDATE es condicional (nivel >= 100): dos clics o dos /prestige a la vez solo prestigian una vez
-      const result = await economyTask(guildId, userId, () => applyPrestige(guildId, userId));
+      // El UPDATE es condicional (nivel >= el mínimo): dos clics o dos /prestige a la vez solo prestigian una vez
+      const result = await economyTask(guildId, userId, () => applyPrestige(guildId, userId, minLevel));
       if (!result.ok) {
         await interaction.editReply({
-          content: `ℹ️ No se hizo ningún cambio: ya no estás en el nivel ${PRESTIGE_MIN_LEVEL} o más (¿ya prestigiaste?).`,
+          content: `ℹ️ No se hizo ningún cambio: ya no estás en el nivel ${minLevel} o más (¿ya prestigiaste?).`,
           embeds: [],
           components: [],
         });
@@ -131,7 +131,7 @@ export const prestigeCommands = [
         .setDescription(`¡Felicidades, ${interaction.user}! Dejaste atrás el nivel **${currentLevel}** y ahora tienes el prestigio **${result.prestigeLevel}**.`)
         .addFields(
           { name: '⭐ Nivel', value: '1', inline: true },
-          { name: '🚀 XP por mensaje', value: formatMultiplier(prestigeMultiplier(result.prestigeLevel)), inline: true }
+          { name: '🚀 XP por mensaje', value: formatMultiplier(prestigeMultiplier(result.prestigeLevel, tuning)), inline: true }
         )
         .setTimestamp();
       await interaction.editReply({ content: '', embeds: [doneEmbed], components: [] });
@@ -144,22 +144,46 @@ export const prestigeCommands = [
       .setDescription('🎁 Mira qué ganas al subir de nivel'),
 
     async execute(interaction: ChatInputCommandInteraction, bot: DiscordBot) {
+      const guildId = interaction.guildId!;
+      // Con la economía apagada desde el panel no se dan monedas ni boletos (el prestigio y los roles sí siguen)
+      const [economyOn, tuning] = await Promise.all([isEconomyEnabledQuick(guildId), getTuning(guildId)]);
+      const prestigeField = { name: `🌟 Nivel ${tuning.prestigeMinLevel}`, value: 'Desbloqueas `/prestige`: vuelves al nivel 1 y ganas más XP por mensaje.', inline: false };
+      const rolesField = tuning.levelRoleRewards.length > 0
+        ? {
+          name: '🏅 Roles por nivel',
+          value: truncate(tuning.levelRoleRewards.map((rule) => `**Nivel ${rule.level}:** <@&${rule.roleId}>`).join('\n'), 1024),
+          inline: false,
+        }
+        : null;
+      const embed = new EmbedBuilder()
+        .setColor(0x5865F2)
+        .setTitle('🎁 Premios por subir de nivel');
+
+      if (!economyOn) {
+        embed
+          .setDescription('💤 La economía está desactivada en este servidor: al subir de nivel no ganas monedas ni boletos.')
+          .addFields(...(rolesField ? [rolesField] : []), prestigeField);
+        await interaction.reply({ embeds: [embed], allowedMentions: { parse: [] } });
+        return;
+      }
+
       const examples = [5, 10, 25, 50, 100].map(level => {
-        const reward = levelUpReward(level);
+        const reward = levelUpReward(level, tuning);
         return `**Nivel ${level}:** ${formatCoins(reward.coins)} + ${reward.tickets} ${reward.tickets === 1 ? 'boleto' : 'boletos'}`;
       });
 
-      const embed = new EmbedBuilder()
-        .setColor(0x5865F2)
-        .setTitle('🎁 Premios por subir de nivel')
-        .setDescription('Cada vez que subes de nivel recibes automáticamente:\n• **nivel² × 50** monedas\n• **nivel ÷ 5 + 1** boletos (redondeado hacia abajo)')
+      embed
+        .setDescription(`Cada vez que subes de nivel recibes automáticamente:\n• **nivel² × ${tuning.levelUpCoinsFactor.toLocaleString('es-MX')}** monedas\n• **nivel ÷ 5 + 1** boletos (redondeado hacia abajo)`)
         .addFields(
           { name: 'Ejemplos', value: examples.join('\n'), inline: false },
-          { name: `🌟 Nivel ${PRESTIGE_MIN_LEVEL}`, value: 'Desbloqueas `/prestige`: vuelves al nivel 1 y ganas más XP por mensaje.', inline: false }
-        )
-        .setFooter({ text: 'Además, cada mensaje te da unas cuantas monedas (más cuanto más alto sea tu nivel).' });
+          ...(rolesField ? [rolesField] : []),
+          prestigeField
+        );
+      if (tuning.messageCoinsPercent > 0) {
+        embed.setFooter({ text: 'Además, cada mensaje te da unas cuantas monedas (más cuanto más alto sea tu nivel).' });
+      }
 
-      await interaction.reply({ embeds: [embed] });
+      await interaction.reply({ embeds: [embed], allowedMentions: { parse: [] } });
     }
   },
 
@@ -169,16 +193,36 @@ export const prestigeCommands = [
       .setDescription('⚡ Cómo funciona el sistema de XP y niveles'),
 
     async execute(interaction: ChatInputCommandInteraction, bot: DiscordBot) {
+      const extras = await getExtrasQuick(interaction.guildId!);
+      const tuning = tuningOf(extras);
+      const goal = tuning.prestigeMinLevel;
       const steps = [2, 10, 50, 100].map(level => `• Nivel ${level}: ${xpForLevelStep(level).toLocaleString('es-MX')} XP`).join('\n');
-      const maxBonus = Math.round(PRESTIGE_XP_BONUS * PRESTIGE_MAX_BONUS_LEVELS * 100);
+      const maxBonus = tuning.prestigeBonusPercent * tuning.prestigeMaxBonus;
+
+      const howTo = tuning.xpEnabled
+        ? [
+          `• Cada mensaje da entre ${tuning.xpMin} y ${tuning.xpMax} XP`,
+          `• Solo cuenta un mensaje cada ${formatWaitSeconds(tuning.xpCooldownSeconds)} (para que el spam no sirva)`,
+          ...(tuning.xpMinMessageLength > 0 ? [`• Los mensajes de menos de ${tuning.xpMinMessageLength} caracteres no cuentan`] : []),
+          ...(tuning.xpMultiplierPercent !== 100 ? [`• Ahora mismo el servidor da ${formatMultiplier(tuning.xpMultiplierPercent / 100)} de XP`] : []),
+          ...(extras.voiceXpEnabled && tuning.voiceXpPerMinute > 0 ? [`• En canales de voz: ${tuning.voiceXpPerMinute} XP por minuto si hay al menos ${tuning.voiceXpMinMembers} ${tuning.voiceXpMinMembers === 1 ? 'persona' : 'personas'}`] : []),
+          ...(tuning.noXpChannelIds.length > 0 || tuning.noXpRoleIds.length > 0 ? ['• Algunos canales o roles no ganan XP'] : []),
+        ].join('\n')
+        : '💤 La XP está apagada en este servidor por ahora: nadie sube de nivel.';
 
       const embed = new EmbedBuilder()
         .setColor(0x5865F2)
         .setTitle('⚡ Sistema de XP')
         .addFields(
-          { name: '📈 Cómo se gana', value: `• Cada mensaje da entre ${MESSAGE_XP_MIN} y ${MESSAGE_XP_MAX} XP\n• Solo cuenta un mensaje por minuto (para que el spam no sirva)`, inline: false },
-          { name: '📊 Cada nivel pide 10 % más XP', value: `XP para subir a…\n${steps}\n• Para llegar al nivel ${PRESTIGE_MIN_LEVEL} hacen falta ${xpToReachLevel(PRESTIGE_MIN_LEVEL).toLocaleString('es-MX')} XP en total`, inline: false },
-          { name: '🌟 Prestigio', value: `Desde el nivel ${PRESTIGE_MIN_LEVEL} puedes usar \`/prestige\`: vuelves al nivel 1 y cada prestigio te da +${Math.round(PRESTIGE_XP_BONUS * 100)} % de XP por mensaje (máximo +${maxBonus} %).`, inline: false }
+          { name: '📈 Cómo se gana', value: howTo, inline: false },
+          { name: '📊 Cada nivel pide 10 % más XP', value: `XP para subir a…\n${steps}\n• Para llegar al nivel ${goal} hacen falta ${xpToReachLevel(goal).toLocaleString('es-MX')} XP en total`, inline: false },
+          {
+            name: '🌟 Prestigio',
+            value: tuning.prestigeBonusPercent > 0 && tuning.prestigeMaxBonus > 0
+              ? `Desde el nivel ${goal} puedes usar \`/prestige\`: vuelves al nivel 1 y cada prestigio te da +${tuning.prestigeBonusPercent} % de XP por mensaje (máximo +${maxBonus} %).`
+              : `Desde el nivel ${goal} puedes usar \`/prestige\` para volver al nivel 1 y sumar un prestigio.`,
+            inline: false,
+          }
         )
         .setFooter({ text: 'Usa /level para ver tu progreso.' });
 
