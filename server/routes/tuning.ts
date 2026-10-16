@@ -12,7 +12,7 @@ import {
   type TuningNumberKey,
 } from "@shared/tuning";
 import type { GuildTuningResponse } from "@shared/api";
-import { forgetExtras, getExtras, tuningOf, updateExtras } from "../bot/services/extras";
+import { getExtras, tuningOf, updateExtras } from "../bot/services/extras";
 import { lockForGuild } from "../bot/services/locks";
 import { checkGrantableRole } from "../bot/services/roles";
 import {
@@ -98,16 +98,18 @@ async function checkInput(req: Request, guild: DiscordGuild, input: TuningPatch,
   }
 
   // Roles por nivel: se revisa todo lo que hace un rol más fácil de conseguir (uno nuevo o uno que baja de
-  // nivel). Quitar uno, o subirlo de nivel, siempre se permite aunque ya no se pueda dar.
+  // nivel). Con roles acumulables, quitar uno o subirlo de nivel siempre se permite aunque ya no se pueda dar.
   const savedLevel = new Map(saved.levelRoleRewards.map((rule) => [rule.roleId, rule.level]));
   const added = (input.levelRoleRewards ?? []).filter((rule) => {
     const before = savedLevel.get(rule.roleId);
     return before === undefined || rule.level < before;
   });
-  // Pasar a "solo el más alto" hace que el bot quite los roles de niveles anteriores: quien lo cambia
-  // también debe poder quitar esos roles
-  const stopsStacking = input.levelRoleStack === false && saved.levelRoleStack;
-  if (added.length === 0 && !stopsStacking) return null;
+  // Con "solo el más alto" el bot da y quita los roles por nivel unos por otros: cualquier cambio en la lista
+  // (o en ese ajuste) cambia a quién da o quita cada uno, así que quien lo cambia debe poder manejarlos todos
+  const rolesChanged = input.levelRoleRewards !== undefined && JSON.stringify(input.levelRoleRewards) !== JSON.stringify(saved.levelRoleRewards);
+  const stackChanged = input.levelRoleStack !== undefined && input.levelRoleStack !== saved.levelRoleStack;
+  const checkAll = (merged.levelRoleStack === false || saved.levelRoleStack === false) && (rolesChanged || stackChanged);
+  if (added.length === 0 && !checkAll) return null;
 
   const devSession = isDevRequest(req);
   const member = devSession ? null : await fetchSessionMember(req, guild);
@@ -118,12 +120,13 @@ async function checkInput(req: Request, guild: DiscordGuild, input: TuningPatch,
     const memberProblem = checkMemberCanAssignRole(guild, member, check.role, devSession);
     if (memberProblem) return `Rol del nivel ${rule.level}: ${memberText(memberProblem)}`;
   }
-  if (stopsStacking) {
+  if (checkAll) {
     for (const rule of merged.levelRoleRewards) {
-      const role = guild.roles.cache.get(rule.roleId);
-      if (!role) continue;
-      const memberProblem = checkMemberCanAssignRole(guild, member, role, devSession);
-      if (memberProblem) return `Con "solo el rol más alto" el bot quitaría el rol del nivel ${rule.level}. ${memberText(memberProblem)}`;
+      // Un rol que el bot no puede manejar no lo da ni lo quita
+      const check = checkGrantableRole(guild, rule.roleId);
+      if (!check.ok) continue;
+      const memberProblem = checkMemberCanAssignRole(guild, member, check.role, devSession);
+      if (memberProblem) return `Con "solo el rol más alto" el bot da y quita los roles por nivel unos por otros. Rol del nivel ${rule.level}: ${memberText(memberProblem)}`;
     }
   }
   return null;
@@ -150,8 +153,9 @@ export function setupTuningRoutes(app: Express, { broadcast }: { broadcast: Broa
       if (!input) return;
       // Se guarda el bloque completo: dos guardados a la vez (dos páginas o dos admins) van en fila y cada
       // uno parte de lo último guardado, así ninguno borra lo que cambió el otro
+      // (updateExtras deja la caché al día y getExtras no la tapa con una lectura más vieja, así que aquí
+      // dentro se lee lo último guardado)
       const problem = await lockForGuild(`tuning:${guild.id}`).runExclusive(async () => {
-        forgetExtras(guild.id);
         const saved = tuningOf(await getExtras(guild.id));
         const merged = resolveTuning({ ...saved, ...input });
         const problem = await checkInput(req, guild, input, { ...saved, ...input } as GuildTuning, saved);

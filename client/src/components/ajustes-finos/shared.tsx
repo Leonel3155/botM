@@ -79,6 +79,8 @@ export function useTuningDraft<K extends keyof GuildTuning>(guildId: string, fie
     },
     onSuccess: (response) => {
       queryClient.setQueryData(tuningKey(guildId), response);
+      // Las analíticas cuentan a quién ya le toca prestigiar con el nivel del servidor
+      void queryClient.invalidateQueries({ queryKey: ["/api/guilds", guildId, "analytics"] });
       setDraft(pick(response.tuning));
       setBase(pick(response.tuning));
       setError(null);
@@ -119,10 +121,13 @@ export function NumberSetting({ field, value, onChange, suffix, hint, label, dis
   useEffect(() => setText(String(value)), [value]);
   const id = `tuning-${field}`;
   const commit = () => {
-    // En los decimales la coma es el punto decimal; en los enteros es separador de miles ("10,000")
-    const cleaned = limits.step && limits.step < 1 ? text.trim().replace(",", ".") : text.replace(/[\s,]/g, "");
+    // En los enteros, "10,000" o "1,000,000" son miles (como los escribe el panel); si no, la coma es el
+    // punto decimal ("1,5")
+    const trimmed = text.trim();
+    const thousands = !(limits.step && limits.step < 1) && /^-?\d{1,3}(,\d{3})+$/.test(trimmed);
+    const cleaned = thousands ? trimmed.replace(/,/g, "") : trimmed.replace(",", ".");
     const parsed = Number(cleaned);
-    if (!Number.isFinite(parsed) || text.trim() === "") {
+    if (!Number.isFinite(parsed) || cleaned === "") {
       setText(String(value));
       return;
     }
