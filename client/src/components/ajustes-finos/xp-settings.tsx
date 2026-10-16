@@ -119,7 +119,9 @@ export function XpSettings({ guildId, blocked }: { guildId: string; blocked: str
               onChange={(noXpChannelIds) => update({ noXpChannelIds })}
               max={TUNING_LIMITS.listMax}
               options={channelOptions(channelsQuery.data)}
-              missingLabel="canal borrado"
+              missingLabel="canal oculto o borrado"
+              missingVariant="outline"
+              loaded={channelsQuery.data !== undefined}
               placeholder="Agregar un canal…"
             />
             <IdChips
@@ -131,6 +133,7 @@ export function XpSettings({ guildId, blocked }: { guildId: string; blocked: str
               max={TUNING_LIMITS.listMax}
               options={roleOptions(roles)}
               missingLabel="rol borrado"
+              loaded={roles !== undefined}
               placeholder="Agregar un rol…"
             />
           </div>

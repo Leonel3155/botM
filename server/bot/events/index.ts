@@ -9,7 +9,7 @@ import { handleStarReaction } from '../services/starboard';
 import { sendServerLog } from '../services/serverLog';
 import { truncate } from '../services/channels';
 import { awardXp, getLevelRow, levelUpReward, randomMessageXp } from '../services/levels';
-import { getTuning } from '../services/extras';
+import { getTuningSafe } from '../services/extras';
 import { applyLevelRoles, isNoXp, scaleXp, sendLevelUpNotice } from '../services/levelUp';
 import { TUNING_NUMBER_LIMITS } from '@shared/tuning';
 
@@ -66,7 +66,7 @@ export function setupEvents(bot: DiscordBot) {
 
     try {
       // Reglas del panel (Niveles y Economía): canales y roles sin XP, largo mínimo, espera, cantidades…
-      const tuning = await getTuning(guildId);
+      const tuning = await getTuningSafe(guildId);
       if (isNoXp(tuning, message.channel, message.member)) return;
       if (message.content.trim().length < tuning.xpMinMessageLength) return;
 
@@ -101,7 +101,7 @@ export function setupEvents(bot: DiscordBot) {
       const settings = await getGuildSettings(guildId);
       const economyOn = settings?.economyEnabled !== false;
       const lucky = economyOn && tuning.luckyCoins > 0 && Math.random() * 100 < tuning.luckyChancePercent;
-      const reward = leveledUp ? levelUpReward(level, tuning) : { coins: 0, tickets: 0 };
+      const reward = leveledUp ? levelUpReward(level, tuning, previousLevel) : { coins: 0, tickets: 0 };
       if (economyOn) {
         const coinGain = Math.floor(((Math.floor(Math.random() * (level * 3)) + level) * tuning.messageCoinsPercent) / 100);
         const ticketGain = Math.random() < 0.1 ? 2 : 1;

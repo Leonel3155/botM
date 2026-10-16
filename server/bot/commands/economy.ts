@@ -28,7 +28,7 @@ import {
   withdraw,
 } from '../services/economy';
 import { ADMIN_ONLY, discordRelativeTime, isAdmin, resolveGuild, respond } from '../utils/interactions';
-import { getTuning } from '../services/extras';
+import { getTuningFor, getTuningSafe } from '../services/extras';
 import { DEFAULT_TUNING, formatWaitMinutes, type GuildTuning } from '@shared/tuning';
 
 // ===== Mensajes compartidos con los comandos de prefijo (&bal, &daily, &dep, &with) =====
@@ -181,7 +181,7 @@ export const economyCommands = [
       const userId = interaction.user.id;
 
       await ensureAccount(await resolveGuild(interaction), interaction.user);
-      const tuning = await getTuning(guildId);
+      const tuning = await getTuningSafe(guildId);
       const result = await economyTask(guildId, userId, () => claimDaily(guildId, userId, tuning));
       await respond(interaction, { embeds: [dailyEmbed(result, tuning)] }, { ephemeral: !result.ok });
     }
@@ -213,7 +213,7 @@ export const economyCommands = [
 
       await interaction.deferReply();
       await ensureAccount(await resolveGuild(interaction), interaction.user);
-      const tuning = await getTuning(guildId);
+      const tuning = await getTuningSafe(guildId);
 
       // La paga de cada trabajo se escala con el porcentaje del panel (100 % = normal)
       const result = await economyTask(guildId, userId, () => runTimedAction(guildId, userId, 'work', () => ({
@@ -311,14 +311,16 @@ export const economyCommands = [
       const guildId = interaction.guildId!;
       const userId = interaction.user.id;
 
-      const tuning = await getTuning(guildId);
-      if (!tuning.crimeEnabled) {
+      // Antes de deferReply se lee con tiempo máximo (la misma lectura que el filtro de economía);
+      // los valores del juego se leen ya sin prisa
+      if (!(await getTuningFor(interaction)).crimeEnabled) {
         await respond(interaction, `🔫 \`/crime\` ${DISABLED_IN_PANEL}`, { ephemeral: true });
         return;
       }
 
       await interaction.deferReply();
       await ensureAccount(await resolveGuild(interaction), interaction.user);
+      const tuning = await getTuningSafe(guildId);
 
       const result = await economyTask(guildId, userId, () => runTimedAction<{ risk: number }>(guildId, userId, 'crime', (wallet) => {
         const risk = Math.floor((wallet * tuning.crimeRiskPercent) / 100);
@@ -442,8 +444,7 @@ export const economyCommands = [
         return;
       }
 
-      const tuning = await getTuning(guildId);
-      if (!tuning.robEnabled) {
+      if (!(await getTuningFor(interaction)).robEnabled) {
         await respond(interaction, `🥷 \`/rob\` ${DISABLED_IN_PANEL}`, { ephemeral: true });
         return;
       }
@@ -452,6 +453,7 @@ export const economyCommands = [
       const guild = await resolveGuild(interaction);
       await ensureAccount(guild, robber);
       await ensureAccount(guild, target);
+      const tuning = await getTuningSafe(guildId);
 
       const result = await economyTask(guildId, robber.id, () => attemptRob(guildId, robber.id, target.id, tuning));
       if (!result.ok) {
@@ -493,14 +495,14 @@ export const economyCommands = [
       const guildId = interaction.guildId!;
       const userId = interaction.user.id;
 
-      const tuning = await getTuning(guildId);
-      if (!tuning.slutEnabled) {
+      if (!(await getTuningFor(interaction)).slutEnabled) {
         await respond(interaction, `💋 \`/slut\` ${DISABLED_IN_PANEL}`, { ephemeral: true });
         return;
       }
 
       await interaction.deferReply();
       await ensureAccount(await resolveGuild(interaction), interaction.user);
+      const tuning = await getTuningSafe(guildId);
 
       // Sale bien (70 % por defecto): gana entre 200 y 1,000; si no, pierde el 10 % de la cartera (máx. 300)
       const result = await economyTask(guildId, userId, () => runTimedAction(guildId, userId, 'slut', (wallet) => {

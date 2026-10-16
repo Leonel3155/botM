@@ -11,7 +11,7 @@ import {
   withdraw,
 } from '../services/economy';
 import { ECONOMY_DISABLED_MESSAGE, getGuildSettings } from '../services/guildSettings';
-import { getTuning } from '../services/extras';
+import { getTuningSafe } from '../services/extras';
 import { balanceEmbed, bankEmbed, bankErrorMessage, dailyEmbed } from './economy';
 import { buildLevelEmbed, buildLevelLeaderboard } from './level';
 
@@ -106,7 +106,7 @@ export class PrefixCommandHandler {
     const userId = message.author.id;
     await ensureAccount(message.guild!, message.author);
     // Ajustes finos del servidor (premio, racha y espera del diario)
-    const tuning = await getTuning(guildId);
+    const tuning = await getTuningSafe(guildId);
     const result = await economyTask(guildId, userId, () => claimDaily(guildId, userId, tuning));
     await message.reply({ embeds: [dailyEmbed(result, tuning)] });
   }

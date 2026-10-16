@@ -732,6 +732,8 @@ export interface AnalyticsResponse {
   timezone: string;
   /** Personas por rango de nivel (rangos vacíos incluidos, para graficar). */
   levelDistribution: LevelBucket[];
+  /** Personas que ya llegaron al nivel para prestigiar de este servidor. */
+  prestigeReady: number;
   /** Top 10 por monedas (cartera + banco). */
   topEarners: WealthEntry[];
   /** Últimos 30 días, del más viejo al más nuevo (días sin acciones con total 0). */

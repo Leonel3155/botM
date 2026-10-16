@@ -1,7 +1,7 @@
 import { and, eq, gte, gt, or, sql } from 'drizzle-orm';
 import { db } from '../../db';
 import { userEconomy, userLevels } from '@shared/schema';
-import { DEFAULT_TUNING, levelUpCoins, prestigeMultiplierFor, type GuildTuning } from '@shared/tuning';
+import { DEFAULT_TUNING, MAX_TOTAL_XP, levelUpCoins, prestigeMultiplierFor, type GuildTuning } from '@shared/tuning';
 
 // ===== Curva de niveles =====
 // Pasar del nivel N-1 al N cuesta floor(100 × 1.1^(N-2)) XP (la misma fórmula que usa storage.updateUserXP)
@@ -9,11 +9,16 @@ import { DEFAULT_TUNING, levelUpCoins, prestigeMultiplierFor, type GuildTuning }
 // Los valores (XP por mensaje, prestigio, premio por nivel…) se ajustan por servidor en el panel:
 // ver shared/tuning.ts. Sin ajustes guardados se usan los de DEFAULT_TUNING.
 
-const MAX_TOTAL_XP = 2_000_000_000; // la columna es integer
-
-// Premio por subir de nivel
-export function levelUpReward(level: number, tuning: GuildTuning = DEFAULT_TUNING): { coins: number; tickets: number } {
-  return { coins: levelUpCoins(tuning, level), tickets: Math.floor(level / 5) + 1 };
+// Premio por subir a `level`. Si de una sola vez se pasó de `fromLevel` a `level` (mucha XP de golpe),
+// suma el premio de cada nivel intermedio.
+export function levelUpReward(level: number, tuning: GuildTuning = DEFAULT_TUNING, fromLevel = level - 1): { coins: number; tickets: number } {
+  let coins = 0;
+  let tickets = 0;
+  for (let reached = Math.max(fromLevel + 1, 2); reached <= level; reached++) {
+    coins += levelUpCoins(tuning, reached);
+    tickets += Math.floor(reached / 5) + 1;
+  }
+  return { coins, tickets };
 }
 
 /** XP al azar de un mensaje premiado, antes de multiplicadores. */
@@ -51,10 +56,7 @@ export function prestigeMultiplier(prestigeLevel: number, tuning: GuildTuning = 
   return prestigeMultiplierFor(tuning, prestigeLevel);
 }
 
-export function formatMultiplier(multiplier: number): string {
-  // Hasta dos decimales (el bono por prestigio puede ser p. ej. 5 %)
-  return `x${Number(multiplier.toFixed(2)).toLocaleString('es-MX', { minimumFractionDigits: 1, maximumFractionDigits: 2 })}`;
-}
+export { formatMultiplier } from '@shared/tuning';
 
 export interface LevelProgress {
   level: number;

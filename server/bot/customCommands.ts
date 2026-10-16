@@ -3,7 +3,7 @@ import { RESERVED_CUSTOM_COMMAND_NAMES } from '@shared/api';
 import { TUNING_NUMBER_LIMITS } from '@shared/tuning';
 import { storage, type EnabledCustomCommand } from '../storage';
 import type { DiscordBot } from './index';
-import { getTuning } from './services/extras';
+import { getTuningSafe } from './services/extras';
 
 // Comandos personalizados del panel: el bot responde a "<prefijo><nombre>" con el texto guardado.
 // Nunca tapan a los comandos de prefijo del bot (esos nombres están reservados) y solo pueden
@@ -141,7 +141,7 @@ async function handleMessage(message: Message): Promise<void> {
   const canWrite = message.channel.isThread() ? PermissionFlagsBits.SendMessagesInThreads : PermissionFlagsBits.SendMessages;
   if (!permissions?.has([PermissionFlagsBits.ViewChannel, canWrite])) return;
 
-  const { customCommandCooldownSeconds } = await getTuning(message.guildId);
+  const { customCommandCooldownSeconds } = await getTuningSafe(message.guildId);
   if (onCooldown(message.guildId, message.author.id, customCommandCooldownSeconds * 1000)) return;
 
   await message.channel.send({

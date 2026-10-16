@@ -25,7 +25,7 @@ import {
   settleBet,
 } from '../services/economy';
 import { resolveGuild, respond } from '../utils/interactions';
-import { getTuning } from '../services/extras';
+import { getTuningFor } from '../services/extras';
 import type { GuildTuning } from '@shared/tuning';
 
 // ===== Blackjack =====
@@ -175,7 +175,7 @@ export const gamblingCommands = [
         return;
       }
 
-      const tuning = await getTuning(interaction.guildId!);
+      const tuning = await getTuningFor(interaction);
       const limitProblem = request.all ? null : betLimitProblem(request.amount, tuning);
       if (limitProblem) {
         await respond(interaction, limitProblem, { ephemeral: true });
@@ -359,7 +359,7 @@ export const gamblingCommands = [
         await respond(interaction, '❌ La apuesta debe ser un número entero mayor que 0.', { ephemeral: true });
         return;
       }
-      const limitProblem = betLimitProblem(amount, await getTuning(interaction.guildId!));
+      const limitProblem = betLimitProblem(amount, await getTuningFor(interaction));
       if (limitProblem) {
         await respond(interaction, limitProblem, { ephemeral: true });
         return;
@@ -423,7 +423,7 @@ export const gamblingCommands = [
         await respond(interaction, '❌ La apuesta debe ser un número entero mayor que 0.', { ephemeral: true });
         return;
       }
-      const limitProblem = betLimitProblem(amount, await getTuning(interaction.guildId!));
+      const limitProblem = betLimitProblem(amount, await getTuningFor(interaction));
       if (limitProblem) {
         await respond(interaction, limitProblem, { ephemeral: true });
         return;
@@ -488,7 +488,7 @@ export const gamblingCommands = [
         await respond(interaction, '❌ La apuesta debe ser un número entero mayor que 0.', { ephemeral: true });
         return;
       }
-      const limitProblem = betLimitProblem(amount, await getTuning(interaction.guildId!));
+      const limitProblem = betLimitProblem(amount, await getTuningFor(interaction));
       if (limitProblem) {
         await respond(interaction, limitProblem, { ephemeral: true });
         return;
@@ -535,7 +535,7 @@ export const gamblingCommands = [
     async execute(interaction: ChatInputCommandInteraction, bot: DiscordBot) {
       const chambers = interaction.options.getInteger('camaras') || 6;
       // Apuesta toda la cartera: no tiene máximo, pero sí respeta la apuesta mínima del servidor
-      const minBet = Math.max(100, (await getTuning(interaction.guildId!)).minBet);
+      const minBet = Math.max(100, (await getTuningFor(interaction)).minBet);
 
       const { guildId, userId } = await startBet(interaction);
       // Juego justo: sobrevives con probabilidad (c-1)/c y ganas 1/(c-1) de lo apostado

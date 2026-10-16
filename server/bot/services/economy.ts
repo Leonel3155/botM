@@ -5,7 +5,7 @@ import { storage } from '../../storage';
 import { pendingBets, userEconomy, userLevels, users } from '@shared/schema';
 import { globalQueue, economyQueueFor } from './queues';
 import { lockForUser } from './locks';
-import { getTuning } from './extras';
+import { getTuningSafe } from './extras';
 import { DEFAULT_TUNING, streakBonusFraction, type GuildTuning } from '@shared/tuning';
 
 // ===== Reglas generales =====
@@ -87,7 +87,7 @@ export async function ensureAccount(guild: Pick<Guild, 'id' | 'name' | 'ownerId'
   await storage.ensureGuild(guild.id, guild.name, guild.ownerId);
   await storage.upsertUser({ id: user.id, username: user.username, avatar: user.avatar ?? null });
   // Fuera de la transacción: con la base integrada, otra consulta dentro de ella esperaría a que termine
-  const startingBalance = String((await getTuning(guild.id)).startingBalance);
+  const startingBalance = String((await getTuningSafe(guild.id)).startingBalance);
 
   // La tabla no tiene índice único (usuario, servidor): un candado consultivo evita crear dos filas
   await db.transaction(async (tx) => {
@@ -118,7 +118,7 @@ export async function ensureAccounts(guild: Pick<Guild, 'id' | 'name' | 'ownerId
   if (pending.length === 0) return;
 
   await storage.ensureGuild(guild.id, guild.name, guild.ownerId);
-  const startingBalance = String((await getTuning(guild.id)).startingBalance);
+  const startingBalance = String((await getTuningSafe(guild.id)).startingBalance);
 
   for (let i = 0; i < pending.length; i += 500) {
     const chunk = pending.slice(i, i + 500);

@@ -124,6 +124,23 @@ type KeysOfType<T, V> = { [K in keyof T]: T[K] extends V ? K : never }[keyof T];
 export type TuningNumberKey = KeysOfType<GuildTuning, number>;
 export type TuningBooleanKey = KeysOfType<GuildTuning, boolean>;
 
+/** La XP total de una persona no pasa de aquí (la columna de la base es integer). */
+export const MAX_TOTAL_XP = 2_000_000_000;
+
+/**
+ * Nivel más alto que se puede alcanzar con ese tope (153): pasar del nivel N-1 al N cuesta
+ * floor(100 × 1.1^(N-2)) XP, la curva de server/bot/services/levels.ts.
+ */
+export const MAX_REACHABLE_LEVEL = (() => {
+  let level = 1;
+  let total = 0;
+  while (total + Math.floor(100 * Math.pow(1.1, level - 1)) <= MAX_TOTAL_XP) {
+    total += Math.floor(100 * Math.pow(1.1, level - 1));
+    level++;
+  }
+  return level;
+})();
+
 /** Límites de cada número. `step` < 1 permite decimales. */
 export const TUNING_NUMBER_LIMITS: Record<TuningNumberKey, { min: number; max: number; step?: number }> = {
   xpMin: { min: 0, max: 1000 },
@@ -133,7 +150,7 @@ export const TUNING_NUMBER_LIMITS: Record<TuningNumberKey, { min: number; max: n
   xpMultiplierPercent: { min: 0, max: 1000 },
   voiceXpPerMinute: { min: 0, max: 100 },
   voiceXpMinMembers: { min: 1, max: 10 },
-  prestigeMinLevel: { min: 10, max: 1000 },
+  prestigeMinLevel: { min: 10, max: MAX_REACHABLE_LEVEL },
   prestigeBonusPercent: { min: 0, max: 100 },
   prestigeMaxBonus: { min: 0, max: 100 },
 
@@ -171,7 +188,7 @@ export const TUNING_LIMITS = {
   listMax: 25,          // canales o roles sin XP
   levelRolesMax: 25,    // roles por nivel
   levelUpMessageMax: 1000,
-  maxLevel: 1000,
+  maxLevel: MAX_REACHABLE_LEVEL,
 } as const;
 
 export const LEVEL_UP_PLACEHOLDERS = ['{usuario}', '{nombre}', '{nivel}', '{premio}'] as const;
@@ -251,6 +268,11 @@ export function levelUpCoins(tuning: Pick<GuildTuning, 'levelUpCoinsFactor'>, le
 export function prestigeMultiplierFor(tuning: Pick<GuildTuning, 'prestigeBonusPercent' | 'prestigeMaxBonus'>, prestigeLevel: number): number {
   const counted = Math.min(Math.max(Math.floor(prestigeLevel || 0), 0), tuning.prestigeMaxBonus);
   return 1 + (counted * tuning.prestigeBonusPercent) / 100;
+}
+
+/** "x1.15", "x2.0"… con hasta dos decimales (el bono por prestigio puede ser p. ej. 5 %). */
+export function formatMultiplier(multiplier: number): string {
+  return `x${Number(multiplier.toFixed(2)).toLocaleString('es-MX', { minimumFractionDigits: 1, maximumFractionDigits: 2 })}`;
 }
 
 /** Bono de /daily por racha, como fracción (0.25 = +25 %). */

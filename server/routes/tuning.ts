@@ -12,7 +12,8 @@ import {
   type TuningNumberKey,
 } from "@shared/tuning";
 import type { GuildTuningResponse } from "@shared/api";
-import { getExtras, tuningOf, updateExtras } from "../bot/services/extras";
+import { forgetExtras, getExtras, tuningOf, updateExtras } from "../bot/services/extras";
+import { lockForGuild } from "../bot/services/locks";
 import { checkGrantableRole } from "../bot/services/roles";
 import {
   requireAuth,
@@ -96,17 +97,33 @@ async function checkInput(req: Request, guild: DiscordGuild, input: TuningPatch,
     if (!guild.roles.cache.has(roleId)) return "Uno de los roles sin XP ya no existe.";
   }
 
-  // Roles por nivel: solo se revisan los nuevos (quitar uno que ya no se puede dar siempre se permite)
-  const savedRoles = new Set(saved.levelRoleRewards.map((rule) => rule.roleId));
-  const added = (input.levelRoleRewards ?? []).filter((rule) => !savedRoles.has(rule.roleId));
-  if (added.length > 0) {
-    const devSession = isDevRequest(req);
-    const member = devSession ? null : await fetchSessionMember(req, guild);
-    for (const rule of added) {
-      const check = checkGrantableRole(guild, rule.roleId);
-      if (!check.ok) return `Rol del nivel ${rule.level}: ${plainDiscordText(guild, check.reason)}`;
-      const memberProblem = checkMemberCanAssignRole(guild, member, check.role, devSession);
-      if (memberProblem) return `Rol del nivel ${rule.level}: ${memberProblem.replace("Para elegir el rol automático también", "Para elegir ese rol")}`;
+  // Roles por nivel: se revisa todo lo que hace un rol más fácil de conseguir (uno nuevo o uno que baja de
+  // nivel). Quitar uno, o subirlo de nivel, siempre se permite aunque ya no se pueda dar.
+  const savedLevel = new Map(saved.levelRoleRewards.map((rule) => [rule.roleId, rule.level]));
+  const added = (input.levelRoleRewards ?? []).filter((rule) => {
+    const before = savedLevel.get(rule.roleId);
+    return before === undefined || rule.level < before;
+  });
+  // Pasar a "solo el más alto" hace que el bot quite los roles de niveles anteriores: quien lo cambia
+  // también debe poder quitar esos roles
+  const stopsStacking = input.levelRoleStack === false && saved.levelRoleStack;
+  if (added.length === 0 && !stopsStacking) return null;
+
+  const devSession = isDevRequest(req);
+  const member = devSession ? null : await fetchSessionMember(req, guild);
+  const memberText = (problem: string) => problem.replace("Para elegir el rol automático también", "Para elegir ese rol");
+  for (const rule of added) {
+    const check = checkGrantableRole(guild, rule.roleId);
+    if (!check.ok) return `Rol del nivel ${rule.level}: ${plainDiscordText(guild, check.reason)}`;
+    const memberProblem = checkMemberCanAssignRole(guild, member, check.role, devSession);
+    if (memberProblem) return `Rol del nivel ${rule.level}: ${memberText(memberProblem)}`;
+  }
+  if (stopsStacking) {
+    for (const rule of merged.levelRoleRewards) {
+      const role = guild.roles.cache.get(rule.roleId);
+      if (!role) continue;
+      const memberProblem = checkMemberCanAssignRole(guild, member, role, devSession);
+      if (memberProblem) return `Con "solo el rol más alto" el bot quitaría el rol del nivel ${rule.level}. ${memberText(memberProblem)}`;
     }
   }
   return null;
@@ -131,13 +148,20 @@ export function setupTuningRoutes(app: Express, { broadcast }: { broadcast: Broa
     try {
       const input = parseBody(tuningSchema, req, res) as TuningPatch | null;
       if (!input) return;
-      const saved = tuningOf(await getExtras(guild.id));
-      const merged = resolveTuning({ ...saved, ...input });
-      const problem = await checkInput(req, guild, input, { ...saved, ...input } as GuildTuning, saved);
+      // Se guarda el bloque completo: dos guardados a la vez (dos páginas o dos admins) van en fila y cada
+      // uno parte de lo último guardado, así ninguno borra lo que cambió el otro
+      const problem = await lockForGuild(`tuning:${guild.id}`).runExclusive(async () => {
+        forgetExtras(guild.id);
+        const saved = tuningOf(await getExtras(guild.id));
+        const merged = resolveTuning({ ...saved, ...input });
+        const problem = await checkInput(req, guild, input, { ...saved, ...input } as GuildTuning, saved);
+        if (problem) return problem;
+        await ensureGuildRow(guild);
+        await updateExtras(guild.id, { tuning: tuningDiff(merged) });
+        return null;
+      });
       if (problem) return res.status(400).json({ error: problem });
 
-      await ensureGuildRow(guild);
-      await updateExtras(guild.id, { tuning: tuningDiff(merged) });
       broadcast(guild.id, { type: "tuningUpdated" });
       res.json(await buildResponse(guild.id));
     } catch (error) {

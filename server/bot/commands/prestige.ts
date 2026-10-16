@@ -22,7 +22,7 @@ import {
 } from '../services/levels';
 import { isEconomyEnabledQuick } from '../services/guildSettings';
 import { resolveGuild, respond } from '../utils/interactions';
-import { getExtrasQuick, getTuning, tuningOf } from '../services/extras';
+import { getExtrasQuick, getTuning, getTuningSafe, tuningOf } from '../services/extras';
 import { truncate } from '../services/channels';
 import { formatWaitSeconds } from '@shared/tuning';
 
@@ -39,7 +39,7 @@ export const prestigeCommands = [
       const guildId = interaction.guildId!;
 
       await interaction.deferReply();
-      const [row, tuning] = await Promise.all([getLevelRow(guildId, userId), getTuning(guildId)]);
+      const [row, tuning] = await Promise.all([getLevelRow(guildId, userId), getTuningSafe(guildId)]);
       const currentLevel = row?.level ?? 1;
       const minLevel = tuning.prestigeMinLevel;
 

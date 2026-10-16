@@ -29,7 +29,7 @@ import actualizar from './actualizar';
 import stress from './stress';
 import oauthTest from './oauth-test';
 import { ECONOMY_DISABLED_MESSAGE, isEconomyEnabledQuick } from '../services/guildSettings';
-import { getTuning } from '../services/extras';
+import { getTuningFor } from '../services/extras';
 
 export interface BotCommand {
   data: { name: string; toJSON(): RESTPostAPIChatInputApplicationCommandsJSONBody };
@@ -53,8 +53,9 @@ const GAMBLING_DISABLED_MESSAGE = '🎲 Los juegos de azar están apagados en es
 
 // Si la economía (o los juegos de azar) están apagados desde el panel, estos comandos solo avisan.
 // La comprobación corre antes del deferReply de cada comando, así que tiene un tiempo máximo
-// (isEconomyEnabledQuick, getTuning) para no agotar los 3 segundos que da Discord para responder.
-// Las dos lecturas van en paralelo para no sumar esperas.
+// (isEconomyEnabledQuick, getTuningFor) para no agotar los 3 segundos que da Discord para responder.
+// Las dos lecturas van en paralelo para no sumar esperas, y el comando reusa la de los ajustes
+// (getTuningFor) en vez de esperar otra vez.
 function requireEconomy(commands: BotCommand[], { gambling = false } = {}): BotCommand[] {
   return commands.map(command => ({
     ...command,
@@ -62,13 +63,13 @@ function requireEconomy(commands: BotCommand[], { gambling = false } = {}): BotC
       if (interaction.guildId) {
         const [enabled, tuning] = await Promise.all([
           isEconomyEnabledQuick(interaction.guildId),
-          gambling ? getTuning(interaction.guildId) : null,
+          getTuningFor(interaction),
         ]);
         if (!enabled) {
           await interaction.reply({ content: ECONOMY_DISABLED_MESSAGE, flags: MessageFlags.Ephemeral });
           return;
         }
-        if (tuning && !tuning.gamblingEnabled) {
+        if (gambling && !tuning.gamblingEnabled) {
           await interaction.reply({ content: GAMBLING_DISABLED_MESSAGE, flags: MessageFlags.Ephemeral });
           return;
         }

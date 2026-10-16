@@ -8,7 +8,7 @@ import {
   type GuildTextBasedChannel,
   type Role,
 } from 'discord.js';
-import { DEFAULT_LEVEL_UP_MESSAGE, type GuildTuning } from '@shared/tuning';
+import { DEFAULT_LEVEL_UP_MESSAGE, type GuildTuning, type LevelRoleReward } from '@shared/tuning';
 import { checkGrantableRole } from './roles';
 import { truncate } from './channels';
 import { formatCoins } from './economy';
@@ -118,21 +118,26 @@ export async function sendLevelUpNotice(notice: LevelUpNotice): Promise<void> {
 export async function applyLevelRoles(member: GuildMember, level: number, tuning: GuildTuning): Promise<Role[]> {
   const earned = tuning.levelRoleRewards.filter((rule) => rule.level <= level);
   if (earned.length === 0) return [];
-  // Las reglas vienen ordenadas por nivel: la última es la más alta alcanzada
-  const keep = tuning.levelRoleStack ? earned : earned.slice(-1);
-  const keepIds = new Set(keep.map((rule) => rule.roleId));
 
   const toAdd: Role[] = [];
-  for (const rule of keep) {
-    if (member.roles.cache.has(rule.roleId)) continue;
+  // ¿Ya lo tiene, o se le puede dar? (si se puede, se apunta para darlo)
+  const canHave = (rule: LevelRoleReward): boolean => {
+    if (member.roles.cache.has(rule.roleId)) return true;
     const check = checkGrantableRole(member.guild, rule.roleId);
     if (check.ok) toAdd.push(check.role);
     else console.warn(`[NIVELES] No pude dar el rol del nivel ${rule.level} en ${member.guild.name}: ${check.reason}`);
-  }
+    return check.ok;
+  };
+  // Acumulables: todos los que le tocan. Si no, solo el más alto que tenga o que se le pueda dar: si el del
+  // nivel nuevo ya no se puede dar (lo borraron o quedó arriba del bot), conserva el anterior en vez de
+  // quedarse sin ninguno. Las reglas vienen ordenadas por nivel.
   const toRemove: Role[] = [];
-  if (!tuning.levelRoleStack) {
-    for (const rule of tuning.levelRoleRewards) {
-      if (keepIds.has(rule.roleId) || !member.roles.cache.has(rule.roleId)) continue;
+  if (tuning.levelRoleStack) {
+    earned.forEach(canHave);
+  } else {
+    const keptRoleId = [...earned].reverse().find(canHave)?.roleId;
+    for (const rule of keptRoleId ? tuning.levelRoleRewards : []) {
+      if (rule.roleId === keptRoleId || !member.roles.cache.has(rule.roleId)) continue;
       const check = checkGrantableRole(member.guild, rule.roleId);
       if (check.ok) toRemove.push(check.role);
     }

@@ -14,6 +14,7 @@ import { storage, type LevelLeaderboardRow, type WealthLeaderboardRow } from "..
 import { bot } from "../bot/index";
 import { getActiveRaid } from "../bot/middleware/antiRaid";
 import { DEFAULT_DAILY_QUESTION_HOUR } from "../bot/services/dailyQuestion";
+import { getExtras, tuningOf } from "../bot/services/extras";
 import { getLocalDateString, getZonedParts, resolveTimezone } from "../bot/services/timezone";
 import { requireAuth, requireGuildAdmin, parseLimit, type DiscordPartialGuild } from "./middleware";
 import {
@@ -255,12 +256,16 @@ export function setupDashboardRoutes(app: Express) {
 
       // Un día de margen: los días se cuentan en la zona del servidor, no en UTC
       const since = new Date(now.getTime() - (ANALYTICS_DAYS + 1) * DAY_MS);
-      const [levels, topEarners, activity, counts] = await Promise.all([
+      const [levels, topEarners, activity, counts, extras] = await Promise.all([
         storage.getLevelCounts(guildId),
         storage.getWealthLeaderboard(guildId, 10),
         storage.getModerationActivitySince(guildId, since),
         storage.getGuildDashboardCounts(guildId),
+        getExtras(guildId),
       ]);
+      // Con el nivel para prestigiar de este servidor (los rangos de la gráfica son fijos)
+      const prestigeMinLevel = tuningOf(extras).prestigeMinLevel;
+      const prestigeReady = levels.filter((entry) => entry.level >= prestigeMinLevel).reduce((sum, entry) => sum + entry.users, 0);
 
       const days = lastLocalDays(now, timezone, ANALYTICS_DAYS);
       const perDay = new Map<string, ModerationDay>(days.map((date) => [date, { date, total: 0, byType: {} }]));
@@ -280,6 +285,7 @@ export function setupDashboardRoutes(app: Express) {
       const body: AnalyticsResponse = {
         timezone,
         levelDistribution: buildLevelDistribution(levels),
+        prestigeReady,
         topEarners: toWealth(topEarners),
         moderationPerDay: days.map((date) => perDay.get(date)!),
         moderationByType30d: byType,

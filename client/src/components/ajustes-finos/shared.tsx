@@ -119,7 +119,9 @@ export function NumberSetting({ field, value, onChange, suffix, hint, label, dis
   useEffect(() => setText(String(value)), [value]);
   const id = `tuning-${field}`;
   const commit = () => {
-    const parsed = Number(text.replace(",", "."));
+    // En los decimales la coma es el punto decimal; en los enteros es separador de miles ("10,000")
+    const cleaned = limits.step && limits.step < 1 ? text.trim().replace(",", ".") : text.replace(/[\s,]/g, "");
+    const parsed = Number(cleaned);
     if (!Number.isFinite(parsed) || text.trim() === "") {
       setText(String(value));
       return;
@@ -203,12 +205,17 @@ interface IdChipsProps {
   options: { id: string; label: string; hint?: string; disabled?: boolean }[];
   /** Nombre a mostrar de un ID que ya no está en las opciones */
   missingLabel: string;
+  /** Rojo si seguro ya no existe; "outline" si puede existir pero no lo ves (canales privados) */
+  missingVariant?: "destructive" | "outline";
+  /** false mientras cargan las opciones: así nada sale como borrado antes de tiempo */
+  loaded?: boolean;
   placeholder: string;
 }
 
 /** Lista de canales o roles como fichas, con un selector para agregar más. */
-export function IdChips({ id, label, hint, value, onChange, max, options, missingLabel, placeholder }: IdChipsProps) {
+export function IdChips({ id, label, hint, value, onChange, max, options, missingLabel, missingVariant = "destructive", loaded = true, placeholder }: IdChipsProps) {
   const byId = new Map(options.map((option) => [option.id, option]));
+  const nameOf = (itemId: string) => byId.get(itemId)?.label ?? (loaded ? missingLabel : "…");
   const addable = options.filter((option) => !value.includes(option.id));
   return (
     <div className="space-y-2">
@@ -230,13 +237,13 @@ export function IdChips({ id, label, hint, value, onChange, max, options, missin
       {value.length > 0 && (
         <div className="flex flex-wrap gap-2" data-testid={`list-${id}`}>
           {value.map((itemId) => (
-            <Badge key={itemId} variant={byId.has(itemId) ? "secondary" : "destructive"} className="gap-1 pr-1">
-              {byId.get(itemId)?.label ?? missingLabel}
+            <Badge key={itemId} variant={byId.has(itemId) || !loaded ? "secondary" : missingVariant} className="gap-1 pr-1">
+              {nameOf(itemId)}
               <button
                 type="button"
                 className="rounded-sm p-0.5 hover:bg-background/60"
                 onClick={() => onChange(value.filter((item) => item !== itemId))}
-                aria-label={`Quitar ${byId.get(itemId)?.label ?? missingLabel}`}
+                aria-label={`Quitar ${nameOf(itemId)}`}
               >
                 <X className="h-3 w-3" />
               </button>

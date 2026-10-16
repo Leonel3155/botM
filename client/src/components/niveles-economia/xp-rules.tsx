@@ -4,7 +4,7 @@ import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/com
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from "@/components/ui/table";
 import { CommandList, type BotCommandInfo } from "./command-list";
 import { formatCoins, formatNumber } from "./format";
-import type { GuildTuning } from "@shared/tuning";
+import { formatMultiplier, type GuildTuning } from "@shared/tuning";
 import { levelUpReward, prestigeMultiplier, xpForLevelStep, xpToReachLevel } from "./level-math";
 
 /** Comandos de niveles (server/bot/commands/level.ts, prestige.ts y prefix.ts). */
@@ -55,7 +55,7 @@ function Rules({ items }: { items: ReactNode[] }) {
 export function XpRulesCard({ prefix, economyEnabled, tuning }: { prefix: string; economyEnabled: boolean | null; tuning: GuildTuning }) {
   const maxBonusPercent = tuning.prestigeBonusPercent * tuning.prestigeMaxBonus;
   const reward10 = levelUpReward(10, tuning);
-  const maxMultiplier = prestigeMultiplier(tuning.prestigeMaxBonus, tuning).toFixed(1);
+  const maxMultiplier = formatMultiplier(prestigeMultiplier(tuning.prestigeMaxBonus, tuning));
   const levelExamples = [...new Set([2, 5, 10, 25, 50, tuning.prestigeMinLevel])].sort((a, b) => a - b);
   const cooldown = tuning.xpCooldownSeconds % 60 === 0
     ? `${tuning.xpCooldownSeconds / 60 === 1 ? "un minuto" : `${tuning.xpCooldownSeconds / 60} minutos`}`
@@ -101,7 +101,7 @@ export function XpRulesCard({ prefix, economyEnabled, tuning }: { prefix: string
                 </>,
                 <>
                   Cada prestigio da <strong>+{tuning.prestigeBonusPercent} %</strong> de XP por mensaje, hasta{" "}
-                  <strong>+{maxBonusPercent} % (x{maxMultiplier})</strong> con {tuning.prestigeMaxBonus} prestigios.
+                  <strong>+{maxBonusPercent} % ({maxMultiplier})</strong> con {tuning.prestigeMaxBonus} prestigios.
                 </>,
               ]}
             />

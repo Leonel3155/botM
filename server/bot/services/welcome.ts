@@ -11,7 +11,7 @@ import type { Guild as GuildRow } from '@shared/schema';
 import { storage } from '../../storage';
 import { resolveSendableChannel, truncate } from './channels';
 import { isGuildLocked } from '../middleware/antiRaid';
-import { getTuning } from './extras';
+import { getTuningSafe } from './extras';
 
 export const DEFAULT_WELCOME_MESSAGE =
   '¡Hola {usuario}! 👋 Bienvenid@ a **{servidor}**, ya somos **{miembros}** miembros.\n' +
@@ -172,7 +172,7 @@ async function sendWelcome(member: GuildMember, settings: GuildRow): Promise<voi
     console.warn(`[BIENVENIDA] No se pudo dar la bienvenida en ${member.guild.name}: ${target.reason}`);
     return;
   }
-  const { welcomeBurstLimit } = await getTuning(member.guild.id);
+  const { welcomeBurstLimit } = await getTuningSafe(member.guild.id);
   if (isWelcomeBurst(member.guild.id, welcomeBurstLimit)) {
     console.warn(`[BIENVENIDA] Demasiadas entradas seguidas en ${member.guild.name}; se omite la bienvenida de ${member.user.tag}.`);
     return;

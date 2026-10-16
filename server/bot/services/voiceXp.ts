@@ -25,11 +25,11 @@ export function eligibleVoiceMembers(channel: VoiceBasedChannel, afkChannelId: s
 
 // Subir de nivel en voz da el mismo premio que por mensajes. Si no se paga aquí se pierde: el siguiente
 // mensaje ya ve el nivel nuevo guardado y no lo cuenta como subida.
-async function rewardVoiceLevelUp(channel: VoiceBasedChannel, member: GuildMember, level: number, tuning: GuildTuning) {
+async function rewardVoiceLevelUp(channel: VoiceBasedChannel, member: GuildMember, previousLevel: number, level: number, tuning: GuildTuning) {
   const guild = channel.guild;
   const settings = await getGuildSettings(guild.id);
   const economyOn = settings?.economyEnabled !== false;
-  const reward = levelUpReward(level, tuning);
+  const reward = levelUpReward(level, tuning, previousLevel);
   if (economyOn) {
     // Quien solo entra a voz puede no tener cuenta de economía todavía
     await ensureAccount(guild, member.user);
@@ -73,7 +73,7 @@ async function tickGuild(guild: Guild) {
       await db.update(userLevels)
         .set({ voiceTime: sql`coalesce(${userLevels.voiceTime}, 0) + 1` })
         .where(and(eq(userLevels.guildId, guild.id), eq(userLevels.userId, userId)));
-      if (level > previousLevel) await rewardVoiceLevelUp(channel, member, level, tuning);
+      if (level > previousLevel) await rewardVoiceLevelUp(channel, member, previousLevel, level, tuning);
     }
   }
 }

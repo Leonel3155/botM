@@ -55,9 +55,7 @@ export default function Levels() {
   const leader = top[0];
   const analytics = analyticsQuery.data;
   const buckets = analytics?.levelDistribution ?? [];
-  const prestigeReady = buckets
-    .filter((bucket) => bucket.minLevel >= tuning.prestigeMinLevel)
-    .reduce((sum, bucket) => sum + bucket.users, 0);
+  const prestigeReady = analytics?.prestigeReady ?? 0;
   const hasDistribution = buckets.some((bucket) => bucket.users > 0);
   const prefix = configQuery.data?.prefix ?? "&";
   const statsUnavailable = analyticsQuery.isError;
