@@ -13,6 +13,7 @@ import { PageHeader } from "@/components/page-header";
 import { SaveBar } from "@/components/comunidad/save-bar";
 import {
   ChannelSelect,
+  ClampedNumberInput,
   FeatureCard,
   Field,
   RoleSelect,
@@ -162,17 +163,13 @@ export default function Diversion() {
             <Input id="starboard-emoji" value={draft.starboardEmoji} maxLength={EXTRAS_LIMITS.starboardEmojiMaxLength} onChange={(event) => update({ starboardEmoji: event.target.value })} aria-invalid={!emojiOk} data-testid="input-starboard-emoji" />
           </Field>
           <Field label="Reacciones necesarias" htmlFor="starboard-threshold" hint="No cuenta la del autor.">
-            <Input
+            <ClampedNumberInput
               id="starboard-threshold"
-              type="number"
               inputMode="numeric"
               min={EXTRAS_LIMITS.starboardThresholdMin}
               max={EXTRAS_LIMITS.starboardThresholdMax}
               value={draft.starboardThreshold}
-              onChange={(event) => {
-                const value = Math.round(Number(event.target.value));
-                if (Number.isFinite(value)) update({ starboardThreshold: Math.min(EXTRAS_LIMITS.starboardThresholdMax, Math.max(EXTRAS_LIMITS.starboardThresholdMin, value)) });
-              }}
+              onCommit={(starboardThreshold) => update({ starboardThreshold })}
               data-testid="input-starboard-threshold"
             />
           </Field>
@@ -188,7 +185,7 @@ export default function Diversion() {
         onToggle={(confessionsEnabled) => update({ confessionsEnabled })}
         testId="confessions"
       >
-        <Field label="Canal de confesiones" htmlFor="confessions-channel" hint="Si el filtro de palabras está activado, también revisa las confesiones. Los admins pueden ver quién escribió una con /confesion autor (queda en el historial de moderación).">
+        <Field label="Canal de confesiones" htmlFor="confessions-channel" hint="Si el filtro está activado, también revisa las confesiones (palabras, invitaciones y enlaces). Los admins pueden ver quién escribió una con /confesion autor (queda en el historial de moderación).">
           <ChannelSelect id="confessions-channel" value={draft.confessionsChannelId} onChange={(confessionsChannelId) => update({ confessionsChannelId })} channels={channels} testId="select-confessions-channel" />
         </Field>
       </FeatureCard>

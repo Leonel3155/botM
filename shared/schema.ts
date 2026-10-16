@@ -391,16 +391,20 @@ export const guildExtras = pgTable("guild_extras", {
   // en Discord como "con restricción de edad". Nunca en canales normales.
   nsfwEnabled: boolean("nsfw_enabled").notNull().default(false),
   nsfwChannelIds: jsonb("nsfw_channel_ids").$type<string[]>().notNull().default([]),
+  // Ajustes finos (XP, economía, juegos…): ver shared/tuning.ts. Lo que falta usa el valor predeterminado
+  tuning: jsonb("tuning").$type<Record<string, unknown>>().notNull().default({}),
   updatedAt: timestamp("updated_at").default(sql`now()`),
 });
 
 export const birthdays = pgTable("birthdays", {
   guildId: varchar("guild_id").notNull(),
   userId: varchar("user_id").notNull(),
-  month: integer("month").notNull(), // 1-12
-  day: integer("day").notNull(), // 1-31
+  // null = lo borró con /cumple borrar, pero la fila se queda un tiempo para no festejarlo dos veces seguidas
+  month: integer("month"), // 1-12
+  day: integer("day"), // 1-31
   lastCelebrated: varchar("last_celebrated", { length: 10 }), // YYYY-MM-DD en la zona del servidor
   roleGivenAt: timestamp("role_given_at"),
+  roleGivenId: varchar("role_given_id"), // el rol que se le dio (por si en el panel cambian el rol mientras lo trae)
 }, (table) => [
   primaryKey({ columns: [table.guildId, table.userId] }),
 ]);

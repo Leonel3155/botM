@@ -14,6 +14,7 @@ import {
   type Client,
 } from 'discord.js';
 import { applyAutoPunish } from '../services/autoMod';
+import { truncate } from '../services/channels';
 import { logModeration } from '../services/serverLog';
 import { storage, type ChannelLockdownSnapshot } from '../../storage';
 import { DiscordBot } from '../index';
@@ -62,6 +63,11 @@ function isUnknownMember(error: unknown): boolean {
 // Tope del /mute. Discord permite aislar hasta 28 días; aquí se deja en 1 semana.
 const MAX_MUTE_MINUTOS = 10080; // 1 semana
 const MAX_TIMEOUT_MS = 28 * 24 * 60 * 60 * 1000;
+
+// Tope de la razón de /kick, /ban y /warn: lo que guarda el registro de auditoría de Discord.
+// Sin tope, una razón larguísima pasaba de los 2000 caracteres del mensaje y la respuesta fallaba
+// después de expulsar o banear (y la acción no quedaba en el historial).
+const MAX_RAZON = 512;
 
 // Antes /mute daba un rol "Muteado" y lo quitaba con un temporizador en memoria (se perdía al
 // reiniciar). Ahora usa el aislamiento de Discord; el rol viejo solo se quita a quien aún lo tenga.
@@ -195,14 +201,17 @@ export const moderationCommands = [
         return;
       }
 
+      // Borrar pide dos llamadas a Discord que pueden esperar turno (límite de velocidad) más de los 3 s que da
+      // para responder; desde aquí solo se edita la respuesta
+      await interaction.deferReply({ flags: MessageFlags.Ephemeral });
       const mensajesBorrados = await canal.bulkDelete(cantidad, true).catch(() => null);
 
       if (!mensajesBorrados) {
-        await interaction.reply({ content: '❌ No pude borrar los mensajes. Quizá son demasiado antiguos (más de 14 días).', flags: MessageFlags.Ephemeral });
+        await interaction.editReply('❌ No pude borrar los mensajes. Quizá son demasiado antiguos (más de 14 días).');
         return;
       }
 
-      await interaction.reply({ content: `🧹 Listo, borré **${mensajesBorrados.size}** mensajes.`, flags: MessageFlags.Ephemeral });
+      await interaction.editReply(`🧹 Listo, borré **${mensajesBorrados.size}** mensajes.`);
       // Acción sobre un canal: se registra con el propio moderador como "objetivo"
       await registrarAccion(interaction, 'clear', interaction.user, { reason: `Borró ${mensajesBorrados.size} mensajes en #${canal.name}`, active: false });
     }
@@ -216,7 +225,7 @@ export const moderationCommands = [
         option.setName('usuario').setDescription('Usuario a expulsar').setRequired(true)
       )
       .addStringOption(option =>
-        option.setName('razon').setDescription('Razón de la expulsión').setRequired(false)
+        option.setName('razon').setDescription('Razón de la expulsión').setRequired(false).setMaxLength(MAX_RAZON)
       )
       .setDefaultMemberPermissions(PermissionFlagsBits.KickMembers),
 
@@ -254,8 +263,10 @@ export const moderationCommands = [
         return;
       }
 
+      // Igual que en /clear: la llamada a Discord puede tardar más de 3 s
+      await interaction.deferReply({ flags: MessageFlags.Ephemeral });
       await targetMember.kick(razon);
-      await interaction.reply({ content: `✅ **${usuario.tag}** fue expulsado. Razón: ${razon}`, flags: MessageFlags.Ephemeral });
+      await interaction.editReply(`✅ **${usuario.tag}** fue expulsado. Razón: ${truncate(razon, 1000)}`);
       await registrarAccion(interaction, 'kick', usuario, { reason: razon, active: false });
     }
   },
@@ -268,7 +279,7 @@ export const moderationCommands = [
         option.setName('usuario').setDescription('Usuario a banear').setRequired(true)
       )
       .addStringOption(option =>
-        option.setName('razon').setDescription('Razón del baneo').setRequired(false)
+        option.setName('razon').setDescription('Razón del baneo').setRequired(false).setMaxLength(MAX_RAZON)
       )
       .setDefaultMemberPermissions(PermissionFlagsBits.BanMembers),
 
@@ -309,20 +320,23 @@ export const moderationCommands = [
           return;
         }
 
+        // Igual que en /clear: la llamada a Discord puede tardar más de 3 s
+        await interaction.deferReply({ flags: MessageFlags.Ephemeral });
         await targetMember.ban({ reason: razon });
       } else {
         // Se fue (o lo sacó el anti-raid): Discord deja banear por ID para que no pueda volver
+        await interaction.deferReply({ flags: MessageFlags.Ephemeral });
         try {
           await interaction.guild.bans.create(usuario.id, { reason: razon });
         } catch (error) {
           console.error(`No se pudo banear por ID a ${usuario.id}:`, error);
-          await interaction.reply({ content: '❌ No pude banear a ese usuario. Revisa que mi rol tenga el permiso **Banear miembros**.', flags: MessageFlags.Ephemeral });
+          await interaction.editReply('❌ No pude banear a ese usuario. Revisa que mi rol tenga el permiso **Banear miembros**.');
           return;
         }
       }
 
       const fuera = targetMember ? '' : ' Ya no estaba en el servidor, pero no podrá volver a entrar.';
-      await interaction.reply({ content: `✅ **${usuario.tag}** fue baneado.${fuera} Razón: ${razon}`, flags: MessageFlags.Ephemeral });
+      await interaction.editReply(`✅ **${usuario.tag}** fue baneado.${fuera} Razón: ${truncate(razon, 1000)}`);
       await registrarAccion(interaction, 'ban', usuario, { reason: razon });
     }
   },
@@ -384,13 +398,12 @@ export const moderationCommands = [
         return;
       }
 
+      // Igual que en /clear: la llamada a Discord puede tardar más de 3 s
+      await interaction.deferReply({ flags: MessageFlags.Ephemeral });
       await targetMember.timeout(minutos * 60_000, `Silenciado con /mute por ${interaction.user.tag}`);
 
       const termina = Math.floor((Date.now() + minutos * 60_000) / 1000);
-      await interaction.reply({
-        content: `🔇 **${usuario.tag}** fue silenciado por ${minutos} minuto(s). Discord le quitará el silencio <t:${termina}:R>.`,
-        flags: MessageFlags.Ephemeral,
-      });
+      await interaction.editReply(`🔇 **${usuario.tag}** fue silenciado por ${minutos} minuto(s). Discord le quitará el silencio <t:${termina}:R>.`);
       await registrarAccion(interaction, 'mute', usuario, { reason: `Silenciado por ${minutos} minuto(s)`, duration: minutos, deactivate: 'mute' });
     }
   },
@@ -612,7 +625,7 @@ export const moderationCommands = [
         option.setName('usuario').setDescription('Usuario a advertir').setRequired(true)
       )
       .addStringOption(option =>
-        option.setName('razon').setDescription('Razón de la advertencia').setRequired(false)
+        option.setName('razon').setDescription('Razón de la advertencia').setRequired(false).setMaxLength(MAX_RAZON)
       )
       .setDefaultMemberPermissions(PermissionFlagsBits.ModerateMembers),
 
@@ -636,7 +649,7 @@ export const moderationCommands = [
       const targetMember = await interaction.guild.members.fetch(usuario.id).catch(() => null);
       if (targetMember && !(await ensureOutranks(interaction, targetMember))) return;
 
-      await interaction.reply({ content: `⚠️ **${usuario.tag}** fue advertido. Razón: ${razon}`, flags: MessageFlags.Ephemeral });
+      await interaction.reply({ content: `⚠️ **${usuario.tag}** fue advertido. Razón: ${truncate(razon, 1000)}`, flags: MessageFlags.Ephemeral });
       await registrarAccion(interaction, 'warn', usuario, { reason: razon });
     }
   },

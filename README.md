@@ -48,11 +48,15 @@ BotM es un bot de Discord con su propio **panel web en español** para administr
 - Al subir de nivel se ganan monedas (nivel² × 50) y boletos si la economía está prendida, y el bot lo anuncia en el chat (puedes apagar esos avisos en el panel).
 - **XP por voz** (opcional, en el panel): 5 XP por minuto en un canal de voz con al menos otra persona, sin estar ensordecido ni en el canal AFK.
 - Desde el nivel 100 se puede usar `/prestige`: vuelves al nivel 1 y ganas +10 % de XP por mensaje en cada prestigio (máximo +100 %).
+- **Todo eso se ajusta en el panel** (Niveles → Reglas de XP): cuánta XP da cada mensaje, la espera, el largo mínimo del mensaje, un multiplicador para todo el servidor (por ejemplo ×2 un fin de semana), canales y roles que no ganan XP, la XP por voz y el prestigio. Los números de arriba son los predeterminados.
+- **Roles por nivel**: eliges un rol para cada nivel (por ejemplo @Activo en el nivel 10) y el bot lo da al llegar. Puedes hacer que se queden todos o que cada uno reemplace al anterior.
+- **Aviso de nivel**: puedes mandarlo a un canal fijo en vez del chat donde se habló, cambiar el texto (`{usuario}`, `{nombre}`, `{nivel}`, `{premio}`) y decidir si menciona a la persona.
 
 ### 💰 Economía y juegos
 
 - Monedas virtuales con cartera y banco (lo del banco no te lo pueden robar). Se ganan platicando, con `/daily`, `/work`, `/crime`… y se pueden regalar, depositar o intentar robar.
 - `/daily` da un bono por racha: +5 % por cada día seguido después del primero, hasta +50 %.
+- **Todo se ajusta en el panel** (Economía → Reglas de la economía): cuánto da `/daily`, `/work` y platicar, las esperas, las probabilidades de `/crime`, `/slut` y `/rob`, las monedas con las que empieza cada cuenta, y apuesta mínima y máxima. También puedes apagar solo `/crime`, `/slut`, `/rob` o los juegos de azar sin apagar toda la economía. Los números de esta guía son los predeterminados.
 - Juegos: blackjack, tragamonedas, ruleta europea, dado y ruleta rusa.
 - **Tienda**: los artículos se crean solo desde el panel (**Tienda**): nombre, emoji, precio, unidades (o sin límite) y, si quieres, un rol que se da al comprarlo. Se compra con `/comprar` usando la cartera; los artículos sin rol se guardan en `/inventario`. Un artículo con rol se compra una sola vez y, si el bot no puede dar el rol, no cobra.
 - Comandos de administración para dar, quitar o reiniciar monedas.
@@ -109,17 +113,17 @@ Inicias sesión con Discord y solo ves los servidores donde eres dueño o tienes
 | **Estadísticas** | Gráficas de cómo se reparten los niveles, quién tiene más monedas, y la moderación y las alertas de raid de los últimos 30 días. |
 | **Servidores** | Elige con qué servidor trabajar e invita al bot a los que todavía no lo tienen. |
 | **Bienvenida y pregunta del día** | Canal, mensaje y rol de bienvenida (con prueba); canal, hora y zona de la pregunta del día (con "publicar ahora"). |
-| **Niveles** | Ranking, cómo se reparten los niveles, reglas de XP, el interruptor de avisos al subir de nivel y el de XP por voz. |
+| **Niveles** | Ranking, cómo se reparten los niveles, reglas de XP (cuánta XP, esperas, multiplicador, canales y roles sin XP, XP por voz, prestigio), roles por nivel y el aviso al subir de nivel. |
 | **Diversión** | Interacciones, cumpleaños, starboard y confesiones. |
 | **Autorroles** | Crear, editar y borrar los mensajes con botones para ponerse roles. |
-| **Economía** | Ranking de monedas, totales y el interruptor para prender o apagar la economía. |
+| **Economía** | Ranking de monedas, totales, el interruptor de la economía y todos sus números (`/daily`, `/work`, `/crime`, `/slut`, `/rob`, apuestas). |
 | **Tienda** | Agregar, editar, pausar y borrar los artículos que se compran con monedas. |
 | **Redes sociales** | Crear, editar, pausar y borrar feeds de noticias y de Reddit. |
 | **Moderación** | Historial de lo que hizo el staff con los comandos del bot, y quitar advertencias. |
 | **Moderación automática** | Registro del servidor, filtro de palabras y castigos automáticos. |
-| **Contenido +18** | Prender `/nsfw`, elegir los canales +18 donde se permite y ver lo último que se publicó. |
+| **Contenido +18** | Prender `/nsfw`, elegir los canales +18 donde se permite, la espera entre imágenes y ver lo último que se publicó. |
 | **Seguridad** | Prender y configurar el anti-raid, terminar un modo raid y ver el historial. |
-| **Comandos personalizados** | Crear, editar, activar y borrar tus comandos. |
+| **Comandos personalizados** | Crear, editar, activar y borrar tus comandos, y la espera entre usos. |
 | **Canales** | Canal de bienvenida, canal por defecto para noticias y Reddit, y canal de moderación (donde llegan las alertas de raid). |
 | **Ajustes** | Prefijo de los comandos (por defecto `&`), tu cuenta (cerrar sesión) y el estado del bot. |
 
@@ -473,13 +477,13 @@ Las opciones entre `< >` son obligatorias y las de `[ ]` opcionales.
 | `/level [usuario]` | Tu nivel, XP, puesto y progreso (o los de otra persona). | Todos |
 | `/lv [usuario]` | Atajo de `/level`. | Todos |
 | `/lb [limite]` | Ranking de niveles del servidor (hasta 25 personas). | Todos |
-| `/prestige` | Desde el nivel 100: vuelves al nivel 1 a cambio de más XP para siempre. Pide confirmación. | Todos |
+| `/prestige` | Desde el nivel 100 (se cambia en el panel): vuelves al nivel 1 a cambio de más XP para siempre. Pide confirmación. | Todos |
 | `/levelrewards` | Qué ganas al subir de nivel. | Todos |
 | `/xpinfo` | Cómo funciona el XP y el prestigio. | Todos |
 
 ### Economía
 
-Si apagas la economía desde el panel, estos comandos solo avisan que está desactivada.
+Si apagas la economía desde el panel, estos comandos solo avisan que está desactivada. Los montos y esperas de esta tabla son los predeterminados; cada servidor los cambia en el panel (**Economía**) y los comandos muestran los de tu servidor.
 
 | Comando | Qué hace | Quién |
 | --- | --- | --- |
@@ -504,7 +508,7 @@ Si apagas la economía desde el panel, estos comandos solo avisan que está desa
 
 ### Juegos (usan las monedas de la cartera)
 
-También se apagan si desactivas la economía.
+También se apagan si desactivas la economía, o solo ellos con el interruptor **Juegos de azar** del panel (ahí también pones apuesta mínima y máxima).
 
 | Comando | Qué hace | Quién |
 | --- | --- | --- |
@@ -516,7 +520,7 @@ También se apagan si desactivas la economía.
 
 ### Moderación
 
-Además del permiso de Discord, el bot pide que quien lo usa tenga un rol llamado **Moderador**, **Admin** o **Staff**, o algún permiso de moderación.
+Cada comando pide el permiso de Discord que aparece en la tabla; no hace falta ningún rol con un nombre especial. Además, solo puedes moderar a alguien cuyo rol más alto esté por debajo del tuyo (y del de BotM).
 
 | Comando | Qué hace | Quién |
 | --- | --- | --- |

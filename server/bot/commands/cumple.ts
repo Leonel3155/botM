@@ -1,4 +1,4 @@
-import { EmbedBuilder, MessageFlags, SlashCommandBuilder, type ChatInputCommandInteraction } from 'discord.js';
+import { EmbedBuilder, MessageFlags, RESTJSONErrorCodes, SlashCommandBuilder, type ChatInputCommandInteraction } from 'discord.js';
 import type { DiscordBot } from '../index';
 import type { BotCommand } from './index';
 import {
@@ -75,13 +75,31 @@ export const cumple: BotCommand = {
     await interaction.deferReply();
     const settings = await getGuildSettings(guildId);
     const local = getZonedParts(new Date(), resolveTimezone(settings?.timezone));
-    const rows = (await listBirthdays(guildId))
-      .filter((row) => interaction.guild?.members.cache.has(row.userId) ?? true)
+    const saved = await listBirthdays(guildId);
+    const sorted = saved
       .map((row) => ({ row, days: daysUntil(row, local.year, local.month, local.day) }))
-      .sort((a, b) => a.days - b.days)
-      .slice(0, 10);
+      .sort((a, b) => a.days - b.days);
+    // Solo quienes siguen en el servidor. La caché no trae a todos (sobre todo después de reiniciar), así que
+    // a quien no está ahí se le pregunta a Discord, y solo se quita si Discord dice que ya no está.
+    // Con tope de consultas: si muchos ya se fueron, no se hacen cientos de llamadas por cada /cumple proximos
+    const guild = interaction.guild;
+    const rows: typeof sorted = [];
+    let lookups = 0;
+    for (const entry of sorted) {
+      if (rows.length >= 10) break;
+      if (guild && !guild.members.cache.has(entry.row.userId)) {
+        if (lookups >= 25) continue;
+        lookups++;
+        const gone = await guild.members.fetch(entry.row.userId).then(() => false).catch((error) =>
+          error?.code === RESTJSONErrorCodes.UnknownMember || error?.code === RESTJSONErrorCodes.UnknownUser);
+        if (gone) continue;
+      }
+      rows.push(entry);
+    }
     if (rows.length === 0) {
-      await interaction.editReply(`Nadie ha guardado su cumpleaños todavía. ¡Sé el primero con \`/cumple guardar\`!${off}`);
+      await interaction.editReply(saved.length === 0
+        ? `Nadie ha guardado su cumpleaños todavía. ¡Sé el primero con \`/cumple guardar\`!${off}`
+        : `Ninguno de los que guardaron su cumpleaños sigue en el servidor. Guarda el tuyo con \`/cumple guardar\`.${off}`);
       return;
     }
     const lines = rows.map(({ row, days }) => {

@@ -8,14 +8,13 @@ import {
   RESTJSONErrorCodes,
   type ButtonInteraction,
   type Guild,
-  type GuildMember,
-  type Message,
 } from 'discord.js';
 import { and, asc, count, eq } from 'drizzle-orm';
 import { ROLE_PANEL_LIMITS } from '@shared/api';
 import { rolePanels, type RolePanel, type RolePanelButton } from '@shared/schema';
 import { db } from '../../db';
 import { resolveSendableChannel, truncate, withLineBreaks } from './channels';
+import { lockForUser } from './locks';
 import { checkGrantableRole } from './roles';
 
 // customId de cada botón: "rp:<id del panel>:<id del rol>" (Discord admite hasta 100 caracteres)
@@ -101,19 +100,26 @@ function explainPublishError(error: unknown): string {
       return 'Discord rechazó el mensaje. Revisa que los emojis existan (los del servidor deben ser de este servidor).';
     }
     if (error.code === RESTJSONErrorCodes.MissingPermissions || error.code === RESTJSONErrorCodes.MissingAccess) {
-      return 'No tengo permiso para publicar en ese canal (Ver canal, Enviar mensajes e Insertar enlaces).';
+      return 'No tengo permiso para publicar en ese canal (Ver canal, Enviar mensajes, Insertar enlaces y Leer el historial de mensajes).';
     }
     return `Discord no aceptó el mensaje (error ${error.status}: "${error.message}").`;
   }
   return 'No pude publicar el mensaje en Discord. Intenta de nuevo en un momento.';
 }
 
-async function fetchPanelMessage(guild: Guild, panel: RolePanel): Promise<Message | null> {
+// El mensaje se edita o borra por su id, sin pedirlo antes: pedirlo exige "Leer el historial de mensajes"
+function panelChannel(guild: Guild, panel: RolePanel) {
   if (!panel.messageId) return null;
   const channel = guild.channels.cache.get(panel.channelId);
-  if (!channel?.isTextBased()) return null;
+  return channel?.isTextBased() ? channel : null;
+}
+
+/** Edita el mensaje del panel; null si ya no existe (hay que mandar uno nuevo). */
+async function editPanelMessage(guild: Guild, panel: RolePanel, payload: ReturnType<typeof buildRolePanelMessage>): Promise<string | null> {
+  const channel = panelChannel(guild, panel);
+  if (!channel || !panel.messageId) return null;
   try {
-    return await channel.messages.fetch(panel.messageId);
+    return (await channel.messages.edit(panel.messageId, payload)).id;
   } catch (error) {
     if (isUnknownMessage(error)) return null;
     throw error;
@@ -131,11 +137,8 @@ async function publish(guild: Guild, panel: RolePanel, previous: RolePanel | nul
   const payload = buildRolePanelMessage(panel);
   try {
     if (previous && previous.channelId === panel.channelId) {
-      const existing = await fetchPanelMessage(guild, previous);
-      if (existing) {
-        await existing.edit(payload);
-        return existing.id;
-      }
+      const editedId = await editPanelMessage(guild, previous, payload);
+      if (editedId) return editedId;
     }
     const message = await target.channel.send(payload);
     if (previous && previous.channelId !== panel.channelId) {
@@ -149,13 +152,17 @@ async function publish(guild: Guild, panel: RolePanel, previous: RolePanel | nul
   }
 }
 
-async function deletePanelMessage(guild: Guild, panel: RolePanel): Promise<void> {
+/** true si el mensaje ya no está en Discord (se borró o ya no existía). */
+async function deletePanelMessage(guild: Guild, panel: RolePanel): Promise<boolean> {
   try {
-    const message = await fetchPanelMessage(guild, panel);
-    await message?.delete();
+    const channel = panelChannel(guild, panel);
+    if (channel && panel.messageId) await channel.messages.delete(panel.messageId);
+    return true;
   } catch (error) {
+    if (isUnknownMessage(error)) return true;
     // Si no se puede borrar (sin permisos), el mensaje queda, pero sus botones dirán que el panel ya no existe
     console.warn(`[AUTORROLES] No se pudo borrar el mensaje del panel ${panel.id} en ${guild.name}:`, error);
+    return false;
   }
 }
 
@@ -192,22 +199,20 @@ export async function updateRolePanel(guild: Guild, panelId: string, input: Role
   return saved;
 }
 
-export async function deleteRolePanel(guild: Guild | null, guildId: string, panelId: string): Promise<boolean> {
+/** null si el panel no existe; messageDeleted dice si su mensaje ya no está en Discord. */
+export async function deleteRolePanel(guild: Guild | null, guildId: string, panelId: string): Promise<{ messageDeleted: boolean } | null> {
   const panel = await getRolePanel(guildId, panelId);
-  if (!panel) return false;
-  if (guild) await deletePanelMessage(guild, panel);
+  if (!panel) return null;
+  // Sin el bot no se puede borrar el mensaje (si tenía uno, se queda en Discord)
+  const messageDeleted = guild ? await deletePanelMessage(guild, panel) : !panel.messageId;
   await db.delete(rolePanels).where(and(eq(rolePanels.guildId, guildId), eq(rolePanels.id, panelId)));
-  return true;
+  return { messageDeleted };
 }
 
 // ===== Botones (en Discord) =====
 
 export function isRolePanelButton(customId: string): boolean {
   return customId.startsWith(BUTTON_PREFIX);
-}
-
-async function memberOf(interaction: ButtonInteraction<'cached'>): Promise<GuildMember> {
-  return interaction.member ?? interaction.guild.members.fetch(interaction.user.id);
 }
 
 export async function handleRolePanelButton(interaction: ButtonInteraction): Promise<void> {
@@ -218,45 +223,50 @@ export async function handleRolePanelButton(interaction: ButtonInteraction): Pro
   const [panelId, roleId] = interaction.customId.slice(BUTTON_PREFIX.length).split(':');
   await interaction.deferReply({ flags: MessageFlags.Ephemeral });
 
-  const panel = panelId ? await getRolePanel(interaction.guildId, panelId) : undefined;
-  const button = panel?.roles.find((candidate) => candidate.roleId === roleId);
-  if (!panel || !button) {
-    await interaction.editReply('Este botón ya no está activo. Pídele a un admin que actualice el panel de roles.');
-    return;
-  }
-
-  const check = checkGrantableRole(interaction.guild, roleId);
-  if (!check.ok) {
-    console.warn(`[AUTORROLES] No se pudo usar el rol ${roleId} en ${interaction.guild.name}: ${check.reason}`);
-    await interaction.editReply(`No puedo darte ese rol ahora: ${check.reason} Avísale a un admin.`);
-    return;
-  }
-
-  const member = await memberOf(interaction);
-  const role = check.role;
-  try {
-    if (member.roles.cache.has(role.id)) {
-      await member.roles.remove(role, `Autorroles: "${panel.title}"`);
-      await interaction.editReply(`Listo, te quité ${role}.`);
+  // Los clics de una misma persona van de uno en uno: si no, dos clics rápidos en un panel de "solo uno"
+  // leen los mismos roles y la persona se queda con los dos
+  await lockForUser(`rp:${interaction.guildId}:${interaction.user.id}`).runExclusive(async () => {
+    const panel = panelId ? await getRolePanel(interaction.guildId, panelId) : undefined;
+    const button = panel?.roles.find((candidate) => candidate.roleId === roleId);
+    if (!panel || !button) {
+      await interaction.editReply('Este botón ya no está activo. Pídele a un admin que actualice el panel de roles.');
       return;
     }
 
-    // En un panel de "solo uno", se quitan los otros roles del mismo panel
-    const removed: string[] = [];
-    if (panel.exclusive) {
-      for (const other of panel.roles) {
-        if (other.roleId === role.id || !member.roles.cache.has(other.roleId)) continue;
-        const otherCheck = checkGrantableRole(interaction.guild, other.roleId);
-        if (!otherCheck.ok) continue;
-        await member.roles.remove(otherCheck.role, `Autorroles: "${panel.title}" (solo uno a la vez)`);
-        removed.push(`${otherCheck.role}`);
-      }
+    const check = checkGrantableRole(interaction.guild, roleId);
+    if (!check.ok) {
+      console.warn(`[AUTORROLES] No se pudo usar el rol ${roleId} en ${interaction.guild.name}: ${check.reason}`);
+      await interaction.editReply(`No puedo darte ese rol ahora: ${check.reason} Avísale a un admin.`);
+      return;
     }
-    await member.roles.add(role, `Autorroles: "${panel.title}"`);
-    const swapped = removed.length > 0 ? ` (te quité ${removed.join(', ')})` : '';
-    await interaction.editReply(`Listo, ya tienes ${role}${swapped}.`);
-  } catch (error) {
-    console.error(`[AUTORROLES] Error al cambiar el rol ${role.name} en ${interaction.guild.name}:`, error);
-    await interaction.editReply('No pude cambiar tu rol. Intenta de nuevo en un momento; si sigue fallando, avísale a un admin.');
-  }
+
+    const role = check.role;
+    try {
+      // Se pide el miembro a Discord: roles.add/remove no actualizan la caché hasta que llega el evento
+      const member = await interaction.guild.members.fetch({ user: interaction.user.id, force: true });
+      if (member.roles.cache.has(role.id)) {
+        await member.roles.remove(role, `Autorroles: "${panel.title}"`);
+        await interaction.editReply(`Listo, te quité ${role}.`);
+        return;
+      }
+
+      // En un panel de "solo uno", se quitan los otros roles del mismo panel
+      const removed: string[] = [];
+      if (panel.exclusive) {
+        for (const other of panel.roles) {
+          if (other.roleId === role.id || !member.roles.cache.has(other.roleId)) continue;
+          const otherCheck = checkGrantableRole(interaction.guild, other.roleId);
+          if (!otherCheck.ok) continue;
+          await member.roles.remove(otherCheck.role, `Autorroles: "${panel.title}" (solo uno a la vez)`);
+          removed.push(`${otherCheck.role}`);
+        }
+      }
+      await member.roles.add(role, `Autorroles: "${panel.title}"`);
+      const swapped = removed.length > 0 ? ` (te quité ${removed.join(', ')})` : '';
+      await interaction.editReply(`Listo, ya tienes ${role}${swapped}.`);
+    } catch (error) {
+      console.error(`[AUTORROLES] Error al cambiar el rol ${role.name} en ${interaction.guild.name}:`, error);
+      await interaction.editReply('No pude cambiar tu rol. Intenta de nuevo en un momento; si sigue fallando, avísale a un admin.');
+    }
+  });
 }

@@ -2,9 +2,11 @@ import { and, desc, eq, inArray, lt, sql } from 'drizzle-orm';
 import type { Guild, User } from 'discord.js';
 import { db } from '../../db';
 import { storage } from '../../storage';
-import { pendingBets, userEconomy, userLevels } from '@shared/schema';
+import { pendingBets, userEconomy, userLevels, users } from '@shared/schema';
 import { globalQueue, economyQueueFor } from './queues';
 import { lockForUser } from './locks';
+import { getTuning } from './extras';
+import { DEFAULT_TUNING, streakBonusFraction, type GuildTuning } from '@shared/tuning';
 
 // ===== Reglas generales =====
 // Todos los cambios de saldo pasan por aquí: cada operación bloquea la fila del usuario
@@ -14,11 +16,8 @@ import { lockForUser } from './locks';
 // La columna es numeric(15,2) (hasta ~10 billones). Topamos cartera y banco en 1 billón.
 export const MAX_COINS = 1_000_000_000_000;
 
-export const DAILY_COOLDOWN_MS = 24 * 60 * 60 * 1000;
-// Si pasan más de 48 h desde el último daily, la racha vuelve a empezar
-export const DAILY_STREAK_WINDOW_MS = 48 * 60 * 60 * 1000;
-export const DAILY_BASE_REWARD = 500;
-export const DAILY_REWARD_PER_LEVEL = 10;
+// Montos, esperas y probabilidades se ajustan por servidor en el panel (Economía): ver shared/tuning.ts.
+// Las funciones reciben esos ajustes; sin ellos usan DEFAULT_TUNING.
 
 export type EconomyRow = typeof userEconomy.$inferSelect;
 export type Tx = Parameters<Parameters<typeof db.transaction>[0]>[0];
@@ -87,6 +86,8 @@ export async function ensureAccount(guild: Pick<Guild, 'id' | 'name' | 'ownerId'
 
   await storage.ensureGuild(guild.id, guild.name, guild.ownerId);
   await storage.upsertUser({ id: user.id, username: user.username, avatar: user.avatar ?? null });
+  // Fuera de la transacción: con la base integrada, otra consulta dentro de ella esperaría a que termine
+  const startingBalance = String((await getTuning(guild.id)).startingBalance);
 
   // La tabla no tiene índice único (usuario, servidor): un candado consultivo evita crear dos filas
   await db.transaction(async (tx) => {
@@ -97,12 +98,57 @@ export async function ensureAccount(guild: Pick<Guild, 'id' | 'name' | 'ownerId'
       .where(and(eq(userEconomy.guildId, guild.id), eq(userEconomy.userId, user.id)))
       .limit(1);
     if (!existing) {
-      await tx.insert(userEconomy).values({ userId: user.id, guildId: guild.id, balance: '0', bank: '0' });
+      await tx.insert(userEconomy).values({ userId: user.id, guildId: guild.id, balance: startingBalance, bank: '0' });
     }
   });
 
   if (knownAccounts.size > 50_000) knownAccounts.clear();
   knownAccounts.add(key);
+}
+
+// Igual que ensureAccount pero para muchas personas a la vez (/add-money-role): en bloques de 500,
+// con unas pocas consultas por bloque en vez de ~7 por persona. Usa los mismos candados consultivos
+// que ensureAccount, así ninguno de los dos caminos puede crear una fila repetida.
+export async function ensureAccounts(guild: Pick<Guild, 'id' | 'name' | 'ownerId'>, list: Pick<User, 'id' | 'username' | 'avatar'>[]): Promise<void> {
+  // Sin repetidos (ON CONFLICT DO UPDATE no acepta la misma fila dos veces) y en orden fijo:
+  // dos llamadas al mismo tiempo toman los candados en el mismo orden y no se bloquean mutuamente
+  const pending = [...new Map(list.map((u) => [u.id, u])).values()]
+    .filter((u) => !knownAccounts.has(`${guild.id}:${u.id}`))
+    .sort((a, b) => (a.id < b.id ? -1 : a.id > b.id ? 1 : 0));
+  if (pending.length === 0) return;
+
+  await storage.ensureGuild(guild.id, guild.name, guild.ownerId);
+  const startingBalance = String((await getTuning(guild.id)).startingBalance);
+
+  for (let i = 0; i < pending.length; i += 500) {
+    const chunk = pending.slice(i, i + 500);
+    const ids = chunk.map((u) => u.id);
+
+    await db
+      .insert(users)
+      .values(chunk.map((u) => ({ id: u.id, username: u.username, avatar: u.avatar ?? null })))
+      .onConflictDoUpdate({
+        target: users.id,
+        set: { username: sql`excluded.username`, avatar: sql`excluded.avatar` },
+      });
+
+    await db.transaction(async (tx) => {
+      const keys = ids.map((id) => sql`(${`econ:${guild.id}:${id}`}::text)`);
+      await tx.execute(sql`SELECT pg_advisory_xact_lock(hashtext(t.k)) FROM (VALUES ${sql.join(keys, sql`, `)}) AS t(k)`);
+      const existing = await tx
+        .select({ userId: userEconomy.userId })
+        .from(userEconomy)
+        .where(and(eq(userEconomy.guildId, guild.id), inArray(userEconomy.userId, ids)));
+      const have = new Set(existing.map((r) => r.userId));
+      const missing = ids.filter((id) => !have.has(id));
+      if (missing.length > 0) {
+        await tx.insert(userEconomy).values(missing.map((id) => ({ userId: id, guildId: guild.id, balance: startingBalance, bank: '0' })));
+      }
+    });
+
+    if (knownAccounts.size + ids.length > 50_000) knownAccounts.clear();
+    for (const id of ids) knownAccounts.add(`${guild.id}:${id}`);
+  }
 }
 
 function accountWhere(guildId: string, userId: string) {
@@ -186,29 +232,31 @@ export type DailyResult =
   | { ok: true; reward: number; levelBonus: number; streakBonus: number; streak: number; streakLost: boolean; balance: number }
   | { ok: false; retryInMs: number };
 
-// Bono por racha: +5 % por cada día seguido después del primero, hasta +50 % (11 días)
-export const DAILY_STREAK_BONUS_STEP = 0.05;
-export const DAILY_STREAK_BONUS_MAX_DAYS = 10;
-
-export function streakBonusFor(reward: number, streak: number): number {
-  const days = Math.min(Math.max(streak - 1, 0), DAILY_STREAK_BONUS_MAX_DAYS);
-  return Math.floor(reward * days * DAILY_STREAK_BONUS_STEP);
+// Bono por racha: +5 % por cada día seguido después del primero, hasta +50 % (11 días) con los valores
+// predeterminados
+export function streakBonusFor(reward: number, streak: number, tuning: GuildTuning = DEFAULT_TUNING): number {
+  return Math.floor(reward * streakBonusFraction(tuning, streak));
 }
 
-export function dailyRewardFor(level: number): { reward: number; levelBonus: number } {
-  const levelBonus = Math.max(1, Math.floor(level)) * DAILY_REWARD_PER_LEVEL;
-  return { reward: DAILY_BASE_REWARD + levelBonus, levelBonus };
+export function dailyRewardFor(level: number, tuning: GuildTuning = DEFAULT_TUNING): { reward: number; levelBonus: number } {
+  const levelBonus = Math.max(1, Math.floor(level)) * tuning.dailyPerLevel;
+  return { reward: tuning.dailyBase + levelBonus, levelBonus };
 }
 
-// Decide si se puede reclamar y cómo queda la racha (lógica pura, sin base de datos)
-export function evaluateDaily(lastDaily: Date | null | undefined, currentStreak: number | null | undefined, now: number):
+export function dailyCooldownMs(tuning: GuildTuning = DEFAULT_TUNING): number {
+  return tuning.dailyCooldownHours * 60 * 60 * 1000;
+}
+
+// Decide si se puede reclamar y cómo queda la racha (lógica pura, sin base de datos).
+// La racha sigue si se cobra antes de que pase el doble de la espera (48 h con la espera de 24 h).
+export function evaluateDaily(lastDaily: Date | null | undefined, currentStreak: number | null | undefined, now: number, cooldownMs = dailyCooldownMs()):
   | { ok: true; streak: number; streakLost: boolean }
   | { ok: false; retryInMs: number } {
   const last = lastDaily ? lastDaily.getTime() : null;
-  if (last !== null && now - last < DAILY_COOLDOWN_MS) {
-    return { ok: false, retryInMs: last + DAILY_COOLDOWN_MS - now };
+  if (last !== null && now - last < cooldownMs) {
+    return { ok: false, retryInMs: last + cooldownMs - now };
   }
-  const keepsStreak = last !== null && now - last <= DAILY_STREAK_WINDOW_MS;
+  const keepsStreak = last !== null && now - last <= cooldownMs * 2;
   const previous = currentStreak ?? 0;
   return {
     ok: true,
@@ -217,17 +265,17 @@ export function evaluateDaily(lastDaily: Date | null | undefined, currentStreak:
   };
 }
 
-export async function claimDaily(guildId: string, userId: string): Promise<DailyResult> {
+export async function claimDaily(guildId: string, userId: string, tuning: GuildTuning = DEFAULT_TUNING): Promise<DailyResult> {
   const level = await getUserLevelNumber(guildId, userId);
-  const { reward, levelBonus } = dailyRewardFor(level);
+  const { reward, levelBonus } = dailyRewardFor(level, tuning);
 
   return db.transaction(async (tx) => {
     const row = await lockAccount(tx, guildId, userId);
     const now = Date.now();
-    const check = evaluateDaily(row.lastDaily, row.dailyStreak, now);
+    const check = evaluateDaily(row.lastDaily, row.dailyStreak, now, dailyCooldownMs(tuning));
     if (!check.ok) return check;
 
-    const streakBonus = streakBonusFor(reward, check.streak);
+    const streakBonus = streakBonusFor(reward, check.streak, tuning);
     const total = reward + streakBonus;
     const balance = clampCoins(toCoins(row.balance) + total);
     await saveAccount(tx, row, {
@@ -313,12 +361,16 @@ export async function transfer(guildId: string, fromId: string, toId: string, am
 
 export type TimedKind = 'work' | 'crime' | 'slut';
 
-export const COOLDOWNS_MS: Record<TimedKind | 'rob', number> = {
-  work: 60 * 60 * 1000,        // 1 hora
-  crime: 2 * 60 * 60 * 1000,   // 2 horas
-  slut: 2 * 60 * 60 * 1000,    // 2 horas
-  rob: 4 * 60 * 60 * 1000,     // 4 horas
-};
+// Espera de cada acción según el panel (predeterminado: work 1 h, crime y slut 2 h, rob 4 h)
+export function actionCooldownMs(kind: TimedKind | 'rob', tuning: GuildTuning = DEFAULT_TUNING): number {
+  const minutes = {
+    work: tuning.workCooldownMinutes,
+    crime: tuning.crimeCooldownMinutes,
+    slut: tuning.slutCooldownMinutes,
+    rob: tuning.robCooldownMinutes,
+  }[kind];
+  return minutes * 60 * 1000;
+}
 
 const lastField: Record<TimedKind, 'lastWork' | 'lastCrime' | 'lastSlut'> = {
   work: 'lastWork',
@@ -338,13 +390,13 @@ export async function runTimedAction<T>(
   guildId: string,
   userId: string,
   kind: TimedKind,
-  decide: (wallet: number) => TimedOutcome<T>
+  decide: (wallet: number) => TimedOutcome<T>,
+  cooldown: number
 ): Promise<TimedResult<T>> {
   return db.transaction(async (tx) => {
     const row = await lockAccount(tx, guildId, userId);
     const now = Date.now();
     const last = row[lastField[kind]];
-    const cooldown = COOLDOWNS_MS[kind];
     if (last && now - last.getTime() < cooldown) {
       return { ok: false as const, retryInMs: last.getTime() + cooldown - now };
     }
@@ -369,10 +421,6 @@ export async function runTimedAction<T>(
 
 // ===== Robo =====
 
-export const ROB_MIN_TARGET = 100;
-export const ROB_MIN_ROBBER = 100;
-export const ROB_SUCCESS_CHANCE = 0.6;
-export const ROB_FINE_RATE = 0.05;
 
 export type RobResult =
   | { ok: true; success: true; amount: number; robberBalance: number }
@@ -380,21 +428,24 @@ export type RobResult =
   | { ok: false; reason: 'cooldown'; retryInMs: number }
   | { ok: false; reason: 'target_poor' | 'robber_poor' };
 
-export async function attemptRob(guildId: string, robberId: string, targetId: string): Promise<RobResult> {
+// Cartera mínima de quien roba y de la víctima, probabilidad, multa y espera: todo sale del panel
+export async function attemptRob(guildId: string, robberId: string, targetId: string, tuning: GuildTuning): Promise<RobResult> {
   if (robberId === targetId) throw new Error('attemptRob: no se puede robar a uno mismo');
+  const cooldown = actionCooldownMs('rob', tuning);
   return db.transaction(async (tx) => {
     const [robber, target] = await lockPair(tx, guildId, robberId, targetId);
     const now = Date.now();
-    if (robber.lastRob && now - robber.lastRob.getTime() < COOLDOWNS_MS.rob) {
-      return { ok: false as const, reason: 'cooldown' as const, retryInMs: robber.lastRob.getTime() + COOLDOWNS_MS.rob - now };
+    if (robber.lastRob && now - robber.lastRob.getTime() < cooldown) {
+      return { ok: false as const, reason: 'cooldown' as const, retryInMs: robber.lastRob.getTime() + cooldown - now };
     }
 
     const robberWallet = toCoins(robber.balance);
     const targetWallet = toCoins(target.balance);
-    if (targetWallet < ROB_MIN_TARGET) return { ok: false as const, reason: 'target_poor' as const };
-    if (robberWallet < ROB_MIN_ROBBER) return { ok: false as const, reason: 'robber_poor' as const };
+    // A una cartera vacía no hay nada que robarle, aunque el mínimo sea 0
+    if (targetWallet < Math.max(1, tuning.robMinWallet)) return { ok: false as const, reason: 'target_poor' as const };
+    if (robberWallet < tuning.robMinWallet) return { ok: false as const, reason: 'robber_poor' as const };
 
-    if (Math.random() < ROB_SUCCESS_CHANCE) {
+    if (Math.random() * 100 < tuning.robSuccessPercent) {
       // Entre 50 y el 10 % de la cartera de la víctima (máx. 1,000), nunca más de lo que tiene
       const maxSteal = Math.min(Math.floor(targetWallet * 0.1), 1000);
       const wanted = 50 + Math.floor(Math.random() * Math.max(maxSteal - 50 + 1, 1));
@@ -404,7 +455,9 @@ export async function attemptRob(guildId: string, robberId: string, targetId: st
       return { ok: true as const, success: true as const, amount, robberBalance: robberWallet + amount };
     }
 
-    const fine = Math.max(1, Math.floor(robberWallet * ROB_FINE_RATE));
+    const fine = tuning.robFinePercent > 0
+      ? Math.min(robberWallet, Math.max(1, Math.floor((robberWallet * tuning.robFinePercent) / 100)))
+      : 0;
     await saveAccount(tx, robber, { balance: robberWallet - fine, lost: fine, lastRob: new Date(now) });
     return { ok: true as const, success: false as const, fine, robberBalance: robberWallet - fine };
   });
@@ -452,15 +505,17 @@ export async function playInstantBet<T>(
 // Juegos con varios pasos (blackjack): primero se retiene la apuesta…
 // La retención queda apuntada en pending_bets en la misma transacción: si el bot se apaga a mitad
 // de la partida, refundPendingBets la devuelve a la cartera al volver.
-export async function holdBet(guildId: string, userId: string, request: AmountRequest): Promise<
-  { ok: true; bet: number; balance: number; holdId: string } | { ok: false; reason: 'empty' | 'insufficient'; available: number }
+// Con "todo" se apuesta la cartera completa, o `limits.max` si es menor (0 = sin máximo).
+export async function holdBet(guildId: string, userId: string, request: AmountRequest, limits: { min: number; max: number } = { min: 1, max: 0 }): Promise<
+  { ok: true; bet: number; balance: number; holdId: string } | { ok: false; reason: 'empty' | 'insufficient' | 'min'; available: number; min?: number }
 > {
   return db.transaction(async (tx) => {
     const row = await lockAccount(tx, guildId, userId);
     const wallet = toCoins(row.balance);
-    const bet = request.all ? wallet : request.amount;
+    const bet = request.all ? (limits.max > 0 ? Math.min(wallet, limits.max) : wallet) : request.amount;
     if (wallet <= 0) return { ok: false as const, reason: 'empty' as const, available: wallet };
     if (bet > wallet) return { ok: false as const, reason: 'insufficient' as const, available: wallet };
+    if (bet < limits.min) return { ok: false as const, reason: 'min' as const, available: wallet, min: limits.min };
     await saveAccount(tx, row, { balance: wallet - bet, gambled: bet });
     const [hold] = await tx
       .insert(pendingBets)
@@ -634,15 +689,18 @@ export async function adminResetAccount(guildId: string, userId: string): Promis
     .where(accountWhere(guildId, userId));
 }
 
+// Todo en una transacción: si un bloque falla no se paga a nadie, así repetir el comando no paga doble
 export async function adminAddCoinsToMany(guildId: string, userIds: string[], amount: number): Promise<void> {
   const value = clampCoins(amount);
-  for (let i = 0; i < userIds.length; i += 500) {
-    const chunk = userIds.slice(i, i + 500);
-    await db
-      .update(userEconomy)
-      .set({ balance: sql`LEAST(COALESCE(${userEconomy.balance}, 0) + ${value}::numeric, ${MAX_COINS}::numeric)` })
-      .where(and(eq(userEconomy.guildId, guildId), inArray(userEconomy.userId, chunk)));
-  }
+  await db.transaction(async (tx) => {
+    for (let i = 0; i < userIds.length; i += 500) {
+      const chunk = userIds.slice(i, i + 500);
+      await tx
+        .update(userEconomy)
+        .set({ balance: sql`LEAST(COALESCE(${userEconomy.balance}, 0) + ${value}::numeric, ${MAX_COINS}::numeric)` })
+        .where(and(eq(userEconomy.guildId, guildId), inArray(userEconomy.userId, chunk)));
+    }
+  });
 }
 
 // ===== Rankings y estadísticas =====

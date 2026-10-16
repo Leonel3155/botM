@@ -403,7 +403,7 @@ export function AntiRaidSettingsForm({ guildId, data, botInGuild, blockedText }:
                         <SelectItem value={AUTO_CHANNEL}>Automático</SelectItem>
                         {!selectedIsKnown && field.value !== AUTO_CHANNEL && (
                           <SelectItem value={field.value}>
-                            {channelsQuery.isSuccess ? "Canal que ya no existe" : "Canal guardado"} ({field.value})
+                            {channelsQuery.isSuccess ? "Canal oculto o borrado" : "Canal guardado"} ({field.value})
                           </SelectItem>
                         )}
                         {channelGroups.map((group) => (

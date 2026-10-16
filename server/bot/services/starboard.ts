@@ -1,26 +1,46 @@
 // Starboard: cuando un mensaje junta suficientes reacciones con el emoji elegido (⭐ por defecto), el bot
 // lo copia al canal de "lo mejor" y va actualizando el contador. Se configura en el panel (Diversión).
 import {
+  ChannelType,
   EmbedBuilder,
+  PermissionFlagsBits,
+  type Attachment,
+  type GuildTextBasedChannel,
   type Message,
   type MessageReaction,
   type PartialMessageReaction,
+  type Role,
 } from 'discord.js';
 import { and, eq } from 'drizzle-orm';
 import { starboardPosts } from '@shared/schema';
 import { db } from '../../db';
 import { getExtrasSafe } from './extras';
 import { resolveSendableChannel, truncate } from './channels';
+import { isAgeRestrictedChannel } from './nsfw';
 
 /** ¿La reacción es el emoji elegido? Acepta un emoji normal ("⭐") o uno del servidor ("<:nombre:id>"). */
 export function emojiMatches(configured: string, reaction: { id: string | null; name: string | null }): boolean {
   const custom = /^<a?:\w+:(\d+)>$/.exec(configured.trim());
   if (custom) return reaction.id === custom[1];
-  return !reaction.id && reaction.name === configured.trim();
+  // Sin el selector U+FE0F: "⭐️" y "⭐" son el mismo emoji, pero Discord siempre manda solo una de las dos formas
+  const strip = (value: string) => value.replace(/\uFE0F/g, '');
+  return !reaction.id && reaction.name !== null && strip(reaction.name) === strip(configured.trim());
 }
 
-function isAgeRestricted(channel: unknown): boolean {
-  return !!channel && typeof channel === 'object' && 'nsfw' in channel && (channel as { nsfw: boolean }).nsfw === true;
+const canView = (channel: GuildTextBasedChannel, role: Role) =>
+  channel.permissionsFor(role)?.has(PermissionFlagsBits.ViewChannel) ?? false;
+
+/**
+ * ¿Quien ve el starboard también puede ver el mensaje original? Si @everyone ve el original, sí. Si no, el starboard
+ * no puede verlo @everyone, y cada rol que por sí solo deja ver el starboard (p. ej. el de verificado) tiene que dejar
+ * ver también el original. Los roles de bots no cuentan. Los hilos privados nunca se copian.
+ */
+function readersCanSeeSource(source: GuildTextBasedChannel, target: GuildTextBasedChannel): boolean {
+  if (source.type === ChannelType.PrivateThread) return false;
+  const everyone = source.guild.roles.everyone;
+  if (canView(source, everyone)) return true;
+  if (canView(target, everyone)) return false;
+  return source.guild.roles.cache.every((role) => !!role.tags?.botId || !canView(target, role) || canView(source, role));
 }
 
 function buildStarEmbed(message: Message, emoji: string, count: number): { content: string; embeds: EmbedBuilder[] } {
@@ -30,8 +50,11 @@ function buildStarEmbed(message: Message, emoji: string, count: number): { conte
     .setDescription(truncate(message.content || '*(sin texto)*', 4000))
     .addFields({ name: 'Original', value: `[Ir al mensaje](${message.url})` })
     .setTimestamp(message.createdAt);
-  const image = message.attachments.find((file) => file.contentType?.startsWith('image/'));
+  // Las imágenes con spoiler no se copian: en un embed se verían sin tapar
+  const isImage = (file: Attachment) => !!file.contentType?.startsWith('image/');
+  const image = message.attachments.find((file) => isImage(file) && !file.spoiler && !file.name.startsWith('SPOILER_'));
   if (image) embed.setImage(image.url);
+  else if (message.attachments.some(isImage)) embed.addFields({ name: 'Imagen', value: '*(tiene spoiler, ábrela en el mensaje original)*' });
   return { content: `${emoji} **${count}** · <#${message.channelId}>`, embeds: [embed] };
 }
 
@@ -62,8 +85,13 @@ async function updateStarboard(partial: MessageReaction | PartialMessageReaction
   if (!message.inGuild() || message.channelId === extras.starboardChannelId) return;
   const target = resolveSendableChannel(guild, extras.starboardChannelId);
   if (!target.ok) return;
-  // Nada de un canal +18 a un canal normal
-  if (isAgeRestricted(message.channel) && !isAgeRestricted(target.channel)) return;
+  const source = message.channel;
+  // Sin el canal padre del hilo no sé si es +18 o quién lo ve: no copio nada
+  if (source.isThread() && !source.parent) return;
+  // Nada de un canal +18 (o de un hilo dentro de uno) a un canal normal
+  if (isAgeRestrictedChannel(source) && !isAgeRestrictedChannel(target.channel)) return;
+  // Nada de un canal privado (p. ej. de staff) a un starboard que ve más gente
+  if (!readersCanSeeSource(source, target.channel)) return;
 
   // No cuenta la reacción del propio autor
   let count = reaction.count ?? 0;

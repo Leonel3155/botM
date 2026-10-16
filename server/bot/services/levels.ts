@@ -1,23 +1,24 @@
 import { and, eq, gte, gt, or, sql } from 'drizzle-orm';
 import { db } from '../../db';
 import { userEconomy, userLevels } from '@shared/schema';
+import { DEFAULT_TUNING, levelUpCoins, prestigeMultiplierFor, type GuildTuning } from '@shared/tuning';
 
 // ===== Curva de niveles =====
 // Pasar del nivel N-1 al N cuesta floor(100 × 1.1^(N-2)) XP (la misma fórmula que usa storage.updateUserXP)
 
-export const PRESTIGE_MIN_LEVEL = 100;
-export const PRESTIGE_XP_BONUS = 0.1;      // +10 % de XP por cada prestigio…
-export const PRESTIGE_MAX_BONUS_LEVELS = 10; // …hasta un máximo de +100 % (x2)
+// Los valores (XP por mensaje, prestigio, premio por nivel…) se ajustan por servidor en el panel:
+// ver shared/tuning.ts. Sin ajustes guardados se usan los de DEFAULT_TUNING.
 
 const MAX_TOTAL_XP = 2_000_000_000; // la columna es integer
 
-// XP por mensaje (como máximo un mensaje premiado por minuto)
-export const MESSAGE_XP_MIN = 15;
-export const MESSAGE_XP_MAX = 25;
-
 // Premio por subir de nivel
-export function levelUpReward(level: number): { coins: number; tickets: number } {
-  return { coins: level * level * 50, tickets: Math.floor(level / 5) + 1 };
+export function levelUpReward(level: number, tuning: GuildTuning = DEFAULT_TUNING): { coins: number; tickets: number } {
+  return { coins: levelUpCoins(tuning, level), tickets: Math.floor(level / 5) + 1 };
+}
+
+/** XP al azar de un mensaje premiado, antes de multiplicadores. */
+export function randomMessageXp(tuning: GuildTuning = DEFAULT_TUNING): number {
+  return Math.floor(Math.random() * (tuning.xpMax - tuning.xpMin + 1)) + tuning.xpMin;
 }
 
 export type LevelRow = typeof userLevels.$inferSelect;
@@ -46,13 +47,13 @@ export function levelFromTotalXp(totalXp: number): number {
   }
 }
 
-export function prestigeMultiplier(prestigeLevel: number): number {
-  const levels = Math.min(Math.max(Math.floor(prestigeLevel || 0), 0), PRESTIGE_MAX_BONUS_LEVELS);
-  return 1 + levels * PRESTIGE_XP_BONUS;
+export function prestigeMultiplier(prestigeLevel: number, tuning: GuildTuning = DEFAULT_TUNING): number {
+  return prestigeMultiplierFor(tuning, prestigeLevel);
 }
 
 export function formatMultiplier(multiplier: number): string {
-  return `x${multiplier.toFixed(1)}`;
+  // Hasta dos decimales (el bono por prestigio puede ser p. ej. 5 %)
+  return `x${Number(multiplier.toFixed(2)).toLocaleString('es-MX', { minimumFractionDigits: 1, maximumFractionDigits: 2 })}`;
 }
 
 export interface LevelProgress {
@@ -140,14 +141,14 @@ export async function awardXp(guildId: string, userId: string, gain: number): Pr
 export type PrestigeResult = { ok: true; prestigeLevel: number } | { ok: false };
 
 // Vuelve al nivel 1 con 0 XP y suma un prestigio, todo en una transacción.
-// El UPDATE condicional (nivel >= 100) hace que un doble clic no pueda prestigiar dos veces.
+// El UPDATE condicional (nivel >= minLevel) hace que un doble clic no pueda prestigiar dos veces.
 // Requiere que exista la cuenta económica (ensureAccount).
-export async function applyPrestige(guildId: string, userId: string): Promise<PrestigeResult> {
+export async function applyPrestige(guildId: string, userId: string, minLevel = DEFAULT_TUNING.prestigeMinLevel): Promise<PrestigeResult> {
   return db.transaction(async (tx) => {
     const reset = await tx
       .update(userLevels)
       .set({ level: 1, xp: 0, totalXp: 0 })
-      .where(and(levelWhere(guildId, userId), gte(userLevels.level, PRESTIGE_MIN_LEVEL)))
+      .where(and(levelWhere(guildId, userId), gte(userLevels.level, minLevel)))
       .returning({ id: userLevels.id });
     if (reset.length === 0) return { ok: false as const };
 

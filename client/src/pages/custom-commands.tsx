@@ -1,3 +1,4 @@
+import { TuningInlineCard } from "@/components/ajustes-finos/inline-card";
 import { useMemo, useState } from "react";
 import { useQuery } from "@tanstack/react-query";
 import { Plus, RefreshCw, Search, Terminal, X } from "lucide-react";
@@ -199,6 +200,13 @@ export default function CustomCommands() {
         <HowToCard prefix={prefix} exampleName={exampleName} className="lg:col-span-2" />
         <UsageCard used={commands.length} max={maxCommands} enabled={enabledCount} className="self-start" />
       </div>
+
+      <TuningInlineCard
+        guildId={guildId}
+        title="Espera entre usos"
+        description="Cuánto tiene que esperar cada persona para volver a usar un comando personalizado (0 = sin espera)."
+        fields={[{ field: "customCommandCooldownSeconds", suffix: "segundos" }]}
+      />
 
       <section className="space-y-4" aria-labelledby="heading-commands">
         <div className="flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between">

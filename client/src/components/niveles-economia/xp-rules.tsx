@@ -4,22 +4,11 @@ import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/com
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from "@/components/ui/table";
 import { CommandList, type BotCommandInfo } from "./command-list";
 import { formatCoins, formatNumber } from "./format";
-import {
-  MESSAGE_XP_MAX,
-  MESSAGE_XP_MIN,
-  PRESTIGE_MAX_BONUS_LEVELS,
-  PRESTIGE_MIN_LEVEL,
-  PRESTIGE_XP_BONUS,
-  levelUpReward,
-  prestigeMultiplier,
-  xpForLevelStep,
-  xpToReachLevel,
-} from "./level-math";
-
-const LEVEL_EXAMPLES = [2, 5, 10, 25, 50, PRESTIGE_MIN_LEVEL];
+import type { GuildTuning } from "@shared/tuning";
+import { levelUpReward, prestigeMultiplier, xpForLevelStep, xpToReachLevel } from "./level-math";
 
 /** Comandos de niveles (server/bot/commands/level.ts, prestige.ts y prefix.ts). */
-const LEVEL_COMMANDS: BotCommandInfo[] = [
+const levelCommands = (tuning: GuildTuning): BotCommandInfo[] => [
   {
     name: "level",
     args: "[usuario]",
@@ -36,7 +25,7 @@ const LEVEL_COMMANDS: BotCommandInfo[] = [
   { name: "levelrewards", description: "Muestra los premios por subir de nivel." },
   {
     name: "prestige",
-    description: `Desde el nivel ${PRESTIGE_MIN_LEVEL}: vuelve al nivel 1 a cambio de más XP por mensaje. Pide confirmación antes.`,
+    description: `Desde el nivel ${tuning.prestigeMinLevel}: vuelve al nivel 1 a cambio de más XP por mensaje. Pide confirmación antes.`,
   },
 ];
 
@@ -63,10 +52,14 @@ function Rules({ items }: { items: ReactNode[] }) {
  * Reglas del XP tal como las aplica el bot (server/bot/events/index.ts y services/levels.ts).
  * `economyEnabled` null = todavía no se sabe.
  */
-export function XpRulesCard({ prefix, economyEnabled }: { prefix: string; economyEnabled: boolean | null }) {
-  const maxBonusPercent = Math.round(PRESTIGE_XP_BONUS * PRESTIGE_MAX_BONUS_LEVELS * 100);
-  const reward10 = levelUpReward(10);
-  const maxMultiplier = prestigeMultiplier(PRESTIGE_MAX_BONUS_LEVELS).toFixed(0);
+export function XpRulesCard({ prefix, economyEnabled, tuning }: { prefix: string; economyEnabled: boolean | null; tuning: GuildTuning }) {
+  const maxBonusPercent = tuning.prestigeBonusPercent * tuning.prestigeMaxBonus;
+  const reward10 = levelUpReward(10, tuning);
+  const maxMultiplier = prestigeMultiplier(tuning.prestigeMaxBonus, tuning).toFixed(1);
+  const levelExamples = [...new Set([2, 5, 10, 25, 50, tuning.prestigeMinLevel])].sort((a, b) => a - b);
+  const cooldown = tuning.xpCooldownSeconds % 60 === 0
+    ? `${tuning.xpCooldownSeconds / 60 === 1 ? "un minuto" : `${tuning.xpCooldownSeconds / 60} minutos`}`
+    : `${tuning.xpCooldownSeconds} segundos`;
 
   return (
     <Card>
@@ -75,7 +68,10 @@ export function XpRulesCard({ prefix, economyEnabled }: { prefix: string; econom
           <BookOpen className="h-5 w-5 text-primary" aria-hidden="true" />
           Cómo funcionan los niveles
         </CardTitle>
-        <CardDescription>Estas son las reglas exactas que usa el bot. El XP siempre está activo.</CardDescription>
+        <CardDescription>
+          Estas son las reglas que usa el bot en este servidor, con tus ajustes de arriba.
+          {!tuning.xpEnabled && " Ahora el XP está apagado: nadie gana XP."}
+        </CardDescription>
       </CardHeader>
       <CardContent className="grid grid-cols-1 gap-8 p-4 pt-0 sm:p-6 sm:pt-0 lg:grid-cols-2">
         <div className="space-y-6">
@@ -83,10 +79,11 @@ export function XpRulesCard({ prefix, economyEnabled }: { prefix: string; econom
             <Rules
               items={[
                 <>
-                  Cada mensaje da entre <strong>{MESSAGE_XP_MIN}</strong> y <strong>{MESSAGE_XP_MAX} XP</strong> al azar.
+                  Cada mensaje da entre <strong>{tuning.xpMin}</strong> y <strong>{tuning.xpMax} XP</strong> al azar
+                  {tuning.xpMultiplierPercent !== 100 && <> (con el multiplicador de <strong>{tuning.xpMultiplierPercent} %</strong>)</>}.
                 </>,
                 <>
-                  Solo cuenta <strong>un mensaje por minuto</strong> por persona: escribir muchos seguidos no da más XP.
+                  Solo cuenta <strong>un mensaje cada {cooldown}</strong> por persona: escribir muchos seguidos no da más XP.
                 </>,
                 "Los bots no ganan XP.",
                 "Cada nivel pide un 10 % más de XP que el anterior.",
@@ -98,13 +95,13 @@ export function XpRulesCard({ prefix, economyEnabled }: { prefix: string; econom
             <Rules
               items={[
                 <>
-                  Al llegar al nivel <strong>{PRESTIGE_MIN_LEVEL}</strong>, cada persona puede usar{" "}
+                  Al llegar al nivel <strong>{tuning.prestigeMinLevel}</strong>, cada persona puede usar{" "}
                   <code className="font-mono text-primary">/prestige</code>: vuelve al nivel 1 con 0 XP, pero conserva sus
                   monedas y boletos.
                 </>,
                 <>
-                  Cada prestigio da <strong>+{Math.round(PRESTIGE_XP_BONUS * 100)} %</strong> de XP por mensaje, hasta{" "}
-                  <strong>+{maxBonusPercent} % (x{maxMultiplier})</strong> con {PRESTIGE_MAX_BONUS_LEVELS} prestigios.
+                  Cada prestigio da <strong>+{tuning.prestigeBonusPercent} %</strong> de XP por mensaje, hasta{" "}
+                  <strong>+{maxBonusPercent} % (x{maxMultiplier})</strong> con {tuning.prestigeMaxBonus} prestigios.
                 </>,
               ]}
             />
@@ -114,7 +111,7 @@ export function XpRulesCard({ prefix, economyEnabled }: { prefix: string; econom
             <Rules
               items={[
                 <>
-                  Nivel² × 50 monedas y (nivel ÷ 5) + 1 boletos. Por ejemplo, al llegar al nivel 10 recibe{" "}
+                  Nivel² × {tuning.levelUpCoinsFactor} monedas y (nivel ÷ 5) + 1 boletos. Por ejemplo, al llegar al nivel 10 recibe{" "}
                   {formatCoins(reward10.coins)} y {reward10.tickets} boletos.
                 </>,
                 "Además, cada mensaje que da XP también da unas monedas (más cuanto más alto el nivel).",
@@ -140,7 +137,7 @@ export function XpRulesCard({ prefix, economyEnabled }: { prefix: string; econom
                   </TableRow>
                 </TableHeader>
                 <TableBody>
-                  {LEVEL_EXAMPLES.map((level) => (
+                  {levelExamples.map((level) => (
                     <TableRow key={level}>
                       <TableCell className="font-medium">Nivel {level}</TableCell>
                       <TableCell className="text-right font-mono">{formatNumber(xpForLevelStep(level))}</TableCell>
@@ -153,7 +150,7 @@ export function XpRulesCard({ prefix, economyEnabled }: { prefix: string; econom
           </RuleSection>
 
           <RuleSection title="Comandos en Discord">
-            <CommandList commands={LEVEL_COMMANDS} prefix={prefix} />
+            <CommandList commands={levelCommands(tuning)} prefix={prefix} />
           </RuleSection>
         </div>
       </CardContent>

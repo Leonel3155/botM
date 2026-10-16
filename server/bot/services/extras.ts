@@ -3,6 +3,7 @@
 // no consultar la base en cada mensaje o reacción.
 import { eq } from 'drizzle-orm';
 import { guildExtras, type AutoPunishRule, type GuildExtras, type LogEvent } from '@shared/schema';
+import { resolveTuning, type GuildTuning } from '@shared/tuning';
 import { db } from '../../db';
 
 const TTL_MS = 15_000;
@@ -46,6 +47,7 @@ export function defaultExtras(guildId: string): GuildExtras {
     voiceXpEnabled: false,
     nsfwEnabled: false,
     nsfwChannelIds: [],
+    tuning: {},
     updatedAt: null,
   };
 }
@@ -113,4 +115,23 @@ export function logEventsOf(extras: GuildExtras): LogEvent[] {
 
 export function autoPunishRulesOf(extras: GuildExtras): AutoPunishRule[] {
   return extras.autoPunishRules ?? DEFAULT_AUTO_PUNISH_RULES;
+}
+
+// ===== Ajustes finos (XP, economía, juegos…) =====
+
+const tuningMemo = new WeakMap<GuildExtras, GuildTuning>();
+
+/** Ajustes finos completos de un servidor (los que faltan usan el valor predeterminado). */
+export function tuningOf(extras: GuildExtras): GuildTuning {
+  let tuning = tuningMemo.get(extras);
+  if (!tuning) {
+    tuning = resolveTuning(extras.tuning);
+    tuningMemo.set(extras, tuning);
+  }
+  return tuning;
+}
+
+/** Ajustes finos de un servidor, sin pasar de ~1,2 s (si la base tarda, usa los predeterminados). */
+export async function getTuning(guildId: string): Promise<GuildTuning> {
+  return tuningOf(await getExtrasQuick(guildId));
 }

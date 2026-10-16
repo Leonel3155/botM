@@ -1,7 +1,7 @@
 import type { Express, Request, Response } from "express";
-import type { Guild as DiscordGuild } from "discord.js";
+import { PermissionFlagsBits, type Guild as DiscordGuild } from "discord.js";
 import { z } from "zod";
-import { count, eq } from "drizzle-orm";
+import { and, count, eq, isNotNull } from "drizzle-orm";
 import { birthdays, reminders, starboardPosts, type GuildExtras } from "@shared/schema";
 import {
   EXTRAS_LIMITS,
@@ -124,7 +124,7 @@ function toItem(extras: GuildExtras): GuildExtrasItem {
 async function buildResponse(guildId: string): Promise<GuildExtrasResponse> {
   const extras = await getExtras(guildId);
   const [[b], [s], [r]] = await Promise.all([
-    db.select({ total: count() }).from(birthdays).where(eq(birthdays.guildId, guildId)),
+    db.select({ total: count() }).from(birthdays).where(and(eq(birthdays.guildId, guildId), isNotNull(birthdays.month))),
     db.select({ total: count() }).from(starboardPosts).where(eq(starboardPosts.guildId, guildId)),
     db.select({ total: count() }).from(reminders).where(eq(reminders.guildId, guildId)),
   ]);
@@ -142,6 +142,17 @@ async function buildResponse(guildId: string): Promise<GuildExtrasResponse> {
   };
 }
 
+// Castigos automáticos: quien los pone necesita el mismo permiso que pide Discord para hacerlo a mano
+// (si no, Gestionar servidor bastaría para que el bot banee por él)
+const PUNISH_PERMS = {
+  timeout: [PermissionFlagsBits.ModerateMembers, "Aislar temporalmente a miembros", "aislamiento"],
+  kick: [PermissionFlagsBits.KickMembers, "Expulsar miembros", "expulsión"],
+  ban: [PermissionFlagsBits.BanMembers, "Banear miembros", "baneo"],
+} as const;
+
+// Con "Advertir" encendido, cambiar el filtro decide a quién le caen advertencias (y castigos)
+const FILTER_FIELDS = ["filterEnabled", "filterWords", "filterInvites", "filterLinks", "filterExemptRoleIds", "filterWarn"] as const;
+
 const CHANNEL_LABELS: Record<string, string> = {
   birthdayChannelId: "El canal de cumpleaños",
   starboardChannelId: "El canal del starboard",
@@ -149,7 +160,7 @@ const CHANNEL_LABELS: Record<string, string> = {
   logsChannelId: "El canal de registro",
 };
 
-/** Canales y roles elegidos: que existan y que quien usa el panel pueda usarlos. */
+/** Canales, roles y castigos elegidos: que existan y que quien usa el panel pueda usarlos. */
 async function checkInput(req: Request, guild: DiscordGuild, input: ExtrasPatch, merged: GuildExtras): Promise<string | null> {
   for (const [field, label] of Object.entries(CHANNEL_LABELS)) {
     const channelId = input[field as keyof ExtrasPatch] as string | null | undefined;
@@ -185,6 +196,20 @@ async function checkInput(req: Request, guild: DiscordGuild, input: ExtrasPatch,
   if (merged.nsfwEnabled && merged.nsfwChannelIds.length === 0) return "Elige al menos un canal +18 donde se permita.";
   for (const roleId of input.filterExemptRoleIds ?? []) {
     if (!guild.roles.cache.has(roleId)) return "Uno de los roles que no pasan por el filtro ya no existe.";
+  }
+  // Castigos automáticos: el dueño y Administrador tienen todos los permisos; apagarlos siempre se puede
+  const touchesRules = input.autoPunishEnabled !== undefined || input.autoPunishRules !== undefined;
+  const touchesFilter = merged.filterEnabled && merged.filterWarn && FILTER_FIELDS.some((field) => input[field] !== undefined);
+  if (merged.autoPunishEnabled && (touchesRules || touchesFilter) && !isDevRequest(req)) {
+    const member = await fetchSessionMember(req, guild);
+    if (!member) return "No te encontré como miembro de este servidor.";
+    for (const rule of autoPunishRulesOf(merged)) {
+      const [flag, label, noun] = PUNISH_PERMS[rule.action];
+      if (member.permissions.has(flag)) continue;
+      return touchesRules
+        ? `Para poner castigos de ${noun} necesitas el permiso ${label}.`
+        : `El filtro da advertencias y los castigos automáticos incluyen ${noun}: para cambiar el filtro necesitas el permiso ${label}.`;
+    }
   }
   return null;
 }

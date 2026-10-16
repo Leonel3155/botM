@@ -25,6 +25,8 @@ import {
   settleBet,
 } from '../services/economy';
 import { resolveGuild, respond } from '../utils/interactions';
+import { getTuning } from '../services/extras';
+import type { GuildTuning } from '@shared/tuning';
 
 // ===== Blackjack =====
 const suits = ['♠️', '♥️', '♦️', '♣️'];
@@ -137,6 +139,13 @@ function signed(n: number): string {
   return `${n > 0 ? '+' : n < 0 ? '−' : ''}${formatCoins(Math.abs(n))}`;
 }
 
+// Apuesta mínima y máxima del panel (Economía → Juegos de azar). null = la cantidad está bien.
+function betLimitProblem(amount: number, tuning: GuildTuning): string | null {
+  if (amount < tuning.minBet) return `❌ La apuesta mínima en este servidor es ${formatCoins(tuning.minBet)}.`;
+  if (tuning.maxBet > 0 && amount > tuning.maxBet) return `❌ La apuesta máxima en este servidor es ${formatCoins(tuning.maxBet)}.`;
+  return null;
+}
+
 async function startBet(interaction: ChatInputCommandInteraction): Promise<{ guildId: string; userId: string }> {
   await interaction.deferReply();
   await ensureAccount(await resolveGuild(interaction), interaction.user);
@@ -166,10 +175,18 @@ export const gamblingCommands = [
         return;
       }
 
+      const tuning = await getTuning(interaction.guildId!);
+      const limitProblem = request.all ? null : betLimitProblem(request.amount, tuning);
+      if (limitProblem) {
+        await respond(interaction, limitProblem, { ephemeral: true });
+        return;
+      }
+
       const { guildId, userId } = await startBet(interaction);
 
-      // La apuesta se retiene al empezar, así no se puede gastar en otra cosa durante la partida
-      const hold = await economyTask(guildId, userId, () => holdBet(guildId, userId, request));
+      // La apuesta se retiene al empezar, así no se puede gastar en otra cosa durante la partida.
+      // Con "todo" se apuesta la cartera completa, o la apuesta máxima del servidor si es menor.
+      const hold = await economyTask(guildId, userId, () => holdBet(guildId, userId, request, { min: tuning.minBet, max: tuning.maxBet }));
       if (!hold.ok) {
         await respond(interaction, betFailureMessage(hold), { ephemeral: true });
         return;
@@ -182,6 +199,8 @@ export const gamblingCommands = [
         const player = [deck.pop()!, deck.pop()!];
         const dealer = [deck.pop()!, deck.pop()!];
         let timedOut = false;
+        // Si borran el mensaje (o el canal o el servidor), te plantas igual: no hay reembolso para no abusar de borrar manos malas
+        let messageGone = false;
 
         const ids = { hit: `bj:hit:${interaction.id}`, stand: `bj:stand:${interaction.id}` };
         const buttons = new ActionRowBuilder<ButtonBuilder>().addComponents(
@@ -243,6 +262,7 @@ export const gamblingCommands = [
 
             collector.on('end', (_collected, reason) => {
               timedOut = reason === 'idle' || reason === 'time';
+              messageGone = !timedOut && reason !== 'done';
               resolve();
             });
           });
@@ -287,6 +307,7 @@ export const gamblingCommands = [
           payout = bet;
         }
         if (timedOut) result = `⏰ Se acabó el tiempo y te plantaste automáticamente.\n${result}`;
+        else if (messageGone) result = `🗑️ Se borró el mensaje de la partida y te plantaste automáticamente.\n${result}`;
 
         settled = true;
         const balance = await settleWithRetry(guildId, userId, bet, payout, hold.holdId);
@@ -310,7 +331,13 @@ export const gamblingCommands = [
             }
           );
 
-        await interaction.editReply({ embeds: [finalEmbed], components: [] });
+        // El resultado ya quedó guardado; si el mensaje ya no existe, lo mandamos aparte (solo para ti)
+        try {
+          await interaction.editReply({ embeds: [finalEmbed], components: [] });
+        } catch (error) {
+          console.error('Blackjack: no pude editar el resultado, lo envío aparte:', error);
+          await interaction.followUp({ embeds: [finalEmbed], flags: MessageFlags.Ephemeral }).catch(() => undefined);
+        }
       } finally {
         // Si algo falló antes de pagar (p. ej. Discord no respondió), devolvemos la apuesta
         if (!settled) {
@@ -330,6 +357,11 @@ export const gamblingCommands = [
       const amount = interaction.options.getInteger('cantidad', true);
       if (!Number.isSafeInteger(amount) || amount < 1) {
         await respond(interaction, '❌ La apuesta debe ser un número entero mayor que 0.', { ephemeral: true });
+        return;
+      }
+      const limitProblem = betLimitProblem(amount, await getTuning(interaction.guildId!));
+      if (limitProblem) {
+        await respond(interaction, limitProblem, { ephemeral: true });
         return;
       }
 
@@ -389,6 +421,11 @@ export const gamblingCommands = [
       }
       if (!Number.isSafeInteger(amount) || amount < 1) {
         await respond(interaction, '❌ La apuesta debe ser un número entero mayor que 0.', { ephemeral: true });
+        return;
+      }
+      const limitProblem = betLimitProblem(amount, await getTuning(interaction.guildId!));
+      if (limitProblem) {
+        await respond(interaction, limitProblem, { ephemeral: true });
         return;
       }
 
@@ -451,6 +488,11 @@ export const gamblingCommands = [
         await respond(interaction, '❌ La apuesta debe ser un número entero mayor que 0.', { ephemeral: true });
         return;
       }
+      const limitProblem = betLimitProblem(amount, await getTuning(interaction.guildId!));
+      if (limitProblem) {
+        await respond(interaction, limitProblem, { ephemeral: true });
+        return;
+      }
 
       const { guildId, userId } = await startBet(interaction);
       const result = await economyTask(guildId, userId, () => playInstantBet(guildId, userId, { all: false, amount }, (bet) => {
@@ -492,7 +534,8 @@ export const gamblingCommands = [
 
     async execute(interaction: ChatInputCommandInteraction, bot: DiscordBot) {
       const chambers = interaction.options.getInteger('camaras') || 6;
-      const minBet = 100;
+      // Apuesta toda la cartera: no tiene máximo, pero sí respeta la apuesta mínima del servidor
+      const minBet = Math.max(100, (await getTuning(interaction.guildId!)).minBet);
 
       const { guildId, userId } = await startBet(interaction);
       // Juego justo: sobrevives con probabilidad (c-1)/c y ganas 1/(c-1) de lo apostado

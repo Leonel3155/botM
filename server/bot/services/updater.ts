@@ -68,6 +68,8 @@ export interface UpdateStatus {
   pending: string[];
   /** Archivos del proyecto cambiados a mano (impiden actualizar solo). */
   localChanges: string[];
+  /** npm install reescribió package-lock.json: no cuenta como cambio a mano, se descarta al actualizar. */
+  lockfileChanged: boolean;
 }
 
 let lastStatus: { at: number; status: UpdateStatus } | null = null;
@@ -80,12 +82,15 @@ export async function checkForUpdate(): Promise<UpdateStatus> {
     await git(['fetch', '--quiet']);
     const current = await git(['rev-parse', '--short', 'HEAD']);
     const log = await git(['log', '--format=%s', 'HEAD..@{u}']);
-    const changes = await git(['status', '--porcelain', '--untracked-files=no']);
+    // Sin trim(): cada línea es "XY archivo" y X puede ser un espacio (" M package-lock.json")
+    const changes = (await run('git', ['status', '--porcelain', '--untracked-files=no'], GIT_TIMEOUT_MS)).stdout;
+    const changedFiles = changes.split('\n').filter((line) => line.length > 3).map((line) => line.slice(3));
     const status: UpdateStatus = {
       branch,
       current,
       pending: log ? log.split('\n').filter(Boolean) : [],
-      localChanges: changes ? changes.split('\n').map((line) => line.slice(3)).filter(Boolean) : [],
+      localChanges: changedFiles.filter((file) => file !== 'package-lock.json'),
+      lockfileChanged: changedFiles.includes('package-lock.json'),
     };
     lastStatus = { at: Date.now(), status };
     return status;
@@ -118,15 +123,13 @@ export async function applyUpdate(): Promise<UpdateResult> {
   try {
     const status = await checkForUpdate();
     if (status.pending.length === 0) return { installed: [], dependencies: false, needsDbPush: false, restarting: false };
-    // npm install a veces reescribe package-lock.json por su cuenta: ese cambio se puede descartar
-    if (status.localChanges.length > 0 && status.localChanges.every((file) => file === 'package-lock.json')) {
-      await git(['checkout', '--', 'package-lock.json']);
-      status.localChanges = [];
-    }
     if (status.localChanges.length > 0) {
       const files = status.localChanges.slice(0, 5).join(', ');
       throw new UpdateError(`Hay archivos de BotM cambiados a mano (${files}) y no quiero pisarlos. Guárdalos en otro lado o deshazlos con "git checkout -- ." y vuelve a intentar.`);
     }
+    // npm install a veces reescribe package-lock.json por su cuenta: ese cambio se puede descartar
+    // (desde HEAD, para que también se vaya si quedó en el índice con "git add")
+    if (status.lockfileChanged) await git(['checkout', 'HEAD', '--', 'package-lock.json']);
 
     const before = await git(['rev-parse', 'HEAD']);
     try {
@@ -144,7 +147,8 @@ export async function applyUpdate(): Promise<UpdateResult> {
     try {
       if (dependencies) {
         console.log('📦 Instalando las dependencias nuevas (npm install)…');
-        await run('npm', ['install', '--no-audit', '--no-fund'], NPM_TIMEOUT_MS);
+        // --include=dev: con NODE_ENV=production (npm start) npm se saltaría vite/esbuild y el build fallaría
+        await run('npm', ['install', '--include=dev', '--no-audit', '--no-fund'], NPM_TIMEOUT_MS);
       }
       if (process.env.NODE_ENV === 'production') {
         console.log('🛠️ Compilando la versión nueva (npm run build)…');

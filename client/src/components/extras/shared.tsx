@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useState, type ReactNode } from "react";
+import { useEffect, useMemo, useState, type ComponentPropsWithoutRef, type ReactNode } from "react";
 import { useMutation, useQuery } from "@tanstack/react-query";
 import type { LucideIcon } from "lucide-react";
 import type {
@@ -9,6 +9,7 @@ import type {
   GuildExtrasSaveRequest,
 } from "@shared/api";
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card";
+import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import { Select, SelectContent, SelectSeparator, SelectTrigger, SelectValue } from "@/components/ui/select";
 import { Switch } from "@/components/ui/switch";
@@ -38,6 +39,10 @@ export function useRolesQuery(guildId: string) {
 }
 
 function sameValue(a: unknown, b: unknown): boolean {
+  // Las listas de textos (eventos, palabras, ids) son conjuntos: cambiar solo el orden no es un cambio
+  if (Array.isArray(a) && Array.isArray(b) && [...a, ...b].every((item) => typeof item === "string")) {
+    return JSON.stringify([...a].sort()) === JSON.stringify([...b].sort());
+  }
   return JSON.stringify(a) === JSON.stringify(b);
 }
 
@@ -49,22 +54,30 @@ export function useExtrasDraft<K extends keyof GuildExtrasItem>(guildId: string,
   const { toast } = useToast();
   const pick = (source: GuildExtrasItem) => Object.fromEntries(fields.map((field) => [field, source[field]])) as Pick<GuildExtrasItem, K>;
   const [draft, setDraft] = useState<Pick<GuildExtrasItem, K> | null>(saved ? pick(saved) : null);
+  // Valores del servidor de los que parte el borrador: con ellos se sabe qué editó de verdad el usuario
+  const [base, setBase] = useState<Pick<GuildExtrasItem, K> | null>(saved ? pick(saved) : null);
   const [error, setError] = useState<string | null>(null);
 
-  // Al llegar datos nuevos del servidor (o cambiar de servidor) se reemplaza el borrador si no había cambios
+  // Al llegar datos nuevos del servidor (otra pestaña u otro admin guardó) los campos que el usuario no ha
+  // tocado toman el valor nuevo; lo que sí editó se queda en el borrador
   const savedKey = saved ? JSON.stringify(pick(saved)) : "";
-  const [baseKey, setBaseKey] = useState(savedKey);
   useEffect(() => {
     if (!saved) return;
-    if (!draft || JSON.stringify(draft) === baseKey) setDraft(pick(saved));
-    setBaseKey(savedKey);
+    const next = pick(saved);
+    setDraft((current) => {
+      if (!current || !base) return next;
+      const merged = { ...current };
+      for (const field of fields) if (sameValue(current[field], base[field])) merged[field] = next[field];
+      return merged;
+    });
+    setBase(next);
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [savedKey, guildId]);
 
   const changed = useMemo(() => {
-    if (!saved || !draft) return [] as K[];
-    return fields.filter((field) => !sameValue(draft[field], saved[field]));
-  }, [draft, saved, fields]);
+    if (!base || !draft) return [] as K[];
+    return fields.filter((field) => !sameValue(draft[field], base[field]));
+  }, [draft, base, fields]);
 
   const mutation = useMutation({
     mutationFn: async (body: GuildExtrasSaveRequest) => {
@@ -73,7 +86,9 @@ export function useExtrasDraft<K extends keyof GuildExtrasItem>(guildId: string,
     },
     onSuccess: (response) => {
       queryClient.setQueryData(extrasKey(guildId), response);
-      setDraft(pick(response.extras));
+      const next = pick(response.extras);
+      setBase(next);
+      setDraft(next);
       setError(null);
       toast({ title: "Cambios guardados", description: "El bot ya usa la configuración nueva." });
     },
@@ -87,7 +102,7 @@ export function useExtrasDraft<K extends keyof GuildExtrasItem>(guildId: string,
     mutation.mutate(body);
   };
   const discard = () => {
-    if (saved) setDraft(pick(saved));
+    if (base) setDraft(base);
     setError(null);
   };
 
@@ -113,7 +128,7 @@ export function ChannelSelect({ id, value, onChange, channels, placeholder = "El
       </SelectTrigger>
       <SelectContent className="max-h-80">
         <RichSelectItem value={NONE}>{placeholder}</RichSelectItem>
-        {missing && <RichSelectItem value={value} hint="Ese canal ya no existe">Canal borrado</RichSelectItem>}
+        {missing && <RichSelectItem value={value} hint="Ese canal no existe o no tienes acceso a él">Canal oculto o borrado</RichSelectItem>}
         <SelectSeparator />
         {postable.map((channel) => (
           <RichSelectItem
@@ -127,6 +142,53 @@ export function ChannelSelect({ id, value, onChange, channels, placeholder = "El
         ))}
       </SelectContent>
     </Select>
+  );
+}
+
+type ClampedNumberInputProps = Omit<ComponentPropsWithoutRef<typeof Input>,"value" | "onChange" | "type" | "min" | "max"> & {
+  value: number;
+  min: number;
+  max: number;
+  onCommit: (value: number) => void;
+};
+
+/** Entero escrito en el campo, o null si está vacío o no es un número. */
+function parseWholeNumber(raw: string): number | null {
+  const n = Math.round(Number(raw));
+  return raw.trim() !== "" && Number.isFinite(n) ? n : null;
+}
+
+/**
+ * Campo numérico que deja escribir libremente (borrar y teclear otro número) y solo pasa al borrador enteros
+ * dentro del rango; al salir del campo corrige lo que haya quedado vacío o fuera de rango.
+ */
+export function ClampedNumberInput({ value, min, max, onCommit, onBlur, ...props }: ClampedNumberInputProps) {
+  const [text, setText] = useState(String(value));
+  // Si el valor cambia por fuera (descartar, quitar una regla) se muestra el nuevo; si es el que se está escribiendo, se respeta el texto
+  useEffect(() => {
+    setText((current) => (parseWholeNumber(current) === value ? current : String(value)));
+  }, [value]);
+  return (
+    <Input
+      {...props}
+      type="number"
+      min={min}
+      max={max}
+      value={text}
+      onChange={(event) => {
+        const raw = event.target.value;
+        setText(raw);
+        const n = parseWholeNumber(raw);
+        if (n !== null && n >= min && n <= max) onCommit(n);
+      }}
+      onBlur={(event) => {
+        const n = parseWholeNumber(text);
+        const clamped = n === null ? value : Math.min(max, Math.max(min, n));
+        setText(String(clamped));
+        if (clamped !== value) onCommit(clamped);
+        onBlur?.(event);
+      }}
+    />
   );
 }
 

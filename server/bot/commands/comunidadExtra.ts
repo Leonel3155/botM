@@ -6,9 +6,10 @@ import {
   SlashCommandBuilder,
   type AutocompleteInteraction,
   type ChatInputCommandInteraction,
+  type GuildMember,
 } from 'discord.js';
 import { and, eq, sql } from 'drizzle-orm';
-import { confessions, guildExtras } from '@shared/schema';
+import { confessions, guildExtras, type GuildExtras } from '@shared/schema';
 import { db } from '../../db';
 import type { DiscordBot } from '../index';
 import type { BotCommand } from './index';
@@ -16,17 +17,30 @@ import {
   countUserReminders,
   createReminder,
   deleteUserReminder,
+  findReminderChannel,
   listUserReminders,
   parseDuration,
   REMINDER_LIMITS,
 } from '../services/reminders';
-import { getExtrasQuick, forgetExtras } from '../services/extras';
+import { getExtrasQuick, getExtrasSafe, forgetExtras } from '../services/extras';
 import { checkMemberCanPost, resolveSendableChannel, truncate } from '../services/channels';
-import { findFilterMatch } from '../services/autoMod';
+import { checkMessageText, type FilterHit } from '../services/autoMod';
 import { storage } from '../../storage';
 
 function unix(date: Date): number {
   return Math.floor(date.getTime() / 1000);
+}
+
+const FILTER_REASON: Record<FilterHit['kind'], string> = {
+  word: 'tiene palabras que no están permitidas en este servidor',
+  invite: 'tiene una invitación a otro servidor',
+  link: 'tiene un enlace, y aquí no se permiten',
+};
+
+// Igual que el filtro del chat: quien gestiona mensajes y los roles exentos no pasan por él
+function skipsFilter(member: GuildMember, extras: GuildExtras): boolean {
+  if (member.permissions.has(PermissionFlagsBits.ManageMessages) || member.permissions.has(PermissionFlagsBits.Administrator)) return true;
+  return extras.filterExemptRoleIds.some((roleId) => member.roles.cache.has(roleId));
 }
 
 export const recordar: BotCommand = {
@@ -64,9 +78,30 @@ export const recordar: BotCommand = {
         return;
       }
       const text = interaction.options.getString('que', true).trim();
+      // El bot lo publica después en este canal (y el filtro no revisa mensajes del bot): se revisa ahora
+      const guild = interaction.guild;
+      const member = guild ? guild.members.cache.get(interaction.user.id) ?? await guild.members.fetch(interaction.user.id).catch(() => null) : null;
+      const here = guild?.channels.cache.get(interaction.channelId);
+      if (!guild || !member || !here?.isTextBased()) {
+        await interaction.editReply('❌ No pude revisar tus permisos en este canal. Intenta de nuevo en un momento.');
+        return;
+      }
+      if (!checkMemberCanPost(member, here).ok) {
+        await interaction.editReply('❌ No puedes escribir en este canal, así que no te dejo el recordatorio aquí. Úsalo en un canal donde sí puedas escribir.');
+        return;
+      }
+      const extras = await getExtrasSafe(guildId);
+      const hit = extras.filterEnabled && !skipsFilter(member, extras) ? checkMessageText(text, extras) : null;
+      if (hit) {
+        await interaction.editReply(`❌ Ese recordatorio ${FILTER_REASON[hit.kind]}.`);
+        return;
+      }
       const dueAt = new Date(Date.now() + ms);
       await createReminder({ guildId, channelId: interaction.channelId, userId: interaction.user.id, text, dueAt });
-      await interaction.editReply(`⏰ Listo, te lo recuerdo <t:${unix(dueAt)}:R> (<t:${unix(dueAt)}:f>) en este canal.`);
+      const where = findReminderChannel(guild, interaction.channelId)
+        ? 'en este canal'
+        : 'por mensaje directo, porque no puedo escribir en este canal (revisa que tengas abiertos los mensajes directos de este servidor)';
+      await interaction.editReply(`⏰ Listo, te lo recuerdo <t:${unix(dueAt)}:R> (<t:${unix(dueAt)}:f>) ${where}.`);
       return;
     }
 
@@ -147,8 +182,10 @@ export const confesar: BotCommand = {
       return;
     }
     const text = interaction.options.getString('texto', true).trim();
-    if (extras.filterEnabled && findFilterMatch(text, extras.filterWords)) {
-      await interaction.editReply('❌ Tu confesión tiene palabras que no están permitidas en este servidor.');
+    // Palabras, invitaciones y enlaces, igual que en el chat (el filtro no revisa lo que publica el bot)
+    const hit = extras.filterEnabled ? checkMessageText(text, extras) : null;
+    if (hit) {
+      await interaction.editReply(`❌ Tu confesión ${FILTER_REASON[hit.kind]}.`);
       return;
     }
     const channel = resolveSendableChannel(guild, extras.confessionsChannelId);
