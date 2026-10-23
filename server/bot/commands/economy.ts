@@ -6,8 +6,7 @@ import {
   DailyResult,
   EconomyRow,
   MAX_COINS,
-  ROB_MIN_ROBBER,
-  ROB_MIN_TARGET,
+  actionCooldownMs,
   adminAddCoins,
   adminAddCoinsToMany,
   adminRemoveCoins,
@@ -18,6 +17,7 @@ import {
   economyStats,
   economyTask,
   ensureAccount,
+  ensureAccounts,
   formatCoins,
   getAccount,
   parseAmount,
@@ -28,6 +28,8 @@ import {
   withdraw,
 } from '../services/economy';
 import { ADMIN_ONLY, discordRelativeTime, isAdmin, resolveGuild, respond } from '../utils/interactions';
+import { getTuningFor, getTuningSafe } from '../services/extras';
+import { DEFAULT_TUNING, formatWaitMinutes, type GuildTuning } from '@shared/tuning';
 
 // ===== Mensajes compartidos con los comandos de prefijo (&bal, &daily, &dep, &with) =====
 
@@ -59,7 +61,7 @@ export function balanceEmbed(target: User, account: EconomyRow | undefined, requ
   return embed;
 }
 
-export function dailyEmbed(result: DailyResult): EmbedBuilder {
+export function dailyEmbed(result: DailyResult, tuning: GuildTuning = DEFAULT_TUNING): EmbedBuilder {
   if (!result.ok) {
     return new EmbedBuilder()
       .setColor(0xF39C12)
@@ -67,9 +69,14 @@ export function dailyEmbed(result: DailyResult): EmbedBuilder {
       .setDescription(`Podrás volver a reclamarla ${discordRelativeTime(result.retryInMs)}.`);
   }
 
+  const window = formatWaitMinutes(tuning.dailyCooldownHours * 2 * 60);
   const streakText = result.streakLost
-    ? `${result.streak} día (pasaron más de 48 h, así que la racha empezó de nuevo)`
+    ? `${result.streak} día (pasaron más de ${window}, así que la racha empezó de nuevo)`
     : `${result.streak} ${result.streak === 1 ? 'día' : 'días'} seguidos`;
+  const maxStreakBonus = tuning.dailyStreakStepPercent * tuning.dailyStreakMaxDays;
+  const footer = maxStreakBonus > 0
+    ? `Vuelve en ${formatWaitMinutes(tuning.dailyCooldownHours * 60)}: cada día seguido suma +${tuning.dailyStreakStepPercent} % (hasta +${maxStreakBonus} %). Si pasan más de ${window}, la racha se reinicia.`
+    : `Vuelve en ${formatWaitMinutes(tuning.dailyCooldownHours * 60)}.`;
 
   return new EmbedBuilder()
     .setColor(0x4CAF50)
@@ -78,10 +85,10 @@ export function dailyEmbed(result: DailyResult): EmbedBuilder {
     .addFields(
       { name: '🔥 Racha', value: streakText, inline: true },
       { name: '🎯 Bono por nivel', value: `+${formatCoins(result.levelBonus)}`, inline: true },
-      { name: '⚡ Bono por racha', value: result.streakBonus > 0 ? `+${formatCoins(result.streakBonus)}` : 'Desde el 2.º día seguido', inline: true },
+      { name: '⚡ Bono por racha', value: result.streakBonus > 0 ? `+${formatCoins(result.streakBonus)}` : maxStreakBonus > 0 ? 'Desde el 2.º día seguido' : 'Sin bono en este servidor', inline: true },
       { name: '💵 Cartera', value: formatCoins(result.balance), inline: true }
     )
-    .setFooter({ text: 'Vuelve mañana: cada día seguido suma +5 % (hasta +50 %). Si pasan más de 48 h, la racha se reinicia.' })
+    .setFooter({ text: footer })
     .setTimestamp();
 }
 
@@ -116,6 +123,9 @@ function insufficientMessage(available: number): string {
     ? '❌ No tienes monedas en la cartera. Usa `/daily` o `/work` para conseguir algunas.'
     : `❌ No te alcanza: en la cartera tienes ${formatCoins(available)}.`;
 }
+
+// /crime, /slut y /rob se pueden apagar por separado desde el panel (Economía)
+const DISABLED_IN_PANEL = 'está apagado en este servidor. Un admin puede activarlo en el panel (Economía).';
 
 function cooldownEmbed(title: string, retryInMs: number): EmbedBuilder {
   return new EmbedBuilder()
@@ -163,7 +173,7 @@ export const economyCommands = [
   {
     data: new SlashCommandBuilder()
       .setName('daily')
-      .setDescription('🎁 Reclama tu recompensa diaria (la racha se pierde si pasan más de 48 h)'),
+      .setDescription('🎁 Reclama tu recompensa diaria (si cobras seguido, ganas un bono por racha)'),
 
     async execute(interaction: ChatInputCommandInteraction, bot: DiscordBot) {
       await interaction.deferReply();
@@ -171,15 +181,16 @@ export const economyCommands = [
       const userId = interaction.user.id;
 
       await ensureAccount(await resolveGuild(interaction), interaction.user);
-      const result = await economyTask(guildId, userId, () => claimDaily(guildId, userId));
-      await respond(interaction, { embeds: [dailyEmbed(result)] }, { ephemeral: !result.ok });
+      const tuning = await getTuningSafe(guildId);
+      const result = await economyTask(guildId, userId, () => claimDaily(guildId, userId, tuning));
+      await respond(interaction, { embeds: [dailyEmbed(result, tuning)] }, { ephemeral: !result.ok });
     }
   },
 
   {
     data: new SlashCommandBuilder()
       .setName('work')
-      .setDescription('💼 Trabaja para ganar monedas (una vez por hora)')
+      .setDescription('💼 Trabaja para ganar monedas')
       .addStringOption(option =>
         option.setName('trabajo')
           .setDescription('Qué trabajo quieres hacer (si no eliges, te toca uno al azar)')
@@ -202,11 +213,13 @@ export const economyCommands = [
 
       await interaction.deferReply();
       await ensureAccount(await resolveGuild(interaction), interaction.user);
+      const tuning = await getTuningSafe(guildId);
 
+      // La paga de cada trabajo se escala con el porcentaje del panel (100 % = normal)
       const result = await economyTask(guildId, userId, () => runTimedAction(guildId, userId, 'work', () => ({
-        delta: Math.floor(Math.random() * (job.max - job.min + 1)) + job.min,
+        delta: Math.floor(((Math.floor(Math.random() * (job.max - job.min + 1)) + job.min) * tuning.workPayPercent) / 100),
         info: null,
-      })));
+      }), actionCooldownMs('work', tuning)));
 
       if (!result.ok) {
         const embed = 'retryInMs' in result
@@ -221,7 +234,7 @@ export const economyCommands = [
         .setTitle(`${job.emoji} Trabajo: ${job.name}`)
         .setDescription(`Trabajaste como **${job.name}** y ganaste **${formatCoins(result.delta)}**.`)
         .addFields({ name: '💵 Cartera', value: formatCoins(result.balance), inline: true })
-        .setFooter({ text: 'Puedes volver a trabajar en 1 hora.' })
+        .setFooter({ text: `Puedes volver a trabajar en ${formatWaitMinutes(tuning.workCooldownMinutes)}.` })
         .setTimestamp();
       await respond(interaction, { embeds: [embed] });
     }
@@ -292,21 +305,32 @@ export const economyCommands = [
   {
     data: new SlashCommandBuilder()
       .setName('crime')
-      .setDescription('🔫 Arriesga el 20 % de tu cartera en un crimen (50 % de salir bien, cada 2 horas)'),
+      .setDescription('🔫 Arriesga parte de tu cartera en un crimen: si sale bien la ganas, si no la pierdes'),
 
     async execute(interaction: ChatInputCommandInteraction, bot: DiscordBot) {
       const guildId = interaction.guildId!;
       const userId = interaction.user.id;
 
+      // Antes de deferReply se lee con tiempo máximo (la misma lectura que el filtro de economía);
+      // los valores del juego se leen ya sin prisa
+      if (!(await getTuningFor(interaction)).crimeEnabled) {
+        await respond(interaction, `🔫 \`/crime\` ${DISABLED_IN_PANEL}`, { ephemeral: true });
+        return;
+      }
+
       await interaction.deferReply();
       await ensureAccount(await resolveGuild(interaction), interaction.user);
+      const tuning = await getTuningSafe(guildId);
 
       const result = await economyTask(guildId, userId, () => runTimedAction<{ risk: number }>(guildId, userId, 'crime', (wallet) => {
-        const risk = Math.floor(wallet * 0.2);
-        if (risk <= 0) return { blocked: '❌ Necesitas al menos 5 monedas en la cartera para arriesgarte.' };
-        const won = Math.random() < 0.5;
+        const risk = Math.floor((wallet * tuning.crimeRiskPercent) / 100);
+        if (risk <= 0) {
+          const needed = Math.ceil(100 / tuning.crimeRiskPercent);
+          return { blocked: `❌ Necesitas al menos ${formatCoins(needed)} en la cartera para arriesgarte.` };
+        }
+        const won = Math.random() * 100 < tuning.crimeSuccessPercent;
         return { delta: won ? risk : -risk, info: { risk } };
-      }));
+      }, actionCooldownMs('crime', tuning)));
 
       if (!result.ok) {
         const embed = 'retryInMs' in result
@@ -338,7 +362,7 @@ export const economyCommands = [
           { name: 'Arriesgaste', value: formatCoins(result.info.risk), inline: true },
           { name: '💵 Cartera', value: formatCoins(result.balance), inline: true }
         )
-        .setFooter({ text: 'Puedes volver a intentarlo en 2 horas.' })
+        .setFooter({ text: `Puedes volver a intentarlo en ${formatWaitMinutes(tuning.crimeCooldownMinutes)}.` })
         .setTimestamp();
       await respond(interaction, { embeds: [embed] });
     }
@@ -401,7 +425,7 @@ export const economyCommands = [
   {
     data: new SlashCommandBuilder()
       .setName('rob')
-      .setDescription('🥷 Intenta robarle monedas de la cartera a alguien (cada 4 horas)')
+      .setDescription('🥷 Intenta robarle monedas de la cartera a alguien (si te atrapan, pagas multa)')
       .addUserOption(option =>
         option.setName('usuario').setDescription('A quién intentas robar').setRequired(true)
       ),
@@ -420,19 +444,26 @@ export const economyCommands = [
         return;
       }
 
+      if (!(await getTuningFor(interaction)).robEnabled) {
+        await respond(interaction, `🥷 \`/rob\` ${DISABLED_IN_PANEL}`, { ephemeral: true });
+        return;
+      }
+
       await interaction.deferReply();
       const guild = await resolveGuild(interaction);
       await ensureAccount(guild, robber);
       await ensureAccount(guild, target);
+      const tuning = await getTuningSafe(guildId);
 
-      const result = await economyTask(guildId, robber.id, () => attemptRob(guildId, robber.id, target.id));
+      const result = await economyTask(guildId, robber.id, () => attemptRob(guildId, robber.id, target.id, tuning));
       if (!result.ok) {
         if (result.reason === 'cooldown') {
           await respond(interaction, { embeds: [cooldownEmbed('🚔 Mejor espera a que se calme la cosa', result.retryInMs)] }, { ephemeral: true });
         } else if (result.reason === 'target_poor') {
-          await respond(interaction, `❌ ${target.displayName} no trae suficiente dinero en la cartera (mínimo ${formatCoins(ROB_MIN_TARGET)}).`, { ephemeral: true });
+          const minimum = tuning.robMinWallet > 0 ? ` (mínimo ${formatCoins(tuning.robMinWallet)})` : '';
+          await respond(interaction, `❌ ${target.displayName} no trae suficiente dinero en la cartera${minimum}.`, { ephemeral: true });
         } else {
-          await respond(interaction, `❌ Necesitas al menos ${formatCoins(ROB_MIN_ROBBER)} en la cartera para intentar un robo.`, { ephemeral: true });
+          await respond(interaction, `❌ Necesitas al menos ${formatCoins(tuning.robMinWallet)} en la cartera para intentar un robo.`, { ephemeral: true });
         }
         return;
       }
@@ -446,7 +477,9 @@ export const economyCommands = [
         : new EmbedBuilder()
           .setColor(0xF44336)
           .setTitle('🚔 Robo fallido')
-          .setDescription(`**${robber.displayName}** intentó robarle a ${target}, lo atraparon y pagó una multa de **${formatCoins(result.fine)}**.`)
+          .setDescription(result.fine > 0
+            ? `**${robber.displayName}** intentó robarle a ${target}, lo atraparon y pagó una multa de **${formatCoins(result.fine)}**.`
+            : `**${robber.displayName}** intentó robarle a ${target}, pero lo atraparon y se fue con las manos vacías.`)
           .addFields({ name: 'Tu cartera', value: formatCoins(result.robberBalance), inline: true });
       embed.setFooter({ text: 'Consejo: lo que guardas en el banco no se puede robar.' }).setTimestamp();
       await respond(interaction, { embeds: [embed] });
@@ -456,22 +489,28 @@ export const economyCommands = [
   {
     data: new SlashCommandBuilder()
       .setName('slut')
-      .setDescription('💋 Trabajo nocturno de alto riesgo y mejor paga (cada 2 horas)'),
+      .setDescription('💋 Trabajo nocturno de alto riesgo y mejor paga'),
 
     async execute(interaction: ChatInputCommandInteraction, bot: DiscordBot) {
       const guildId = interaction.guildId!;
       const userId = interaction.user.id;
 
+      if (!(await getTuningFor(interaction)).slutEnabled) {
+        await respond(interaction, `💋 \`/slut\` ${DISABLED_IN_PANEL}`, { ephemeral: true });
+        return;
+      }
+
       await interaction.deferReply();
       await ensureAccount(await resolveGuild(interaction), interaction.user);
+      const tuning = await getTuningSafe(guildId);
 
-      // 70 % gana entre 200 y 1,000; 30 % pierde el 10 % de la cartera (máx. 300)
+      // Sale bien (70 % por defecto): gana entre 200 y 1,000; si no, pierde el 10 % de la cartera (máx. 300)
       const result = await economyTask(guildId, userId, () => runTimedAction(guildId, userId, 'slut', (wallet) => {
-        if (Math.random() < 0.7) {
+        if (Math.random() * 100 < tuning.slutSuccessPercent) {
           return { delta: Math.floor(Math.random() * 801) + 200, info: null };
         }
         return { delta: -Math.min(Math.floor(wallet * 0.1), 300), info: null };
-      }));
+      }, actionCooldownMs('slut', tuning)));
 
       if (!result.ok) {
         const embed = 'retryInMs' in result
@@ -504,7 +543,7 @@ export const economyCommands = [
         .setTitle('💋 Trabajo nocturno')
         .setDescription(text)
         .addFields({ name: '💵 Cartera', value: formatCoins(result.balance), inline: true })
-        .setFooter({ text: 'Puedes volver a intentarlo en 2 horas.' })
+        .setFooter({ text: `Puedes volver a intentarlo en ${formatWaitMinutes(tuning.slutCooldownMinutes)}.` })
         .setTimestamp();
       await respond(interaction, { embeds: [embed] });
     }
@@ -708,7 +747,12 @@ export const economyCommands = [
 
       await interaction.deferReply({ flags: MessageFlags.Ephemeral });
       const guild = await resolveGuild(interaction);
-      const members = await guild.members.fetch();
+      // Los miembros ya se cargan al arrancar; si Discord limita la descarga completa (p. ej. justo
+      // después de arrancar), se usan los de la caché
+      const members = await guild.members.fetch().catch((error) => {
+        console.warn('[ECONOMÍA] No se pudo descargar la lista de miembros, uso la caché:', error);
+        return guild.members.cache;
+      });
       const recipients = [...members.values()].filter(m => !m.user.bot && m.roles.cache.has(role.id));
 
       if (recipients.length === 0) {
@@ -716,12 +760,27 @@ export const economyCommands = [
         return;
       }
 
-      for (const member of recipients) {
-        await ensureAccount(guild, member.user);
-      }
+      const people = `${recipients.length.toLocaleString('es-MX')} ${recipients.length === 1 ? 'persona' : 'personas'}`;
+      await respond(interaction, `⏳ Procesando ${people}…`);
+
+      await ensureAccounts(guild, recipients.map(m => m.user));
       await adminAddCoinsToMany(guildId, recipients.map(m => m.id), amount);
 
-      await respond(interaction, `✅ Le diste ${formatCoins(amount)} a ${recipients.length.toLocaleString('es-MX')} ${recipients.length === 1 ? 'persona' : 'personas'} con el rol ${role.name}.`);
+      const done = `✅ Le diste ${formatCoins(amount)} a ${people} con el rol ${role.name}.`;
+      try {
+        await respond(interaction, done);
+      } catch (error) {
+        // Las monedas ya se entregaron: si la respuesta falla (p. ej. venció el token de la interacción),
+        // se avisa en el canal para que nadie lo repita y pague dos veces. El error nunca se relanza:
+        // el aviso del despachador diría "intenta de nuevo" y repetirlo pagaría otra vez
+        console.error('[ECONOMÍA] No se pudo confirmar /add-money-role, aviso en el canal:', error);
+        const channel = interaction.channel;
+        if (!channel?.isSendable()) return;
+        // Solo menciona al admin: el nombre del rol podría ser "@everyone"
+        await channel
+          .send({ content: `${interaction.user} ${done}`, allowedMentions: { users: [interaction.user.id] } })
+          .catch((sendError) => console.error('[ECONOMÍA] Tampoco se pudo avisar en el canal:', sendError));
+      }
     }
   }
 ];

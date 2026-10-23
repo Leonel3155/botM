@@ -1,10 +1,9 @@
 // Recordatorios (/recordar): el bot avisa en el mismo canal (o por mensaje directo si ya no puede
 // escribir ahí) cuando llega la hora. Se guardan en la base, así que sobreviven a un reinicio.
-import type { Client } from 'discord.js';
+import { PermissionFlagsBits, type Client, type Guild, type GuildTextBasedChannel } from 'discord.js';
 import { and, asc, count, eq, lte } from 'drizzle-orm';
 import { reminders, type Reminder } from '@shared/schema';
 import { db } from '../../db';
-import { resolveSendableChannel } from './channels';
 
 export const REMINDER_LIMITS = { perUser: 25, maxDays: 365, textMax: 500 };
 
@@ -59,21 +58,29 @@ export async function deleteUserReminder(guildId: string, userId: string, id: st
   return rows.length > 0;
 }
 
+/** El canal, si puedo escribir ahí. El recordatorio es texto plano: no hace falta "Insertar enlaces". */
+export function findReminderChannel(guild: Guild, channelId: string): GuildTextBasedChannel | null {
+  const channel = guild.channels.cache.get(channelId);
+  if (!channel?.isTextBased()) return null;
+  const me = guild.members.me;
+  const send = channel.isThread() ? PermissionFlagsBits.SendMessagesInThreads : PermissionFlagsBits.SendMessages;
+  return me && channel.permissionsFor(me)?.has([PermissionFlagsBits.ViewChannel, send]) ? channel : null;
+}
+
 async function deliver(client: Client, reminder: Reminder) {
   const text = `⏰ <@${reminder.userId}>, me pediste que te recordara: ${reminder.text}`;
   const guild = client.guilds.cache.get(reminder.guildId);
-  if (guild) {
-    const channel = resolveSendableChannel(guild, reminder.channelId);
-    if (channel.ok) {
-      const sent = await channel.channel.send({ content: text.slice(0, 2000), allowedMentions: { users: [reminder.userId] } })
-        .then(() => true).catch(() => false);
-      if (sent) return;
-    }
+  const channel = guild ? findReminderChannel(guild, reminder.channelId) : null;
+  if (channel) {
+    const sent = await channel.send({ content: text.slice(0, 2000), allowedMentions: { users: [reminder.userId] } })
+      .then(() => true).catch(() => false);
+    if (sent) return;
   }
   // No se pudo en el canal: por mensaje directo
   const user = await client.users.fetch(reminder.userId).catch(() => null);
-  await user?.send({ content: `⏰ Me pediste que te recordara${guild ? ` (en ${guild.name})` : ''}: ${reminder.text}`.slice(0, 2000) })
-    .catch(() => undefined);
+  const sent = await user?.send({ content: `⏰ Me pediste que te recordara${guild ? ` (en ${guild.name})` : ''}: ${reminder.text}`.slice(0, 2000) })
+    .then(() => true).catch(() => false);
+  if (!sent) console.warn(`[RECORDATORIOS] No pude entregar un recordatorio a ${reminder.userId}: ni en el canal ni por mensaje directo.`);
 }
 
 let running = false;

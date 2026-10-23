@@ -12,8 +12,24 @@ import { getLocalDateString, getZonedParts, resolveTimezone } from './timezone';
 
 export const DEFAULT_BIRTHDAY_MESSAGE = '🎂 ¡Hoy es el cumpleaños de {usuarios}! Que pasen un día increíble. 🎉';
 const ROLE_HOURS = 24;
+// Mínimo de días entre un festejo y el siguiente: así volver a guardar la fecha de hoy (o borrarla y guardarla
+// otra vez) no da felicitación y rol cada día
+const CELEBRATE_GAP_DAYS = 300;
 const DAYS_IN_MONTH = [31, 29, 31, 30, 31, 30, 31, 31, 30, 31, 30, 31];
 export const MONTH_NAMES = ['enero', 'febrero', 'marzo', 'abril', 'mayo', 'junio', 'julio', 'agosto', 'septiembre', 'octubre', 'noviembre', 'diciembre'];
+
+/** Un cumpleaños con fecha (quien lo borró se queda un tiempo sin fecha, solo con cuándo se le festejó). */
+export type SavedBirthday = Birthday & { month: number; day: number };
+type BirthdayDate = { month: number; day: number };
+
+function hasDate(row: Birthday): row is SavedBirthday {
+  return row.month !== null && row.day !== null;
+}
+
+/** Fecha local desde la que un festejo anterior ya no cuenta. */
+function gapCutoff(now: Date, timezone: string): string {
+  return getLocalDateString(new Date(now.getTime() - CELEBRATE_GAP_DAYS * 86_400_000), timezone);
+}
 
 export function isValidBirthday(month: number, day: number): boolean {
   return Number.isInteger(month) && Number.isInteger(day) && month >= 1 && month <= 12 && day >= 1 && day <= DAYS_IN_MONTH[month - 1];
@@ -28,7 +44,7 @@ function isLeapYear(year: number): boolean {
 }
 
 /** ¿Se festeja hoy? Quien nació el 29 de febrero lo festeja el 28 en los años que no son bisiestos. */
-export function celebratesOn(birthday: Pick<Birthday, 'month' | 'day'>, year: number, month: number, day: number): boolean {
+export function celebratesOn(birthday: BirthdayDate, year: number, month: number, day: number): boolean {
   if (birthday.month === month && birthday.day === day) return true;
   return birthday.month === 2 && birthday.day === 29 && month === 2 && day === 28 && !isLeapYear(year);
 }
@@ -41,21 +57,29 @@ export async function setBirthday(guildId: string, userId: string, month: number
 }
 
 export async function removeBirthday(guildId: string, userId: string): Promise<boolean> {
-  const rows = await db.delete(birthdays).where(and(eq(birthdays.guildId, guildId), eq(birthdays.userId, userId))).returning();
-  return rows.length > 0;
+  const where = and(eq(birthdays.guildId, guildId), eq(birthdays.userId, userId));
+  const [row] = await db.select().from(birthdays).where(where);
+  if (!row || !hasDate(row)) return false;
+  // Si trae el rol o se le festejó hace poco, la fila se queda sin la fecha: así borrar y volver a guardar
+  // no da otro festejo, y el rol se le quita a su hora
+  const recent = row.lastCelebrated !== null && row.lastCelebrated >= gapCutoff(new Date(), 'UTC');
+  if (row.roleGivenAt || recent) await db.update(birthdays).set({ month: null, day: null }).where(where);
+  else await db.delete(birthdays).where(where);
+  return true;
 }
 
-export async function getBirthday(guildId: string, userId: string): Promise<Birthday | undefined> {
+export async function getBirthday(guildId: string, userId: string): Promise<SavedBirthday | undefined> {
   const [row] = await db.select().from(birthdays).where(and(eq(birthdays.guildId, guildId), eq(birthdays.userId, userId)));
-  return row;
+  return row && hasDate(row) ? row : undefined;
 }
 
-export async function listBirthdays(guildId: string): Promise<Birthday[]> {
-  return db.select().from(birthdays).where(eq(birthdays.guildId, guildId));
+export async function listBirthdays(guildId: string): Promise<SavedBirthday[]> {
+  const rows = await db.select().from(birthdays).where(and(eq(birthdays.guildId, guildId), isNotNull(birthdays.month)));
+  return rows.filter(hasDate);
 }
 
 /** Días que faltan para el próximo cumpleaños (0 = hoy), contando desde la fecha local dada. */
-export function daysUntil(birthday: Pick<Birthday, 'month' | 'day'>, year: number, month: number, day: number): number {
+export function daysUntil(birthday: BirthdayDate, year: number, month: number, day: number): number {
   const today = Date.UTC(year, month - 1, day);
   for (const y of [year, year + 1]) {
     let m = birthday.month;
@@ -80,11 +104,14 @@ async function removeExpiredRoles(guild: Guild, extras: GuildExtras) {
   const expired = await db.select().from(birthdays)
     .where(and(eq(birthdays.guildId, guild.id), isNotNull(birthdays.roleGivenAt), lt(birthdays.roleGivenAt, cutoff)));
   for (const row of expired) {
-    if (extras.birthdayRoleId) {
+    // Se quita el rol que se le dio, aunque en el panel ya hayan cambiado o quitado el rol de cumpleañero
+    // (las filas de antes de guardar cuál era usan el del panel)
+    const roleId = row.roleGivenId ?? extras.birthdayRoleId;
+    if (roleId) {
       const member = await guild.members.fetch(row.userId).catch(() => null);
-      await member?.roles.remove(extras.birthdayRoleId, 'Terminó su día de cumpleaños').catch(() => undefined);
+      await member?.roles.remove(roleId, 'Terminó su día de cumpleaños').catch(() => undefined);
     }
-    await db.update(birthdays).set({ roleGivenAt: null })
+    await db.update(birthdays).set({ roleGivenAt: null, roleGivenId: null })
       .where(and(eq(birthdays.guildId, guild.id), eq(birthdays.userId, row.userId)));
   }
 }
@@ -100,13 +127,15 @@ async function celebrateGuild(guild: Guild) {
   const local = getZonedParts(now, timezone);
   if (local.hour < extras.birthdayHour) return;
   const today = getLocalDateString(now, timezone);
+  const cutoff = gapCutoff(now, timezone);
 
+  // Las fechas son "YYYY-MM-DD", así que se comparan como texto
   const pending = (await listBirthdays(guild.id))
-    .filter((row) => row.lastCelebrated !== today && celebratesOn(row, local.year, local.month, local.day));
+    .filter((row) => (!row.lastCelebrated || row.lastCelebrated < cutoff) && celebratesOn(row, local.year, local.month, local.day));
   if (pending.length === 0) return;
 
   // Solo quienes siguen en el servidor
-  const present: Birthday[] = [];
+  const present: SavedBirthday[] = [];
   for (const row of pending) {
     const member = guild.members.cache.get(row.userId) ?? await guild.members.fetch(row.userId).catch(() => null);
     if (member) present.push(row);
@@ -137,7 +166,7 @@ async function celebrateGuild(guild: Guild) {
       const member = guild.members.cache.get(row.userId);
       const given = await member?.roles.add(role.role, '¡Es su cumpleaños!').then(() => true).catch(() => false);
       if (given) {
-        await db.update(birthdays).set({ roleGivenAt: new Date() })
+        await db.update(birthdays).set({ roleGivenAt: new Date(), roleGivenId: role.role.id })
           .where(and(eq(birthdays.guildId, guild.id), eq(birthdays.userId, row.userId)));
       }
     }

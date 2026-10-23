@@ -4,6 +4,7 @@ import { storage } from '../../storage';
 import { getPrestigeLevel } from '../services/economy';
 import { LevelRow, formatMultiplier, getLevelRank, getLevelRow, levelProgress, prestigeMultiplier, rowTotalXp } from '../services/levels';
 import { respond } from '../utils/interactions';
+import { getTuning } from '../services/extras';
 
 function progressBar(current: number, total: number, size = 12): string {
   const ratio = total > 0 ? Math.min(Math.max(current / total, 0), 1) : 0;
@@ -28,9 +29,10 @@ export async function buildLevelEmbed(guildId: string, target: User): Promise<Em
   const totalXp = rowTotalXp(row);
   const progress = levelProgress(totalXp);
   const level = progress.level;
-  const [rank, prestige] = await Promise.all([
+  const [rank, prestige, tuning] = await Promise.all([
     getLevelRank(guildId, target.id),
     getPrestigeLevel(guildId, target.id),
+    getTuning(guildId),
   ]);
 
   embed
@@ -47,7 +49,10 @@ export async function buildLevelEmbed(guildId: string, target: User): Promise<Em
     );
 
   if (prestige > 0) {
-    embed.addFields({ name: '🌟 Prestigio', value: `${prestige} (${formatMultiplier(prestigeMultiplier(prestige))} XP)`, inline: true });
+    embed.addFields({ name: '🌟 Prestigio', value: `${prestige} (${formatMultiplier(prestigeMultiplier(prestige, tuning))} XP)`, inline: true });
+  }
+  if (tuning.xpMultiplierPercent !== 100) {
+    embed.addFields({ name: '⚡ XP del servidor', value: `${formatMultiplier(tuning.xpMultiplierPercent / 100)} para todos`, inline: true });
   }
   return embed.setFooter({ text: '¡Sigue platicando para subir de nivel!' });
 }

@@ -54,7 +54,9 @@ export default {
           embed.setDescription(`🆕 Hay **${status.pending.length}** cambio(s) nuevo(s):\n${changeList(status.pending)}\n\nInstálalos con \`/actualizar ahora\`.`);
         }
         if (status.localChanges.length > 0) {
-          embed.addFields({ name: '⚠️ Archivos cambiados a mano', value: truncate(status.localChanges.join(', '), 1000) + '\nAsí no puedo actualizar solo.' });
+          // Discord acepta hasta 1024 caracteres por campo, contando el aviso del final
+          const suffix = '\nAsí no puedo actualizar solo.';
+          embed.addFields({ name: '⚠️ Archivos cambiados a mano', value: truncate(status.localChanges.join(', '), 1024 - suffix.length) + suffix });
         }
         await interaction.editReply({ embeds: [embed] });
         return;

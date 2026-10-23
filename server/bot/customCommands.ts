@@ -1,7 +1,9 @@
 import { Events, PermissionFlagsBits, type Message } from 'discord.js';
-import { CUSTOM_COMMAND_LIMITS, RESERVED_CUSTOM_COMMAND_NAMES } from '@shared/api';
+import { RESERVED_CUSTOM_COMMAND_NAMES } from '@shared/api';
+import { TUNING_NUMBER_LIMITS } from '@shared/tuning';
 import { storage, type EnabledCustomCommand } from '../storage';
 import type { DiscordBot } from './index';
+import { getTuningSafe } from './services/extras';
 
 // Comandos personalizados del panel: el bot responde a "<prefijo><nombre>" con el texto guardado.
 // Nunca tapan a los comandos de prefijo del bot (esos nombres están reservados) y solo pueden
@@ -12,7 +14,8 @@ const DEFAULT_PREFIX = '&';
 const CACHE_TTL_MS = 60_000;
 // Si la BD falla, se vuelve a intentar pasado este tiempo
 const ERROR_RETRY_MS = 30_000;
-const COOLDOWN_MS = CUSTOM_COMMAND_LIMITS.cooldownSeconds * 1000;
+// Al limpiar la memoria se usa la espera más larga que permite el panel
+const MAX_COOLDOWN_MS = TUNING_NUMBER_LIMITS.customCommandCooldownSeconds.max * 1000;
 const MAX_MESSAGE_LENGTH = 2000;
 
 const RESERVED = new Set(RESERVED_CUSTOM_COMMAND_NAMES);
@@ -102,17 +105,18 @@ function allowedMentionIds(template: string, authorId: string): string[] {
   return Array.from(ids).slice(0, 100);
 }
 
-// Una respuesta cada pocos segundos por persona (en ese servidor)
-function onCooldown(guildId: string, userId: string): boolean {
+// Una respuesta cada pocos segundos por persona (en ese servidor; la espera se ajusta en el panel)
+function onCooldown(guildId: string, userId: string, cooldownMs: number): boolean {
   const key = `${guildId}:${userId}`;
   const now = Date.now();
-  if (now - (lastUsedAt.get(key) ?? 0) < COOLDOWN_MS) return true;
+  if (now - (lastUsedAt.get(key) ?? 0) < cooldownMs) return true;
   lastUsedAt.set(key, now);
 
   if (lastUsedAt.size > 5000) {
     lastUsedAt.forEach((at, entry) => {
-      if (now - at >= COOLDOWN_MS) lastUsedAt.delete(entry);
+      if (now - at >= MAX_COOLDOWN_MS) lastUsedAt.delete(entry);
     });
+    if (lastUsedAt.size > 5000) lastUsedAt.clear();
   }
   return false;
 }
@@ -137,7 +141,8 @@ async function handleMessage(message: Message): Promise<void> {
   const canWrite = message.channel.isThread() ? PermissionFlagsBits.SendMessagesInThreads : PermissionFlagsBits.SendMessages;
   if (!permissions?.has([PermissionFlagsBits.ViewChannel, canWrite])) return;
 
-  if (onCooldown(message.guildId, message.author.id)) return;
+  const { customCommandCooldownSeconds } = await getTuningSafe(message.guildId);
+  if (onCooldown(message.guildId, message.author.id, customCommandCooldownSeconds * 1000)) return;
 
   await message.channel.send({
     content: renderCustomCommand(command.response, message),

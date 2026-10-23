@@ -2,6 +2,7 @@
 // Este archivo no importa nada del servidor, así que el cliente lo puede usar sin problema.
 // Convención: las fechas viajan como texto ISO 8601 en UTC (IsoDateString).
 
+import type { GuildTuning } from "./tuning";
 import type {
   AntiRaidAction,
   AntiRaidSettings,
@@ -731,6 +732,8 @@ export interface AnalyticsResponse {
   timezone: string;
   /** Personas por rango de nivel (rangos vacíos incluidos, para graficar). */
   levelDistribution: LevelBucket[];
+  /** Personas que ya llegaron al nivel para prestigiar de este servidor. */
+  prestigeReady: number;
   /** Top 10 por monedas (cartera + banco). */
   topEarners: WealthEntry[];
   /** Últimos 30 días, del más viejo al más nuevo (días sin acciones con total 0). */
@@ -769,7 +772,8 @@ export type WsServerMessage =
   | { type: "customCommandsUpdated" }
   | { type: "rolePanelsUpdated" }
   | { type: "shopUpdated" }
-  | { type: "extrasUpdated" };
+  | { type: "extrasUpdated" }
+  | { type: "tuningUpdated" };
 
 // =============================================
 // Autorroles (paneles con botones)
@@ -820,6 +824,12 @@ export interface RolePanelSaveRequest {
   description: string | null;
   exclusive: boolean;
   roles: RolePanelButtonItem[];
+}
+
+/** DELETE /api/role-panels/:guildId/:panelId */
+export interface RolePanelDeleteResponse extends SuccessResponse {
+  /** false si el mensaje se quedó en Discord (bot desconectado o sin permiso para borrarlo). */
+  messageDeleted: boolean;
 }
 
 // =============================================
@@ -942,3 +952,10 @@ export interface GuildExtrasResponse {
 }
 
 export type GuildExtrasSaveRequest = Partial<GuildExtrasItem>;
+
+/** Ajustes finos de XP, economía y juegos (ver shared/tuning.ts). */
+export interface GuildTuningResponse {
+  tuning: GuildTuning;
+}
+
+export type GuildTuningSaveRequest = Partial<GuildTuning>;

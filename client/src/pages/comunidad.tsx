@@ -1,3 +1,4 @@
+import { TuningInlineCard } from "@/components/ajustes-finos/inline-card";
 import { useEffect, useRef, useState, type ReactNode } from "react";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { useForm } from "react-hook-form";
@@ -325,6 +326,13 @@ function EngagementEditor({ guildId, saved, refreshing, onRefresh }: EngagementE
           dirty={changes?.questionChanged ?? false}
           botInGuild={saved.botInGuild}
           channelsQuery={channelsQuery}
+        />
+
+        <TuningInlineCard
+          guildId={guildId}
+          title="Si entra mucha gente de golpe"
+          description="Para no inundar el canal, el bot deja de dar la bienvenida un rato si entran demasiadas personas en un minuto (por ejemplo, en un raid)."
+          fields={[{ field: "welcomeBurstLimit", suffix: "personas por minuto" }]}
         />
 
         <CommandsTip />

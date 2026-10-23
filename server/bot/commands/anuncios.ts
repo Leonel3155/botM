@@ -24,6 +24,7 @@ import {
   checkMemberChannelPermissions,
   checkSendableChannel,
   ensureMemberPermission,
+  permissionLabel,
   replyGuildOnly,
   truncate,
   withLineBreaks,
@@ -32,6 +33,9 @@ import { formatInTimezone, parseLocalDateTime, resolveTimezone } from '../servic
 
 const TEXT_CHANNEL_TYPES = [ChannelType.GuildText, ChannelType.GuildAnnouncement] as const;
 const VOICE_CHANNEL_TYPES = [ChannelType.GuildVoice, ChannelType.GuildStageVoice] as const;
+
+// Discord solo deja crear eventos en un escenario a sus moderadores (quien lo crea y el bot)
+const STAGE_MODERATOR_PERMISSIONS: Array<keyof typeof PermissionFlagsBits> = ['ManageChannels', 'MuteMembers', 'MoveMembers'];
 
 const DEFAULT_COLOR = 0x5865F2;
 const NAMED_COLORS: Record<string, number> = {
@@ -354,8 +358,13 @@ async function createEvent(interaction: ChatInputCommandInteraction<'cached'>) {
   // y crear eventos ahí (así no se pueden anunciar canales privados que no le corresponden)
   if (voiceOption) {
     const voiceChannel = guild.channels.cache.get(voiceOption.id);
+    const isStage = voiceOption.type === ChannelType.GuildStageVoice;
     const voiceCheck = voiceChannel
-      ? checkMemberChannelPermissions(interaction.member, voiceChannel, ['ViewChannel', 'Connect'])
+      ? checkMemberChannelPermissions(
+          interaction.member,
+          voiceChannel,
+          isStage ? ['ViewChannel', 'Connect', ...STAGE_MODERATOR_PERMISSIONS] : ['ViewChannel', 'Connect']
+        )
       : null;
     let problem: string | null = null;
     if (!voiceCheck) {
@@ -372,6 +381,20 @@ async function createEvent(interaction: ChatInputCommandInteraction<'cached'>) {
     if (problem) {
       await interaction.reply({
         content: `⛔ No puedes crear un evento en ese canal. ${problem}`,
+        flags: MessageFlags.Ephemeral,
+      });
+      return;
+    }
+
+    // El bot también necesita esos permisos en el canal; si no, Discord rechaza el evento
+    const botNeeded: Array<keyof typeof PermissionFlagsBits> = isStage
+      ? ['ViewChannel', ...STAGE_MODERATOR_PERMISSIONS]
+      : ['ViewChannel', 'Connect'];
+    const botPermissions = voiceChannel?.permissionsFor(me);
+    const botMissing = botNeeded.filter(name => !botPermissions?.has(PermissionFlagsBits[name]));
+    if (botMissing.length > 0) {
+      await interaction.reply({
+        content: `❌ Me faltan permisos en ${voiceChannel} para crear el evento: ${botMissing.map(name => `**${permissionLabel(name)}**`).join(', ')}.`,
         flags: MessageFlags.Ephemeral,
       });
       return;
@@ -502,6 +525,9 @@ async function createEvent(interaction: ChatInputCommandInteraction<'cached'>) {
             allowedMentions: { parse: mention ? ['everyone'] : [] },
           });
           lines.push(`📢 Anuncio publicado en ${target.channel}: ${message.url}`);
+          if (mention && !target.channel.permissionsFor(me)?.has(PermissionFlagsBits.MentionEveryone)) {
+            lines.push('⚠️ No tengo el permiso **Mencionar @everyone, @here y todos los roles** en ese canal, así que la mención quizá no avisó a nadie.');
+          }
         } catch (error) {
           console.error('[EVENTO] Error al anunciar el evento:', error);
           lines.push('⚠️ El evento se creó, pero no pude publicar el anuncio.');
@@ -515,7 +541,9 @@ async function createEvent(interaction: ChatInputCommandInteraction<'cached'>) {
     let message = '❌ No pude crear el evento. Intenta de nuevo en un momento.';
     if (error instanceof DiscordAPIError) {
       if (error.code === RESTJSONErrorCodes.MissingPermissions) {
-        message = '❌ Discord no me dejó crear el evento: me falta **Gestionar eventos** (y para canales de voz también **Ver canal** y **Conectar**).';
+        message = voiceOption?.type === ChannelType.GuildStageVoice
+          ? '❌ Discord no me dejó crear el evento: me falta **Gestionar eventos** (y en escenarios también **Gestionar canales**, **Silenciar miembros** y **Mover miembros**).'
+          : '❌ Discord no me dejó crear el evento: me falta **Gestionar eventos** (y para canales de voz también **Ver canal** y **Conectar**).';
       } else if (error.code === RESTJSONErrorCodes.InvalidFormBodyOrContentType) {
         message = `❌ Discord rechazó los datos del evento. Revisa el nombre, la fecha y la duración.\nDetalle: ${truncate(error.message, 300)}`;
       }

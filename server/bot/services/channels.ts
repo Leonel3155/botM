@@ -22,6 +22,9 @@ const PERMISSION_LABELS: Record<string, string> = {
   ManageEvents: 'Gestionar eventos',
   CreateEvents: 'Crear eventos',
   Connect: 'Conectar',
+  ManageChannels: 'Gestionar canales',
+  MuteMembers: 'Silenciar miembros',
+  MoveMembers: 'Mover miembros',
 };
 
 type PermissionName = keyof typeof PermissionFlagsBits;

@@ -13,16 +13,20 @@ import { ConfigToggle, useGuildConfig } from "@/components/niveles-economia/guil
 import { formatNumber } from "@/components/niveles-economia/format";
 import { LevelDistributionChart } from "@/components/niveles-economia/level-distribution-chart";
 import { LevelLeaderboard } from "@/components/niveles-economia/level-leaderboard";
-import { PRESTIGE_MIN_LEVEL, XP_COOLDOWN_SECONDS } from "@/components/niveles-economia/level-math";
 import { RankingSkeleton, TopLimitSelect, displayUserName, type TopLimit } from "@/components/niveles-economia/ranking-parts";
 import { XpRulesCard } from "@/components/niveles-economia/xp-rules";
 import { InstantExtrasToggle } from "@/components/extras/shared";
+import { useBotAvailability } from "@/components/ajustes-resumen/bot-status";
+import { useTuning } from "@/components/ajustes-finos/shared";
+import { XpSettings } from "@/components/ajustes-finos/xp-settings";
 import { useSelectedGuild } from "@/lib/guild";
 import { cn } from "@/lib/utils";
 
 export default function Levels() {
-  const { guildId } = useSelectedGuild();
+  const { guildId, guild } = useSelectedGuild();
   const [limit, setLimit] = useState<TopLimit>(10);
+  const tuning = useTuning(guildId);
+  const availability = useBotAvailability(guildId, guild?.botInGuild);
 
   // Ranking: GET /api/levels/:guildId/top?limit=N (ordenado por nivel y luego XP)
   const topQuery = useQuery<LevelsTopResponse>({
@@ -51,9 +55,7 @@ export default function Levels() {
   const leader = top[0];
   const analytics = analyticsQuery.data;
   const buckets = analytics?.levelDistribution ?? [];
-  const prestigeReady = buckets
-    .filter((bucket) => bucket.minLevel >= PRESTIGE_MIN_LEVEL)
-    .reduce((sum, bucket) => sum + bucket.users, 0);
+  const prestigeReady = analytics?.prestigeReady ?? 0;
   const hasDistribution = buckets.some((bucket) => bucket.users > 0);
   const prefix = configQuery.data?.prefix ?? "&";
   const statsUnavailable = analyticsQuery.isError;
@@ -105,7 +107,7 @@ export default function Levels() {
           subtitle={
             statsUnavailable
               ? "No se pudo cargar ahora"
-              : `Nivel ${PRESTIGE_MIN_LEVEL} o más: ya pueden usar /prestige`
+              : `Nivel ${tuning.prestigeMinLevel} o más: ya pueden usar /prestige`
           }
           testId="stat-prestige-ready"
         />
@@ -129,8 +131,9 @@ export default function Levels() {
             label="Anunciar subidas de nivel"
             description={
               <>
-                Cuando alguien sube de nivel, el bot lo felicita en el canal donde escribió (con su premio, si la
-                economía está activada). Si lo apagas, se sigue ganando XP y premios, pero el bot no publica nada en
+                Cuando alguien sube de nivel, el bot lo felicita
+                {tuning.levelUpChannelId ? " en el canal de avisos que elegiste abajo" : " en el canal donde escribió"} (con
+                su premio, si la economía está activada). Si lo apagas, se sigue ganando XP y premios, pero el bot no publica nada en
                 el chat.
               </>
             }
@@ -145,8 +148,9 @@ export default function Levels() {
               label="XP por estar en canales de voz"
               description={
                 <>
-                  Cada minuto en un canal de voz con al menos otra persona se ganan 5 XP. No cuenta si estás solo,
-                  ensordecido o en el canal AFK, para que nadie farmee dejando la compu prendida.
+                  Cada minuto en un canal de voz con al menos {tuning.voiceXpMinMembers}{" "}
+                  {tuning.voiceXpMinMembers === 1 ? "persona" : "personas"} se ganan {tuning.voiceXpPerMinute} XP (lo cambias
+                  abajo). No cuenta si estás ensordecido o en el canal AFK, para que nadie farmee dejando la compu prendida.
                 </>
               }
               savedOn="Listo: ahora se gana XP en los canales de voz"
@@ -155,6 +159,8 @@ export default function Levels() {
           </div>
         </CardContent>
       </Card>
+
+      <XpSettings guildId={guildId} blocked={availability.blocked} />
 
       {/* Ranking + distribución */}
       <div className="grid grid-cols-1 gap-6 lg:grid-cols-5">
@@ -182,7 +188,7 @@ export default function Levels() {
                 bare
                 icon={Trophy}
                 title="Aún nadie tiene XP"
-                description={`Cuando la gente empiece a platicar en el servidor, aquí aparecerá el ranking. Cada mensaje cuenta (uno cada ${XP_COOLDOWN_SECONDS} segundos por persona).`}
+                description={`Cuando la gente empiece a platicar en el servidor, aquí aparecerá el ranking. Cada mensaje cuenta (uno cada ${tuning.xpCooldownSeconds} segundos por persona).`}
                 testId="empty-level-ranking"
               />
             ) : (
@@ -223,7 +229,7 @@ export default function Levels() {
         </Card>
       </div>
 
-      <XpRulesCard prefix={prefix} economyEnabled={configQuery.data?.economyEnabled ?? null} />
+      <XpRulesCard prefix={prefix} economyEnabled={configQuery.data?.economyEnabled ?? null} tuning={tuning} />
     </div>
   );
 }

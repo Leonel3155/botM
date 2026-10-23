@@ -59,8 +59,9 @@ export class DiscordBot {
         GatewayIntentBits.GuildMessageReactions,
         GatewayIntentBits.GuildVoiceStates,
       ],
-      // Para reacciones y mensajes borrados de antes de que el bot arrancara (starboard y registro)
-      partials: [Partials.Message, Partials.Channel, Partials.Reaction],
+      // Para reacciones y mensajes borrados de antes de que el bot arrancara (starboard y registro),
+      // y para enterarse cuando sale o cambia un miembro que no estaba en caché
+      partials: [Partials.Message, Partials.Channel, Partials.Reaction, Partials.GuildMember],
     });
 
     // Sin estos oyentes, un error de conexión de discord.js se convierte en una excepción no capturada

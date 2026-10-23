@@ -78,8 +78,9 @@ export const SOLO_ACTIONS: SoloAction[] = [
   { value: 'encogerse', label: '🤷 Encogerse de hombros', nekos: 'shrug', waifu: null, text: '{a} se encogió de hombros' },
 ];
 
+// De una pasada y con función: un nombre con "$&" o "{b}" se pone tal cual
 function fill(template: string, a: string, b = ''): string {
-  return template.replace('{a}', a).replace('{b}', b);
+  return template.replace(/\{([ab])\}/g, (_match, key: string) => (key === 'a' ? a : b));
 }
 
 /** Suma una interacción y devuelve cuántas van de esa persona a esa otra. */

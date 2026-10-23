@@ -1,11 +1,10 @@
 import { EmbedBuilder, MessageFlags, SlashCommandBuilder, type ChatInputCommandInteraction, type GuildTextBasedChannel } from 'discord.js';
 import type { DiscordBot } from '../index';
 import type { BotCommand } from './index';
-import { getExtrasQuick } from '../services/extras';
+import { getExtrasQuick, tuningOf } from '../services/extras';
 import { checkNsfwAllowed, NSFW_CATEGORIES, nsfwSource, recordNsfwPost, type NsfwCategory } from '../services/nsfw';
 
-// Una imagen cada 5 s por persona, para que nadie inunde el canal
-const COOLDOWN_MS = 5_000;
+// Una imagen cada pocos segundos por persona (se ajusta en el panel), para que nadie inunde el canal
 const lastUse = new Map<string, number>();
 
 export const nsfw: BotCommand = {
@@ -30,8 +29,10 @@ export const nsfw: BotCommand = {
     }
     const key = `${interaction.guildId}:${interaction.user.id}`;
     const now = Date.now();
-    if (now - (lastUse.get(key) ?? 0) < COOLDOWN_MS) {
-      await interaction.reply({ content: '⏳ Espera unos segundos antes de pedir otra.', flags: MessageFlags.Ephemeral });
+    const cooldownMs = tuningOf(extras).nsfwCooldownSeconds * 1000;
+    const waitMs = cooldownMs - (now - (lastUse.get(key) ?? 0));
+    if (waitMs > 0) {
+      await interaction.reply({ content: `⏳ Espera ${Math.ceil(waitMs / 1000)} s antes de pedir otra.`, flags: MessageFlags.Ephemeral });
       return;
     }
     lastUse.set(key, now);
@@ -39,11 +40,14 @@ export const nsfw: BotCommand = {
 
     await interaction.deferReply();
     const category = interaction.options.getString('categoria', true) as NsfwCategory;
-    const url = await nsfwSource.image(category);
-    if (!url) {
-      await interaction.editReply('😵 No pude conseguir una imagen ahora. Intenta en un momento.');
+    const image = await nsfwSource.image(category);
+    if (!image.ok) {
+      // Se libera la espera: no cuenta un intento que no dio imagen
+      lastUse.delete(key);
+      await interaction.editReply(`😵 No pude conseguir una imagen: ${image.reason}. Intenta en un momento.`);
       return;
     }
+    const url = image.url;
     const embed = new EmbedBuilder()
       .setColor(0xE91E63)
       .setImage(url)

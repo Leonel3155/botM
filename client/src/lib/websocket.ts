@@ -89,6 +89,8 @@ const GUILD_INVALIDATIONS: Record<GuildUpdateType, (guildId: string) => string[]
   rolePanelsUpdated: (guildId) => [`/api/role-panels/${guildId}`],
   shopUpdated: (guildId) => [`/api/shop/${guildId}`],
   extrasUpdated: (guildId) => [`/api/guilds/${guildId}/extras`],
+  // Ajustes finos; las analíticas cuentan a quién ya le toca prestigiar con el nivel del servidor
+  tuningUpdated: (guildId) => [`/api/guilds/${guildId}/tuning`, `/api/guilds/${guildId}/analytics`],
 };
 
 function isGuildUpdateType(type: string): type is GuildUpdateType {

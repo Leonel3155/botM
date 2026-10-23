@@ -10,7 +10,7 @@ import type { Guild, GuildTextBasedChannel } from 'discord.js';
 import { desc, eq } from 'drizzle-orm';
 import { nsfwLog, type GuildExtras } from '@shared/schema';
 import { db } from '../../db';
-import { safeFetchText } from '../../services/safeFetch';
+import { SafeFetchError, safeFetchText } from '../../services/safeFetch';
 
 export const NSFW_CATEGORIES = [
   { value: 'waifu', label: 'Waifu' },
@@ -53,6 +53,8 @@ export interface NsfwSourceOptions {
   allowPrivateHosts?: boolean;
 }
 
+export type NsfwImageResult = { ok: true; url: string } | { ok: false; reason: string };
+
 export class NsfwSource {
   private readonly baseUrl: string;
   private readonly allowPrivateHosts: boolean;
@@ -62,16 +64,37 @@ export class NsfwSource {
     this.allowPrivateHosts = options.allowPrivateHosts ?? false;
   }
 
-  async image(category: NsfwCategory): Promise<string | null> {
-    if (!NSFW_CATEGORIES.some((item) => item.value === category)) return null;
+  /** Nombre del sitio de las imágenes, para los mensajes. */
+  get host(): string {
+    return new URL(this.baseUrl).hostname;
+  }
+
+  private async fetchOnce(category: NsfwCategory): Promise<NsfwImageResult> {
+    let text: string;
     try {
-      const page = await safeFetchText(`${this.baseUrl}/${category}`, { accept: 'application/json', timeoutMs: 5_000, maxBytes: 100_000, allowPrivateHosts: this.allowPrivateHosts });
-      const url = new URL((JSON.parse(page.text) as { url?: string }).url ?? '');
-      if (!this.allowPrivateHosts && (url.protocol !== 'https:' || url.hostname !== ALLOWED_IMAGE_HOST)) return null;
-      return url.toString();
-    } catch {
-      return null;
+      text = (await safeFetchText(`${this.baseUrl}/${category}`, { accept: 'application/json', timeoutMs: 8_000, maxBytes: 100_000, allowPrivateHosts: this.allowPrivateHosts })).text;
+    } catch (error) {
+      return { ok: false, reason: error instanceof SafeFetchError ? error.message.replace(/\.$/, '') : `no pude conectar con ${this.host}` };
     }
+    let url: URL;
+    try {
+      url = new URL((JSON.parse(text) as { url?: string }).url ?? '');
+    } catch {
+      return { ok: false, reason: `${this.host} respondió algo que no es una imagen` };
+    }
+    if (!this.allowPrivateHosts && (url.protocol !== 'https:' || url.hostname !== ALLOWED_IMAGE_HOST)) {
+      return { ok: false, reason: `${this.host} mandó una imagen de otro sitio (${url.hostname}) y por seguridad no la uso` };
+    }
+    return { ok: true, url: url.toString() };
+  }
+
+  /** Una imagen de la categoría. Si falla, lo intenta una vez más y devuelve el motivo. Nunca lanza. */
+  async image(category: NsfwCategory): Promise<NsfwImageResult> {
+    if (!NSFW_CATEGORIES.some((item) => item.value === category)) return { ok: false, reason: 'esa categoría no existe' };
+    let result = await this.fetchOnce(category);
+    if (!result.ok) result = await this.fetchOnce(category);
+    if (!result.ok) console.warn(`[NSFW] No pude conseguir una imagen (${category}): ${result.reason}`);
+    return result;
   }
 }
 

@@ -70,7 +70,7 @@ function prettyTimezone(timezone: string): string {
 type ChannelCheck =
   | { state: "none" } // no hay canal elegido
   | { state: "unknown" } // aún no lo sabemos (cargando, error o bot fuera del servidor)
-  | { state: "gone" } // el canal ya no existe (o el bot no lo ve)
+  | { state: "gone" } // no está en la lista: lo borraron o quien mira el panel no lo ve
   | { state: "blocked"; name: string } // existe, pero al bot le faltan permisos
   | { state: "ok"; name: string };
 
@@ -80,7 +80,8 @@ function channelWarning(check: ChannelCheck, what: string): string | null {
     case "none":
       return `Falta elegir el canal ${what}.`;
     case "gone":
-      return `El canal ${what} ya no existe: elige otro en Comunidad.`;
+      // La lista solo trae los canales que tú ves: puede estar borrado o ser privado para ti
+      return `No encuentro el canal ${what}: lo borraron o tú no lo ves en Discord. Revísalo en Comunidad.`;
     case "blocked":
       return `No puedo publicar en ${check.name} (me faltan permisos).`;
     default:

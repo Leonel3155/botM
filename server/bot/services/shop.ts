@@ -134,8 +134,14 @@ export async function buyShopItem(member: GuildMember, itemId: string, requested
   if (!Number.isSafeInteger(cost) || cost > MAX_COINS) return { ok: false, reason: 'too_expensive', quantity };
 
   await ensureAccount(guild, member.user);
-  const result = await economyTask(guild.id, member.id, () =>
-    spendFromWallet(guild.id, member.id, cost, async (tx) => {
+  const result = await economyTask(guild.id, member.id, async (): Promise<BuyResult> => {
+    // Otra vez dentro del candado y con el miembro recién pedido a Discord: roles.add no actualiza
+    // la caché, así que dos /comprar seguidos pasarían el chequeo de arriba y cobrarían el rol dos veces
+    if (role) {
+      const fresh = await guild.members.fetch({ user: member.id, force: true });
+      if (fresh.roles.cache.has(role.id)) return { ok: false, reason: 'has_role' };
+    }
+    return spendFromWallet(guild.id, member.id, cost, async (tx) => {
       // Se descuenta la existencia solo si hay suficiente y el artículo sigue igual (activo y con el mismo precio)
       const [updated] = await tx
         .update(shopItems)
@@ -173,8 +179,8 @@ export async function buyShopItem(member: GuildMember, itemId: string, requested
           });
       }
       return updated;
-    })
-  );
+    });
+  });
   return { ...result, quantity };
 }
 

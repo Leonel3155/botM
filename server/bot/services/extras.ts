@@ -3,6 +3,7 @@
 // no consultar la base en cada mensaje o reacción.
 import { eq } from 'drizzle-orm';
 import { guildExtras, type AutoPunishRule, type GuildExtras, type LogEvent } from '@shared/schema';
+import { DEFAULT_TUNING, resolveTuning, type GuildTuning } from '@shared/tuning';
 import { db } from '../../db';
 
 const TTL_MS = 15_000;
@@ -46,6 +47,7 @@ export function defaultExtras(guildId: string): GuildExtras {
     voiceXpEnabled: false,
     nsfwEnabled: false,
     nsfwChannelIds: [],
+    tuning: {},
     updatedAt: null,
   };
 }
@@ -56,6 +58,9 @@ export async function getExtras(guildId: string): Promise<GuildExtras> {
   const startedAt = Date.now();
   const [row] = await db.select().from(guildExtras).where(eq(guildExtras.guildId, guildId));
   const extras = row ?? defaultExtras(guildId);
+  // Si mientras tanto se guardó algo (updateExtras), no lo tapa con esta lectura más vieja
+  const current = cache.get(guildId);
+  if (current && current.at > startedAt) return current.extras;
   cache.set(guildId, { at: startedAt, extras });
   if (cache.size > 5_000) {
     for (const [id, entry] of cache) if (Date.now() - entry.at >= TTL_MS) cache.delete(id);
@@ -113,4 +118,48 @@ export function logEventsOf(extras: GuildExtras): LogEvent[] {
 
 export function autoPunishRulesOf(extras: GuildExtras): AutoPunishRule[] {
   return extras.autoPunishRules ?? DEFAULT_AUTO_PUNISH_RULES;
+}
+
+// ===== Ajustes finos (XP, economía, juegos…) =====
+
+const tuningMemo = new WeakMap<GuildExtras, GuildTuning>();
+
+/** Ajustes finos completos de un servidor (los que faltan usan el valor predeterminado). */
+export function tuningOf(extras: GuildExtras): GuildTuning {
+  let tuning = tuningMemo.get(extras);
+  if (!tuning) {
+    tuning = resolveTuning(extras.tuning);
+    tuningMemo.set(extras, tuning);
+  }
+  return tuning;
+}
+
+/**
+ * Ajustes finos de un servidor, sin pasar de ~1,2 s (si la base tarda, usa los predeterminados).
+ * Solo para lo que corre antes de deferReply; después usa getTuningSafe.
+ */
+export async function getTuning(guildId: string): Promise<GuildTuning> {
+  return tuningOf(await getExtrasQuick(guildId));
+}
+
+// Una sola lectura por interacción: el filtro de economía y el comando piden los ajustes antes de
+// deferReply, y dos esperas seguidas de ~1,2 s se acercarían a los 3 s que da Discord para responder
+const interactionTuning = new WeakMap<object, Promise<GuildTuning>>();
+
+/** getTuning para una interacción: si ya se pidió para esta misma interacción, reusa esa lectura. */
+export function getTuningFor(interaction: { guildId: string | null }): Promise<GuildTuning> {
+  let pending = interactionTuning.get(interaction);
+  if (!pending) {
+    pending = interaction.guildId ? getTuning(interaction.guildId) : Promise.resolve(DEFAULT_TUNING);
+    interactionTuning.set(interaction, pending);
+  }
+  return pending;
+}
+
+/**
+ * Ajustes finos sin tiempo máximo (espera a la base de datos): para lo que corre después de deferReply
+ * o fuera de un comando, donde usar los predeterminados por una base lenta daría valores equivocados.
+ */
+export async function getTuningSafe(guildId: string): Promise<GuildTuning> {
+  return tuningOf(await getExtrasSafe(guildId));
 }
