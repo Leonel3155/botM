@@ -40,11 +40,14 @@ export const nsfw: BotCommand = {
 
     await interaction.deferReply();
     const category = interaction.options.getString('categoria', true) as NsfwCategory;
-    const url = await nsfwSource.image(category);
-    if (!url) {
-      await interaction.editReply('😵 No pude conseguir una imagen ahora. Intenta en un momento.');
+    const image = await nsfwSource.image(category);
+    if (!image.ok) {
+      // Se libera la espera: no cuenta un intento que no dio imagen
+      lastUse.delete(key);
+      await interaction.editReply(`😵 No pude conseguir una imagen: ${image.reason}. Intenta en un momento.`);
       return;
     }
+    const url = image.url;
     const embed = new EmbedBuilder()
       .setColor(0xE91E63)
       .setImage(url)

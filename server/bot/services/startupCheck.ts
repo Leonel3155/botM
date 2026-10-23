@@ -10,7 +10,7 @@ import { checkGrantableRole } from './roles';
 import { resolveSendableChannel } from './channels';
 import { lastUpdateStatus } from './updater';
 import { getExtrasSafe } from './extras';
-import { unmarkedNsfwChannels } from './nsfw';
+import { NSFW_CATEGORIES, nsfwSource, unmarkedNsfwChannels } from './nsfw';
 import { RedditError, redditService, REDDIT_RSS_SHUTDOWN_AT } from '../../services/reddit';
 
 export type CheckLevel = 'ok' | 'warn' | 'error';
@@ -135,7 +135,11 @@ export async function runFeatureChecks(guild: Guild | null, commandNames: string
   lines.push(missing.length === 0
     ? { level: 'ok', text: 'Comandos /tienda, /comprar, /inventario y /actualizar cargados' }
     : { level: 'error', text: `No se cargaron: ${missing.map((name) => `/${name}`).join(', ')}` });
-  if (guild && lines[0].level === 'ok') lines.push(...await checkGuildFeatures(guild));
+  if (guild && lines[0].level === 'ok') {
+    lines.push(...await checkGuildFeatures(guild));
+    const nsfwLine = await nsfwSourceLine([guild]);
+    if (nsfwLine) lines.push(nsfwLine);
+  }
   try {
     const reddit = await redditLine();
     if (reddit) lines.push(reddit);
@@ -145,6 +149,16 @@ export async function runFeatureChecks(guild: Guild | null, commandNames: string
   const update = updateLine();
   if (update) lines.push(update);
   return lines;
+}
+
+/** Si algún servidor tiene el contenido +18 encendido: ¿responde el sitio de donde salen las imágenes? */
+async function nsfwSourceLine(guilds: Guild[]): Promise<CheckLine | null> {
+  const enabled = await Promise.all(guilds.map(async (guild) => (await getExtrasSafe(guild.id)).nsfwEnabled));
+  if (!enabled.some(Boolean)) return null;
+  const image = await nsfwSource.image(NSFW_CATEGORIES[0].value);
+  return image.ok
+    ? { level: 'ok', text: `Contenido +18: ${nsfwSource.host} responde (de ahí salen las imágenes de /nsfw)` }
+    : { level: 'error', text: `Contenido +18: /nsfw no puede conseguir imágenes porque ${image.reason}` };
 }
 
 export function formatCheckLines(lines: CheckLine[]): string {
@@ -160,6 +174,8 @@ export async function runStartupChecks(client: Client, commandNames: string[]): 
         const guildLines = await checkGuildFeatures(guild);
         lines.push(...guildLines.map((line) => ({ ...line, text: `[${guild.name}] ${line.text}` })));
       }
+      const nsfwLine = await nsfwSourceLine([...client.guilds.cache.values()]);
+      if (nsfwLine) lines.push(nsfwLine);
     }
     const problems = lines.filter((line) => line.level !== 'ok').length;
     console.log(`🧪 Revisión de autorroles, tienda, Reddit y actualizaciones (${problems === 0 ? 'todo bien' : `${problems} aviso(s)`}):`);
